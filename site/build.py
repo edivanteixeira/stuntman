@@ -14,11 +14,11 @@ TITLES = {"index": "Stuntman — the stunt double for every provider your app ca
 DESC = {"index": "Stuntman stands in for SMS, WhatsApp, email, storage, queues, identity, secrets and any HTTP API, "
                  "so you and your coding agents can test the hard cases end to end, over MCP or HTTP.",
         "agents": "Claude Code, Codex, Gemini CLI, OpenCode, Cursor and GitHub Copilot test their own work against Stuntman over MCP or HTTP.",
-        "providers": "Every provider line Stuntman stands in for, what it keeps and what you can provoke.",
+        "providers": "Every kind of provider Stuntman stands in for, what it keeps and what you can provoke.",
         "failures": "Make the next call fail, exactly as asked: rules, forced answers and every provocation, line by line.",
         "timeline": "See what your app sent, in the provider's words, and find the calls that never came through.",
         "plugins": "A provider is a plugin; a plugin is one YAML file. The format, expressions and how to install one.",
-        "environments": "One Stuntman, an environment per branch: clone, pause, expire, and route requests.",
+        "environments": "One Stuntman, an environment per branch: clone, pause, expire and route requests.",
         "start": "Paste one prompt into your coding agent: it starts Stuntman, configures your project and proves nothing leaks."}
 e = html.escape
 
@@ -136,7 +136,7 @@ def prompt_box(page, label="Paste this into your coding agent"):
             f'<div class="prompt__row"><p class="prompt__text" id="prompt-{page}">{e(PROMPT)}</p>'
             f'<button class="btn prompt__copy" type="button" data-copy="prompt-{page}">Copy</button></div>'
             f'<p class="prompt__hint">It asks which language you prefer, starts Stuntman, finds every provider your project '
-            f'calls, shows you each change before making it, and ends with every link ready. '
+            f'calls, shows you each change before making it and ends with every link ready. '
             f'<span aria-live="polite" class="prompt__status"></span></p></div>')
 
 
@@ -203,12 +203,12 @@ def home():
                   f'style="width:153.2%;max-width:none;margin-left:-52.1%;margin-top:-10.2%"></figure>')
     return doc(p, f"""
 {hero(p, "Watch your coding agent prove its own fix.",
-      "Claude Code, Codex, Gemini CLI, OpenCode, or any agent that speaks MCP or plain HTTP. Stuntman stands in for the "
+      "Claude Code, Codex, Gemini CLI, OpenCode or any agent that speaks MCP or plain HTTP. Stuntman stands in for the "
       "providers your app calls, so the agent can set up staging, break those providers on purpose, read what your app "
-      "did, and leave the proof where you can see it.")}
+      "did and leave the proof where you can see it.")}
 {agents_strip(p)}
 <section class="wrap section"><div class="split">
-  {head(2, "It tests the whole app. No one clicks.", "The agent runs the loop on its own, as many times as the change needs. Each lap leaves calls on the timeline under its name.")}
+  {head(2, "It tests the whole app. No one clicks.", "The agent runs the loop on its own, as many times as the change needs. Each lap leaves calls on the timeline under the agent's name.")}
   {art(p, "loop", 2095, 1236, "A ring of seven stations: read the code, set up Stuntman, change the code, run the real flow, provoke failures, read what the app sent, check the result", True)}
 </div></section>
 <section class="wrap section">
@@ -217,17 +217,17 @@ def home():
   <p class="note" style="margin-top:var(--space-md)">Illustrative: file, provider and plugin names are examples. The tool names are real.</p>
 </section>
 <section class="wrap section">
-  {head(2, "It does the setup, too.", "Before: staging talks to real providers. After: every base URL points at Stuntman, each provider has its plugin, and the agent proves no call still leaks out.")}
+  {head(2, "Before and after.", "Before: staging talks to real providers. After: every base URL points at Stuntman, each provider has its plugin, and the agent proves no call still leaks out.")}
   {art(p, "env-before-after", 2656, 1116, "A staging .env before, pointing at real providers, and after, pointing at Stuntman; then list_plugins, install_plugin, set_provider, edit .env, real_provider_calls: none", True)}
 </section>
 <section class="wrap section">
-  {head(2, "One afternoon in staging.", "On the real screens, with synthetic data. Real tool names and argument shapes; some arguments are left out.")}
+  {head(2, "One afternoon in staging.", "In the real UI, with synthetic data. Real tool names and argument shapes; some arguments are left out.")}
   <article class="chapter"><div class="chapter__text"><h3 class="display"><span class="num">1</span>You ask for the hard case.</h3>
     <p class="body">Not the happy path: the one where the storage provider fails twice in a row.</p>
     {session([("say", "you", "Make contract uploads fail twice with a 503, then tell me whether acme-api recovers."),
               ("tool", "create_rule", '{"when": {"op": "put", "path": "contracts/**"}, "then": {"respond": "503"}, "how_often": {"first": 2}}'),
               ("res", "ok", "rule on, recorded as claude-code via MCP")])}</div>
-    {shot(p, "rules", "The storage rule Contract uploads fail twice, turned on by claude-code via MCP", [pin(1, 470, 137)])}</article>
+    {shot(p, "rules", "The storage rule “Contract uploads fail twice,” turned on by claude-code via MCP", [pin(1, 470, 137)])}</article>
   <article class="chapter"><div class="chapter__text"><h3 class="display"><span class="num">2</span>It reads what your app actually did.</h3>
     <p class="body">Not what the code says it does. Every call your app made is on the timeline, in the provider's words.</p>
     {session([("tool", "wait_for_object", '{"container": "documents", "prefix": "contracts/nda-acme"}'),
@@ -236,23 +236,23 @@ def home():
     {shot(p, "timeline", "The timeline: the upload of nda-acme-signed.pdf failed with 503, provoked by the rule; attempt 1 and 2 both 503", [pin(2, 930, 130)])}</article>
   <article class="chapter"><div class="chapter__text"><h3 class="display"><span class="num">3</span>It fixes the code and runs the flow again.</h3>
     <p class="body">The rule is still on, so the second run meets the same two failures. This time the app has to get through them.</p></div>
-    {session([("say", "agent", "Raised the upload retries in BlobUploader from 2 to 3, with backoff. Running the signing flow again."),
+    {session([("say", "agent", "Raised the upload attempts in BlobUploader from 2 to 3, with backoff. Running the signing flow again."),
               ("tool", "wait_for_object", '{"container": "documents", "prefix": "contracts/nda-acme"}'),
               ("res", "ok", "nda-acme-signed.pdf stored, on the third attempt"),
               ("tool", "set_rule_enabled", '{"name": "Contract uploads fail twice", "enabled": false}'),
               ("res", "ok", "rule off"),
               ("say", "agent", "The fix holds: the third attempt stored the file. I turned the rule off. The calls are on the timeline under my name.")])}</article>
   <article class="chapter"><div class="chapter__text"><h3 class="display"><span class="num">4</span>You check the evidence, not the agent's word.</h3>
-    <p class="body">The rule shows who turned it on, which requests it matched, and what the app gets on each try. Nothing rests on the agent's summary.</p></div>
+    <p class="body">The rule shows who turned it on, which requests it matched and what the app gets on each try. Nothing rests on the agent's summary.</p></div>
     {rules_crop}</article>
 </section>
 <section class="wrap section"><div class="split">
-  <div class="stack">{head(2, "One prompt. The whole app tested.", "You ask once. The agent sets up, provokes, reads and checks every provider path, then hands back a report you can verify on the screen.")}
+  <div class="stack">{head(2, "One prompt. The whole app tested.", "You ask once. The agent sets up, provokes, reads and checks every provider path, then hands back a report you can verify in the UI.")}
   <blockquote class="session"><div class="say"><span class="who">you</span><p>Test sign-up end to end against Stuntman: SMS down, a WhatsApp reply, an email bounce, login with MFA. Fix what breaks.</p></div></blockquote></div>
   {art(p, "run-log", 1416, 1576, "The agent's run: set up, SMS down, WhatsApp reply, email bounce, login with MFA, avatar upload failed on retry limit 2, fix, avatar upload stored on attempt 3, check: no calls to real providers", True)}
 </div></section>
 <section class="wrap section">
-  {head(2, "Any agent. Same switches.", "Anything that speaks MCP, or plain HTTP, drives Stuntman the way a person does on the screen. Every MCP tool is also an HTTP route; <code>GET /api/tools</code> lists them all.")}
+  {head(2, "Any agent. Same switches.", "Anything that speaks MCP, or plain HTTP, drives Stuntman the way a person does in the UI. Every MCP tool is also an HTTP route; <code>GET /api/tools</code> lists them all.")}
   {art(p, "any-agent", 2418, 1176, "Claude Code, Codex, Gemini CLI, OpenCode, Cursor and GitHub Copilot, each a line through MCP or HTTP into Stuntman", True)}
   <div class="doors" style="margin-top:var(--space-2xl)">
     <div><h3>Over MCP</h3>{code('create_rule {"service": "azure-blob", "name": "Contract uploads fail twice",\n  "when": {"op": "put", "path": "contracts/**"},\n  "then": {"respond": "503"}, "how_often": {"first": 2}}')}</div>
@@ -260,7 +260,7 @@ def home():
   </div>
 </section>
 <section class="wrap section"><div class="split">
-  {head(2, "No plugin for your provider yet? Ask.", "A provider is one YAML file: routes, state, answers, callbacks and the sentence each call leaves. The tools that read a plugin can also write it, so the agent drafts it and you review it on screen, with the YAML beside it.")}
+  {head(2, "No plugin for your provider yet? Ask.", "A provider is one YAML file: routes, state, answers, callbacks and the sentence each call leaves. The tools that read a plugin can also write it, so the agent drafts it and you review it in the UI, with the YAML beside it.")}
   {shot(p, "route-editor", "The route editor: receive, keep, decide, respond, send, with the plugin YAML beside it")}
 </div></section>
 <section class="wrap section">
@@ -288,11 +288,11 @@ def agents():
     return doc(p, f"""
 {hero(p, "Built for agents that test their own work.",
       "Claude Code, Codex, Gemini CLI, OpenCode, Cursor and GitHub Copilot connect over MCP. Anything else uses plain HTTP. "
-      "Both reach the same 293 tools, and the timeline records which one acted.")}
+      "Both reach the same 293 tools, and the timeline records who acted.")}
 {agents_strip(p)}
 <section class="wrap section">
   {head(2, "The loop it runs on its own.")}
-  {line([("", "", "Read the code", "finds the providers your app calls"), ("", "", "Set up Stuntman", "installs plugins, points base URLs"),
+  {line([("", "", "Read the code", "finds the providers your app calls"), ("", "", "Set up Stuntman", "installs plugins, points base URLs at Stuntman"),
          ("", "", "Change the code", "the fix or the feature you asked for"), ("", "", "Run the real flow", "your app, end to end"),
          ("pv", "", "Provoke failures", "the cases staging never shows"), ("", "", "Read what the app sent", "calls, retries, callbacks"),
          ("end", "", "Check the result", "against the timeline, not a guess")])}
@@ -300,14 +300,14 @@ def agents():
 <section class="wrap section">
   {head(2, "Connect it in one line.", "MCP runs over streamable HTTP at <code>/mcp</code>; each environment also has <code>/e/&lt;env&gt;/mcp</code>. Client formats change: if one does not load, check its docs for “remote” or “streamable HTTP” servers.")}
   <div class="trio">{cl}</div>
-  <div class="warn" style="margin-top:var(--space-xl)"><strong>There is no API key yet.</strong>Anyone who reaches the port can use every tool. Per-agent keys are designed and on the way; until then, keep Stuntman private.</div>
+  <div class="warn" style="margin-top:var(--space-xl)"><strong>There is no API key yet.</strong>Anyone who reaches the port can use every tool. Per-agent keys are planned; until then, keep Stuntman private.</div>
 </section>
 <section class="wrap section"><div class="split">
   {head(2, "Or plain HTTP.", "Every tool is an HTTP route under <code>/api</code>, with the same arguments. Pass <code>by</code> to name the actor on the timeline; MCP clients are named automatically.")}
   {code('curl -s localhost:8025/api/tools | jq ".[].name"\n\ncurl -s -X POST localhost:8025/api/whatsapp/force \\\n  -H "content-type: application/json" \\\n  -d \'{"answer": "500", "count": 1, "by": "codex"}\'', True)}
 </div></section>
 <section class="wrap section">
-  {head(2, "It sets Stuntman up, too.", "Ask it to read the repository, find every provider, install the plugins, point the staging URLs and prove nothing leaks.")}
+  {head(2, "It sets Stuntman up, too.", "Ask it to read the repository, find every provider, install the plugins, point the staging URLs at Stuntman and prove nothing leaks.")}
   {art(p, "sets-up", 2656, 1284, "Source files become provider lines through the agent into Stuntman", True)}
 </section>
 <section class="wrap section">
@@ -318,7 +318,7 @@ def agents():
   {head(2, "Tips for reliable runs.")}
   <ul class="stack body" style="max-width:none">
     <li><b>Wait, do not sleep.</b> <code>wait_for_object</code>, <code>wait_for_api_call</code> and <code>wait_for_delivery</code> return the moment the thing happens, or fail with a clear timeout.</li>
-    <li><b>Provoke a count, not forever.</b> <code>count</code>, <code>first</code> and <code>for</code> turn a failure off by themselves, so a crashed run leaves no trap behind.</li>
+    <li><b>Fail a set number of times, not forever.</b> <code>count</code>, <code>first</code> and <code>for</code> turn a failure off by themselves, so a crashed run leaves no trap behind.</li>
     <li><b>One environment per pull request.</b> See <a href="{rel(p, 'environments')}">Environments</a>.</li>
     <li><b>Ask for evidence.</b> A good report points at the timeline, where every call carries the actor's name.</li>
   </ul>
@@ -333,7 +333,7 @@ def providers():
           "Point your app at <code>http://localhost:8028/&lt;service&gt;</code>."),
          ("red", "SMS", "Zenvia API v2", "Messages, delivery steps per recipient, opt-outs.", "500, 400, reset, empty reply, timeout; the person texts back, STOP and START.", None,
           "Point your app at <code>http://localhost:8025/zenvia/v2/channels/{0}/messages</code>."),
-         ("green", "WhatsApp", "Meta WhatsApp Cloud API (Graph)", "Conversations, templates, the 24-hour window, the people who receive them.",
+         ("green", "WhatsApp", "Meta WhatsApp Cloud API (Graph)", "Conversations, templates, the 24-hour window and the recipients.",
           "500, 400, connection failures, expired tokens, replies, wrongly signed or replayed webhooks.", "whatsapp", "Graph base URL <code>http://localhost:8025/whatsapp</code>."),
          ("amber", "Email", "SMTP with STARTTLS · SendGrid v3 · signed Event Webhook", "Every message with its HTML, attachments and extracted codes and links.",
           "Hold and decide: deliver, defer, bounce, drop; open, click, spam report, unsubscribe.", "email", "SMTP <code>localhost:2525</code> · SendGrid <code>http://localhost:8025/sendgrid</code>."),
@@ -342,9 +342,9 @@ def providers():
          ("teal", "Messaging", "Azure Service Bus · RabbitMQ (AMQP)", "Queues, topics, subscriptions, every message with its deliveries, consumers and locks.",
           "Lost locks, duplicates, held, dropped, dead-lettered or out-of-order messages; a busy or refusing namespace.", "queues", "AMQP <code>:5673</code> (TLS <code>:5671</code>)."),
          ("green", "Identity", "OIDC / OAuth2: Microsoft Entra ID, Google, Okta, generic OIDC", "Tenants, apps, synthetic users and their claims; a sign-in page you can drive.",
-          "MFA, consent, user cancels, wrong tenant, expired tokens, bad signatures, IdP down.", "login-page", "Authority from the provider's settings on the screen."),
+          "MFA, consent, user cancels, wrong tenant, expired tokens, bad signatures, IdP down.", "login-page", "Use the authority shown in the provider's settings in the UI."),
          ("graphite", "Secrets", "Azure Key Vault · managed identity", "Versions, keys that really sign and wrap, certificates, read counts that prove caching.",
-          "403, 404, 429, disabled, slow, expired or untrusted certificates, wrong signatures.", "secrets", "<code>https://&lt;vault&gt;.vault.&lt;base domain&gt;:8444</code>, trust the Test CA."),
+          "403, 404, 429, disabled, slow, expired or untrusted certificates, wrong signatures.", "secrets", "<code>https://&lt;vault&gt;.vault.&lt;base domain&gt;:8444</code>; trust the Test CA."),
          ("orange", "Webhook inboxes", "Endpoints your app sends its own webhooks to", "Every delivery with its signature check; inboxes that expire by themselves.",
           "200, 500, timeout, hang, delay, fail twice then succeed.", "inbox-behaviour", "<code>http://localhost:8027/in/&lt;inbox&gt;</code>."),
          ("amber", "Telemetry", "OpenTelemetry: OTLP logs, traces, metrics", "Spans joined to the provider calls that caused them.",
@@ -358,18 +358,18 @@ def providers():
         img = shot(p, sc, f"The {name} screen") if sc else ""
         secs.append(f'<section class="wrap section"><div class="split">{txt}{img}</div></section>')
     return doc(p, hero(p, "Every provider your app calls. None of them real.",
-                       "Each line is an engine capability; a plugin or a flavor is one provider's version of it. Stuntman "
+                       "Each line is one kind of provider, such as SMS, storage or identity; a flavor or a plugin is one vendor's version of it. Stuntman "
                        "answers like the provider, keeps its state and sends its callbacks back.", actions=False)
                + "".join(secs) + next_link(p))
 
 
 def failures():
     p = "failures"
-    rows = [("HTTP APIs", "force_answer · expire_tokens", "any named answer; reset, empty, timeout, 500, 503, html; tokens invalid"),
+    rows = [("HTTP APIs", "force_answer · expire_tokens", "any named answer; reset, empty, timeout, 500, 503, HTML; invalid tokens"),
             ("SMS", "force_sms_failure · reply_sms_as_user", "500, 400, reset, empty, timeout; the person texts back"),
             ("WhatsApp", "force_whatsapp_failure · send_bad_webhook", "500, 400, reset, empty, timeout; wrong, missing or old signature, replay"),
             ("Email", "decide_held · simulate_recipient", "deliver, defer, bounce, drop; open, click, spam report, unsubscribe"),
-            ("Storage", "create_rule · set_next_read · set_next_use", "any status, first N or a share; slow, truncated, bad MD5; bad links"),
+            ("Storage", "create_rule · set_next_read · set_next_use", "any status, first N or a percentage; slow, truncated, bad MD5; bad links"),
             ("Messaging", "set_next_delivery (namespace) · set_namespace_reachability", "lose lock, duplicate, hold, drop, dead-letter, out of order; refuse, busy"),
             ("Identity", "provoke_sign_in · provoke_idp", "MFA, consent, user cancels, wrong tenant, expired, IdP down"),
             ("Secrets", "provoke_secret · provoke_key · provoke_certificate", "403, 404, 429, disabled, slow, expired, untrusted"),
@@ -381,7 +381,7 @@ def failures():
         return '<span class="dots">' + "".join(f'<i class="{"on" if x else ""}"></i>' for x in pattern) + "</span>"
     return doc(p, f"""
 {hero(p, "Make the next call fail. Exactly as asked.",
-      "A rule says which requests, what to answer and how often. It runs for you, a test suite or an agent, and the "
+      "A rule says which requests, what to answer and how often. You, a test suite or an agent can turn it on, and the "
       "timeline marks every answer it changed.", actions=False)}
 <section class="wrap section">
   {head(2, "How often is part of the rule.")}
@@ -397,7 +397,7 @@ def failures():
   {table(["Line", "Tools", "Answers"], [(chip(colors[i], r[0]), f"<code>{r[1]}</code>", r[2]) for i, r in enumerate(rows)])}
 </section>
 <section class="wrap section"><div class="split">
-  <div class="stack">{head(2, "A rule is a file, too.", "Edit it on the screen and try it against the last 50 requests before saving. It is saved in <code>storage/rules/&lt;service&gt;.yaml</code>, and an agent creates the same rule with one tool call.")}
+  <div class="stack">{head(2, "A rule is a file, too.", "Edit it in the UI and try it against the last 50 requests before saving. It is saved in <code>storage/rules/&lt;service&gt;.yaml</code>, and an agent creates the same rule with one tool call.")}
   {code('create_rule {\n  "service": "azure-blob",\n  "name": "Contract uploads fail twice",\n  "when": {"op": "put", "container": "documents",\n           "path": "contracts/**"},\n  "then": {"respond": "503"},\n  "how_often": {"first": 2}\n}')}</div>
   {shot(p, "rules", "The rule editor: when, then, how often, and what the app will see", [pin(1, 470, 137)])}
 </div></section>
@@ -422,7 +422,7 @@ def timeline():
   <ol class="notes">{nl}</ol>
 </section>
 <section class="wrap section">
-  {head(2, "Calls that never came through.", "Requests with no route get their own list, with “create a route from this request”. Telemetry shows the hosts your app still calls directly, so a forgotten base URL cannot hide.")}
+  {head(2, "Calls that never came through.", "Requests with no route get their own list, with a “Create a route from this request” action. Telemetry shows the hosts your app still calls directly, so a forgotten base URL cannot hide.")}
   <div class="leak" role="img" aria-label="acme-api calls Stuntman, and one forgotten call still goes to api.twilio.com">
     <span class="box">acme-api</span><span class="ok"></span><span class="hub">Stuntman</span>
     <span class="bad"></span><span class="real">api.twilio.com</span>
@@ -430,7 +430,7 @@ def timeline():
   <p class="mono" style="color:var(--text-red);font-size:var(--text-sm);margin-top:var(--space-lg)">real_provider_calls → 1 host outside Stuntman: api.twilio.com</p>
 </section>
 <section class="wrap section"><div class="split">
-  {head(2, "A trip carries the trace.", "Stuntman takes your app's trace ID on the way in and sends it back on callbacks. Spans, logs and metrics live in their own area and open from a row, so the timeline stays readable.")}
+  {head(2, "The trace ID makes the round trip.", "Stuntman takes your app's trace ID on the way in and sends it back on callbacks. Spans, logs and metrics live in their own area and open from a row, so the timeline stays readable.")}
   {shot(p, "traces", "Traces joined to the provider calls Stuntman answered")}
 </div></section>
 <section class="wrap section">
@@ -462,7 +462,7 @@ def plugins():
       <div><dt>answers</dt><dd>the provider's bodies, and the sentence the timeline shows</dd></div></dl></div>
 </section>
 <section class="wrap section"><div class="split">
-  {head(2, "Edit on screen. Keep the YAML.", "The screen edits the same file. Every change is validated before it is saved, and the YAML beside the editor shows the exact lines that changed.")}
+  {head(2, "Edit in the UI. Keep the YAML.", "The UI edits the same file. Every change is validated before it is saved, and the YAML beside the editor shows the exact lines that changed.")}
   {shot(p, "route-editor", "The route editor with the YAML beside it")}
 </div></section>
 <section class="wrap section">
@@ -495,13 +495,13 @@ def environments():
   <div style="margin-top:var(--space-xl);max-width:46rem">{code('curl -X POST localhost:8025/api/environments \\\n  -H "content-type: application/json" \\\n  -d \'{"name": "pr-5462", "from": "stg-a", "expires": "24h"}\'')}</div>
 </section>
 <section class="wrap section">
-  {head(2, "A request finds its environment.", "Anything else falls to the default environment.")}
+  {head(2, "A request finds its environment.", "A request that matches none of these goes to the default environment.")}
   <div class="trio"><div><h3>By host name</h3>{code("otp.pr-5462.stuntman.local")}</div>
     <div><h3>By path prefix</h3>{code("localhost:8025/e/pr-5462/mcp")}</div>
     <div><h3>By gRPC metadata</h3>{code("x-stuntman-env: pr-5462")}</div></div>
 </section>
 <section class="wrap section"><div class="split">
-  {head(2, "Clone, start empty, or start from files.", "Pick what comes along: services and their files, rules, inboxes, secrets, and optionally the state. Set how long it lives and where its callbacks go.")}
+  {head(2, "Clone, start empty or start from files.", "Pick what comes along: services and their files, rules, inboxes, secrets and, optionally, the state. Set how long it lives and where its callbacks go.")}
   {shot(p, "new-environment", "New environment: a copy, empty, or from files")}
 </div></section>
 {next_link(p)}""")
@@ -509,9 +509,9 @@ def environments():
 
 def start():
     p = "start"
-    steps = [("Run it", "One container serves the screen, the HTTP API and MCP. Data lives in one volume.",
-              "docker run -d --name stuntman -p 127.0.0.1:8025:8025 \\\n  -p 127.0.0.1:2525:2525 -p 127.0.0.1:8028:8028 \\\n  -v stuntman-data:/data edivanteixeira/stuntman\n\n# screen, /api and /mcp on http://localhost:8025", True),
-             ("Point your app at it", "Change base URLs only. Your app keeps its code and its settings.",
+    steps = [("Run it", "One container serves the web UI, the HTTP API and MCP. Data lives in one volume.",
+              "docker run -d --name stuntman -p 127.0.0.1:8025:8025 \\\n  -p 127.0.0.1:2525:2525 -p 127.0.0.1:8028:8028 \\\n  -v stuntman-data:/data edivanteixeira/stuntman\n\n# web UI, /api and /mcp on http://localhost:8025", True),
+             ("Point your app at it", "Change base URLs only. Your app keeps its code and every other setting.",
               "WhatsApp (Graph)   http://localhost:8025/whatsapp\nSendGrid           http://localhost:8025/sendgrid\nSMTP               localhost:2525\nHTTP API plugins   http://localhost:8028/<service>\nAzure Blob         http://127.0.0.1:10000/<account>\nAmazon S3          http://127.0.0.1:9000\nOpenTelemetry      http://localhost:4318", False),
              ("Connect your agent", "Claude Code, Codex, Gemini CLI, OpenCode, Cursor or GitHub Copilot over MCP; anything else over HTTP.",
               "claude mcp add --transport http stuntman \\\n  http://localhost:8025/mcp", False),
@@ -521,12 +521,12 @@ def start():
                    f'<span class="num">{i + 1}</span>{h}</h2><p class="body">{t}</p></div>{code(c, dark)}</article>'
                    for i, (h, t, c, dark) in enumerate(steps))
     return doc(p, f"""
-{hero(p, "Up in one prompt.", "Paste one line into your coding agent. It starts Stuntman, finds every provider your project calls, points your local configuration at it, proves nothing leaks, and hands you every link. It shows you each change before making it.", actions=False)}
+{hero(p, "Up in one prompt.", "Paste one line into your coding agent. It starts Stuntman, finds every provider your project calls, points your local configuration at it, proves nothing leaks and hands you every link. It shows you each change before making it.", actions=False)}
 <section class="wrap">{prompt_box(p, "The fastest way: paste this into your coding agent")}
 <p class="note" style="margin-top:var(--space-md)">The agent follows <a href="../agent-setup.md">agent-setup.md</a>, an open guide you can read first.</p></section>
 <section class="wrap section">{head(2, "Or do it yourself.")}{arts}</section>
 <section class="wrap section">
-  <div class="warn"><strong>No sign-in yet.</strong>Anyone who reaches the port can read every message and change every rule. Keep Stuntman on a private network, a VPN, or behind a proxy that authenticates.</div>
+  <div class="warn"><strong>No sign-in yet.</strong>Anyone who reaches the port can read every message and change every rule. Keep Stuntman on a private network or a VPN, or behind a proxy that authenticates.</div>
   <p class="body" style="margin-top:var(--space-xl)">More ports, Docker Compose and every setting: <a href="{DOCS}/getting-started.md">getting started</a> and <a href="{DOCS}/configuration.md">configuration</a>.</p>
 </section>
 {next_link(p)}""")

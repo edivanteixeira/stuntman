@@ -58,7 +58,7 @@ duplicate.
 | Key | Meaning |
 |---|---|
 | `name` | lowercase, digits and dashes; the URL segment: `:8028/<name>` |
-| `title`, `description` | shown on the screen |
+| `title`, `description` | shown in the UI |
 | `origin` | `official`, `community` or `yours` (default) |
 | `region` | optional, for regional providers |
 | `base_url`, `real_host` | the provider's real address; `real_host` lets you resolve the real name to Stuntman |
@@ -116,12 +116,12 @@ Conditions and templates use a small, side-effect-free language (a CEL-like subs
 
 Templates use `{{ }}` inside answer bodies, sentences and callback URLs.
 
-## Edit on screen, keep the YAML
+## Edit in the UI, keep the YAML
 
 ![The route editor with the YAML beside it](images/screen-route-editor.png)
 
-The screen edits the same file. Every change is validated before it is saved, and the YAML beside the editor shows
-the exact lines that changed. Saving from the screen or a tool rewrites the file, so YAML comments are not kept; edit
+The web UI edits the same file. Every change is validated before it is saved, and the YAML beside the editor shows
+the exact lines that changed. Saving from the web UI or a tool rewrites the file, so YAML comments are not kept; edit
 by hand when comments matter.
 
 ## Install

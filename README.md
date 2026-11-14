@@ -79,7 +79,7 @@ docker run -d --name stuntman \
   -p 127.0.0.1:8025:8025 -p 127.0.0.1:2525:2525 -p 127.0.0.1:8028:8028 \
   -v stuntman-data:/data edivanteixeira/stuntman
 
-open http://localhost:8025          # the screen; the HTTP API is /api, MCP is /mcp
+open http://localhost:8025          # the web UI; the HTTP API is /api, MCP is /mcp
 ```
 
 The image is on Docker Hub as [`edivanteixeira/stuntman`](https://hub.docker.com/r/edivanteixeira/stuntman)
@@ -129,14 +129,14 @@ claude mcp add --transport http stuntman http://localhost:8025/mcp
 | | |
 |---|---|
 | ![The timeline: every call as a sentence in the provider's words](docs/images/screen-timeline.png) **Timeline.** Every call as a sentence, who made it, and what was provoked. | ![A storage rule: fail the first two uploads, then answer normally](docs/images/screen-rules.png) **Rules.** Which requests, what to answer, how often. Tried before saved. |
-| ![The route editor with the plugin YAML beside it](docs/images/screen-route-editor.png) **Plugins.** Edit a route on screen; the YAML beside it stays the source of truth. | ![Environments: STG-A, STG-B, STG-C and a pull-request copy that expires](docs/images/screen-environments.png) **Environments.** One process, many environments; clone one per pull request. |
+| ![The route editor with the plugin YAML beside it](docs/images/screen-route-editor.png) **Plugins.** Edit a route in the UI; the YAML beside it stays the source of truth. | ![Environments: STG-A, STG-B, STG-C and a pull-request copy that expires](docs/images/screen-environments.png) **Environments.** One process, many environments; clone one per pull request. |
 
 <sub>Screens use synthetic data.</sub>
 
 ## Principles
 
 1. **The plugin is the product.** Everything a provider does lives in one installable file.
-2. **Text is the source of truth.** The screen is a second way to edit the same YAML, never a separate copy.
+2. **Text is the source of truth.** The web UI is a second way to edit the same YAML, never a separate copy.
 3. **The provider's words first.** Raw HTTP is one click away.
 4. **Provoking is as easy as watching.**
 5. **Safe by default.** A plugin cannot reach the network or the disk unless it declares it.
@@ -158,7 +158,7 @@ claude mcp add --transport http stuntman http://localhost:8025/mcp
 
 ## How it is built
 
-A single Rust process serves every environment: the screen (Leptos, compiled to WebAssembly), the HTTP API,
+A single Rust process serves every environment: the web UI (Leptos, compiled to WebAssembly), the HTTP API,
 MCP over streamable HTTP, and each provider on its own port. State lives in SQLite per environment;
 configuration lives in YAML files you can read, diff and commit. Each provider is a crate that implements one
 module interface, so adding a provider never touches the others. See [`engine/README.md`](engine/README.md).
@@ -166,14 +166,14 @@ module interface, so adding a provider never touches the others. See [`engine/RE
 ```text
 engine/
   crates/core       shared: storage, tools (MCP tool = HTTP route), signed callbacks, live events
-  crates/server     wires the modules; one router per environment; /api, /mcp, the screen
+  crates/server     wires the modules; one router per environment; /api, /mcp, the web UI
   crates/apis       the HTTP plugin engine (YAML + expressions) — plugins/ is the catalog
   crates/email      SMTP and SendGrid        crates/sms        SMS (Zenvia)
   crates/whatsapp   WhatsApp Cloud API       crates/storage    Azure Blob and S3
   crates/messaging  Service Bus, RabbitMQ    crates/identity   OIDC / OAuth2
   crates/keyvault   Key Vault, managed id.   crates/webhook    webhook inboxes
   crates/telemetry  OTLP receiver
-  web/              the screen (Leptos)
+  web/              the web UI (Leptos)
 ```
 
 ## Contributing

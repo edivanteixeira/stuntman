@@ -2,18 +2,18 @@
 
 You are a coding agent (Claude Code, Codex, Gemini CLI, OpenCode, Cursor, GitHub Copilot or similar). A developer
 pasted a short prompt that sent you here. Your job: **set Stuntman up for the project in the current working
-directory, end to end, and leave the developer with a working staging that never calls a real provider.**
+directory, end to end, and leave the developer with a working staging environment that never calls a real provider.**
 
 Stuntman stands in for the external providers an app calls (SMS, WhatsApp, email, storage, queues, identity,
-secrets, webhooks, telemetry, and any HTTP API through YAML plugins). It answers like the provider, keeps state,
-sends callbacks, and fails on cue. Every action is an MCP tool and an HTTP route.
+secrets, webhooks, telemetry and any HTTP API through YAML plugins). It answers like the provider, keeps state,
+sends callbacks and fails on cue. Every action is an MCP tool and an HTTP route.
 
 - Site: https://edivanteixeira.github.io/stuntman/
 - Source and full docs: https://github.com/edivanteixeira/stuntman
 - Tool reference (every tool, route and argument): https://github.com/edivanteixeira/stuntman/blob/main/docs/reference/tools.md
 
 Follow the eight steps below **in order**. The developer should never need to know Docker, ports or tool names:
-you take care of all of it, explain what you are doing in plain words, and ask only when a decision is theirs.
+you take care of all of it, explain what you are doing in plain words and ask only when a decision is theirs.
 
 ---
 
@@ -28,7 +28,7 @@ you take care of all of it, explain what you are doing in plain words, and ask o
 5. **No real secrets.** Stuntman accepts any key, token or password for the providers it stands in for. Write
    placeholder values such as `stuntman-any-key`. Never print or copy real credentials you find.
 6. **Do not commit or push.** Leave the changes in the working tree and say so at the end.
-7. **Stop on surprises.** If a step fails twice, explain what happened, offer the next best option, and ask.
+7. **Stop on surprises.** If a step fails twice, explain what happened, offer the next best option and ask.
 
 ---
 
@@ -75,7 +75,7 @@ docker run -d --name stuntman --restart unless-stopped \
 5. If a container named `stuntman` already exists but is stopped, run `docker start stuntman` instead.
    If a port is taken, tell the developer which one and which app holds it (`lsof -i :<port>`), and ask.
 
-Tell the developer: *"Stuntman is running. Its screen is at http://localhost:8025 — you can open it any time to
+Tell the developer: *"Stuntman is running. Its web UI is at http://localhost:8025 — you can open it any time to
 watch what your app does."*
 
 ## Step 3 of 8 — Connect yourself
@@ -108,7 +108,7 @@ hosts, SDK packages and setting names. Do not print secret values you come acros
 | **Email (SMTP)** | `SMTP_HOST`, `smtp.*`, MailKit, nodemailer, smtplib, `spring.mail`, ActionMailer `smtp_settings` |
 | **Email (SendGrid)** | `api.sendgrid.com`, `@sendgrid/mail`, `sendgrid` packages, `SENDGRID_API_KEY` |
 | **SMS** | `api.zenvia.com`, Zenvia SDKs (Stuntman speaks Zenvia API v2) |
-| **WhatsApp** | `graph.facebook.com`, WhatsApp Cloud API, phone number id / WABA settings |
+| **WhatsApp** | `graph.facebook.com`, WhatsApp Cloud API, phone number ID / WABA settings |
 | **Azure Blob** | `blob.core.windows.net`, `Azure.Storage.Blobs`, `@azure/storage-blob`, `azure-storage-blob`, storage connection strings |
 | **Amazon S3 / R2** | `s3.amazonaws.com`, `AWS_ENDPOINT_URL`, aws-sdk S3 clients, `boto3.client("s3")`, R2 endpoints |
 | **Azure Service Bus** | `servicebus.windows.net`, `Azure.Messaging.ServiceBus`, `@azure/service-bus` |
@@ -145,7 +145,7 @@ Use the default environment (`stg-a`) unless the developer asks for another one.
 | Identity | `set_provider` with flavor `entra-v2`, `google`, `okta` or `oidc`; add the app registration and a few synthetic users. |
 | Secrets | Create the vault and the secret names the app reads (values are synthetic). |
 | A provider in the catalog | `install_plugin` (or `install_collection`). |
-| Any other HTTP API | Write a plugin: read one from the catalog with `get_plugin` as a model, describe the routes the app calls (paths, bodies, the provider's real status codes and errors, a clear `sentence` per answer), save it with `put_plugin` and check it with `validate_plugin`. If you do not know the provider's API well, first install a recorder (`install_plugin` with `plugin=empty, service=<name>`), run the app, and build the plugin from what it sent. |
+| Any other HTTP API | Write a plugin: read one from the catalog with `get_plugin` as a model, describe the routes the app calls (paths, bodies, the provider's real status codes and errors, a clear `sentence` per answer), save it with `put_plugin` and check it with `validate_plugin`. If you do not know the provider's API well, first install a recorder (`install_plugin` with `plugin=empty, service=<name>`), run the app and build the plugin from what it sent. |
 
 Plugin format and expressions: https://github.com/edivanteixeira/stuntman/blob/main/docs/plugins.md
 
@@ -178,7 +178,7 @@ How to write it, in this order of preference:
 2. Otherwise a new `.env.stuntman` file, plus one line telling the developer how to load it.
 
 **Show the full change first and wait for a yes.** If a production file is the only place a URL lives, do not edit
-it: explain and propose an environment variable override instead.
+it: explain and propose an environment-variable override instead.
 
 ## Step 7 of 8 — Prove it
 
@@ -202,7 +202,7 @@ Finish with one message in the developer's language, shaped like this:
   Welcome to Stuntman — <project name> is ready
 ════════════════════════════════════════════════════════════
 
-  Screen            http://localhost:8025          watch every call here
+  Web UI            http://localhost:8025          watch every call here
   MCP               http://localhost:8025/mcp      already connected to me
   HTTP API          http://localhost:8025/api      GET /api/tools lists everything
 
@@ -222,7 +222,7 @@ Finish with one message in the developer's language, shaped like this:
 ════════════════════════════════════════════════════════════
 ```
 
-Keep the frame, translate the words, fill in the real values, and list only what you actually set up.
+Keep the frame, translate the words, fill in the real values and list only what you actually set up.
 
 ---
 

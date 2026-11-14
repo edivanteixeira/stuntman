@@ -6,7 +6,7 @@ run next to your app in development, CI and staging.
 ## What is not protected today
 
 - **There is no sign-in yet.** Anyone who reaches port `8025` can read every message, change every rule, provoke
-  failures and run every tool, over the screen, the HTTP API or MCP.
+  failures and run every tool, over the web UI, the HTTP API or MCP.
 - **There are no API keys yet.** Keys per agent, with roles and environments, are designed and will come.
 - **Provider credentials are accepted loosely by design.** Any SendGrid key, any SMTP login, any Service Bus key is
   accepted unless you tighten it per service.

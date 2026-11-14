@@ -31,7 +31,7 @@ cd engine
 docker compose up -d          # add --build to build the image from source
 ```
 
-One container serves everything: the screen, the HTTP API (`/api`), MCP (`/mcp`) and every provider on its own port.
+One container serves everything: the web UI, the HTTP API (`/api`), MCP (`/mcp`) and every provider on its own port.
 Data lives in the `stuntman-data` volume. Open <http://localhost:8025>.
 
 Every port binds to `127.0.0.1` by default. To reach Stuntman from other machines, read [Security](security.md) first,
@@ -39,7 +39,7 @@ then see [Configuration › Docker](configuration.md#docker).
 
 ### From source
 
-You need Rust (stable) and [Trunk](https://trunkrs.dev) for the screen.
+You need Rust (stable) and [Trunk](https://trunkrs.dev) for the web UI.
 
 ```sh
 cd engine
@@ -68,7 +68,7 @@ Change **base URLs only**. Your app keeps its code, its SDKs and its settings.
 | OpenTelemetry | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` (or gRPC `:4317`) |
 | Your own webhooks | target URL | `http://localhost:8027/in/<inbox>` |
 
-The screen shows each value ready to copy, with your host name filled in.
+The web UI shows each value ready to copy, with your host name filled in.
 Azure SDKs need an IP address (`127.0.0.1`) in blob endpoints, as with Azurite.
 
 > **Tip:** ask your agent to do this step. It can read your code, find every provider, install the plugins and

@@ -67,7 +67,7 @@ data/
   keys/                  the events signing key and the Stuntman Test CA
 ```
 
-The YAML files are the source of truth; the screen and the tools edit them. You can keep a folder of environments
+The YAML files are the source of truth; the web UI and the tools edit them. You can keep a folder of environments
 in git and start Stuntman from it.
 
 ## The Stuntman Test CA

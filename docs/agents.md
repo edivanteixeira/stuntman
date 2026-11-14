@@ -1,6 +1,6 @@
 # Agents
 
-Stuntman is built for coding agents that test their own work. Every action on the screen is also an
+Stuntman is built for coding agents that test their own work. Every action in the UI is also an
 **MCP tool** and an **HTTP route** with the same name and the same arguments, and the timeline records who acted:
 you, an agent over MCP, or a script over HTTP.
 

@@ -30,7 +30,7 @@ python3 tools/gen_tool_reference.py
 1. **Synthetic data only.** People, companies and addresses are made up (`@example.com`, Acme, Globex). Never paste
    real customer data, real tokens or production logs, not even in tests.
 2. **The provider's words.** Sentences on the timeline read like the provider would say them.
-3. **Text is the source of truth.** Anything the screen can change must round-trip through the YAML.
+3. **Text is the source of truth.** Anything the web UI can change must round-trip through the YAML.
 4. **Safe by default.** Nothing reaches the network or the disk unless it is declared.
 5. **One line, one crate.** A new line implements the module interface and does not touch the others.
 

@@ -117,7 +117,7 @@ hosts, SDK packages and setting names. Do not print secret values you come acros
 | **Secrets** | `vault.azure.net`, `Azure.Security.KeyVault.*`, `DefaultAzureCredential`, managed identity |
 | **Telemetry** | `OTEL_EXPORTER_OTLP_ENDPOINT`, OpenTelemetry exporters |
 | **Webhook inboxes** | URLs the app **sends** webhooks to (partner callbacks, notification targets) |
-| **HTTP API plugins** | reCAPTCHA (`google.com/recaptcha`), Cloudflare Turnstile (`challenges.cloudflare.com`), and **any other external base URL** |
+| **HTTP API plugins** | reCAPTCHA (`google.com/recaptcha`), Cloudflare Turnstile (`challenges.cloudflare.com`) and **any other external base URL** |
 
 Call `list_plugins` to see which HTTP providers already have a plugin in the catalog.
 
@@ -232,12 +232,12 @@ Keep the frame, translate the words, fill in the real values and list only what 
 |---|---|
 | `docker: command not found` | Docker is not installed. Ask the developer to install Docker Desktop, OrbStack or Colima, then continue. |
 | Port already in use | `lsof -i :<port>`; ask whether to stop that process or map Stuntman to another host port (`-p 127.0.0.1:18025:8025`) and use that port in every URL. |
-| Azure SDK rejects the blob endpoint | Use `127.0.0.1` instead of `localhost`, and `http`, exactly as in the table. |
+| Azure SDK rejects the blob endpoint | Use `http` and `127.0.0.1` (not `localhost`), exactly as in the table. |
 | TLS errors (Key Vault, `:8443`, AMQPS) | Trust the Stuntman Test CA (`/api/test-ca.pem`) for the app's process only — never system-wide on a machine that talks to real providers. |
 | A call shows up in `list_unmatched` | The plugin has no route for it: add the route with `put_plugin`. |
 | The MCP server does not appear | Continue over HTTP (`/api`); tell the developer to restart their agent later to get MCP. |
 
 ## Safety, again
 
-Stuntman has **no sign-in yet**. Keep every port on `127.0.0.1` (as in Step 2). Never expose it to a network,
-never point production at it, and never put real customer data into it.
+Stuntman has **no sign-in yet**. Keep every port on `127.0.0.1` (as in Step 2). Never expose it beyond this machine,
+never point production at it and never put real customer data into it.

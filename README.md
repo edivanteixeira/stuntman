@@ -19,7 +19,7 @@
   <a href="docs/reference/tools.md">Tool reference</a>
 </p>
 
-> **Status: early.** Stuntman is a working name. It runs and is used every day against a real product's staging,
+> **Status: early.** Stuntman is a working name. It runs and is used every day against a real product's staging environment,
 > but the plugin format may still change and there is **no sign-in yet**. Read [Security](docs/security.md)
 > before you put it anywhere other people can reach.
 
@@ -33,7 +33,7 @@ Set up Stuntman for this project: read https://edivanteixeira.github.io/stuntman
 
 The agent asks which language you prefer, starts Stuntman with Docker, finds every provider your project calls,
 shows you each change before making it, points your local configuration at Stuntman, proves nothing still reaches a
-real provider, and ends with every link ready. The guide it follows is [open to read](site/static/agent-setup.md).
+real provider and ends with every link ready. The guide it follows is [open to read](site/static/agent-setup.md).
 
 ---
 
@@ -43,9 +43,9 @@ Staging talks to providers you do not control. That costs money, sends real mess
 never shows you the cases that break production: the SMS that never arrives, the user who answers on WhatsApp,
 the upload that fails twice, the token that expires mid-flow.
 
-Stuntman takes the providers' place. Your app keeps its code and its settings; only the base URLs change.
+Stuntman takes the providers' place. Your app keeps its code and every other setting; only the base URLs change.
 Stuntman answers with the provider's own paths, bodies and status codes, keeps their state, sends their
-callbacks back, and **fails exactly when you ask it to**.
+callbacks back and **fails exactly when you ask it to**.
 
 ## Built for agents that test their own work
 
@@ -128,7 +128,7 @@ claude mcp add --transport http stuntman http://localhost:8025/mcp
 
 | | |
 |---|---|
-| ![The timeline: every call as a sentence in the provider's words](docs/images/screen-timeline.png) **Timeline.** Every call as a sentence, who made it, and what was provoked. | ![A storage rule: fail the first two uploads, then answer normally](docs/images/screen-rules.png) **Rules.** Which requests, what to answer, how often. Tried before saved. |
+| ![The timeline: every call as a sentence in the provider's words](docs/images/screen-timeline.png) **Timeline.** Every call as a sentence, who made it and what was provoked. | ![A storage rule: fail the first two uploads, then answer normally](docs/images/screen-rules.png) **Rules.** Which requests, what to answer, how often. Tried before saved. |
 | ![The route editor with the plugin YAML beside it](docs/images/screen-route-editor.png) **Plugins.** Edit a route in the UI; the YAML beside it stays the source of truth. | ![Environments: STG-A, STG-B, STG-C and a pull-request copy that expires](docs/images/screen-environments.png) **Environments.** One process, many environments; clone one per pull request. |
 
 <sub>Screens use synthetic data.</sub>

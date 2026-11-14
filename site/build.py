@@ -399,7 +399,7 @@ def failures():
 <section class="wrap section"><div class="split">
   <div class="stack">{head(2, "A rule is a file, too.", "Edit it in the UI and try it against the last 50 requests before saving. It is saved in <code>storage/rules/&lt;service&gt;.yaml</code>, and an agent creates the same rule with one tool call.")}
   {code('create_rule {\n  "service": "azure-blob",\n  "name": "Contract uploads fail twice",\n  "when": {"op": "put", "container": "documents",\n           "path": "contracts/**"},\n  "then": {"respond": "503"},\n  "how_often": {"first": 2}\n}')}</div>
-  {shot(p, "rules", "The rule editor: when, then, how often, and what the app will see", [pin(1, 470, 137)])}
+  {shot(p, "rules", "The rule editor: when, then, how often and what the app will see", [pin(1, 470, 137)])}
 </div></section>
 <section class="wrap section"><div class="split">
   <div class="stack">{head(2, "Callbacks your app must verify.", "Stuntman signs callbacks the way each provider does: ECDSA for SendGrid, the app secret for Meta, HMAC for your own inboxes. Ask for a badly signed or replayed one and check that your app rejects it.")}
@@ -502,7 +502,7 @@ def environments():
 </section>
 <section class="wrap section"><div class="split">
   {head(2, "Clone, start empty or start from files.", "Pick what comes along: services and their files, rules, inboxes, secrets and, optionally, the state. Set how long it lives and where its callbacks go.")}
-  {shot(p, "new-environment", "New environment: a copy, empty, or from files")}
+  {shot(p, "new-environment", "New environment: a copy, empty or from files")}
 </div></section>
 {next_link(p)}""")
 

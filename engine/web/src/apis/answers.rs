@@ -32,6 +32,8 @@ pub fn Answers() -> impl IntoView {
     let draft = RwSignal::new(Value::Null);
     let err = RwSignal::new(String::new());
     let force_count = RwSignal::new("3".to_string());
+    let svcs = super::services();
+    let soap = Memo::new(move |_| svcs.get().iter().find(|x| s(x, "name") == service.get()).map(|x| !x["soap"].is_null()).unwrap_or(false));
     let load = move || {
         let sv = service.get_untracked();
         leptos::task::spawn_local(async move {
@@ -59,13 +61,13 @@ pub fn Answers() -> impl IntoView {
     });
     let dirty = Memo::new(move |_| {
         let (a, b) = (saved.get(), draft.get());
-        if b.is_null() { 0 } else if a.is_null() { 1 } else { ["/name", "/status", "/body", "/headers", "/raw", "/sentence"].iter().filter(|p| a.pointer(p) != b.pointer(p)).count() }
+        if b.is_null() { 0 } else if a.is_null() { 1 } else { ["/name", "/status", "/body", "/headers", "/raw", "/sentence", "/fault"].iter().filter(|p| a.pointer(p) != b.pointer(p)).count() }
     });
     let save = move |_| {
         let (sv, d, o) = (service.get_untracked(), draft.get_untracked(), saved.get_untracked());
         let name = s(&d, "name");
         let old = if o.is_null() { name.clone() } else { s(&o, "name") };
-        let body = json!({"old_name": old, "status": d["status"], "body": s(&d, "body"), "headers": d["headers"].clone().as_object().cloned().unwrap_or_default(), "raw": d["raw"] == true, "sentence": s(&d, "sentence")});
+        let body = json!({"old_name": old, "status": d["status"], "body": s(&d, "body"), "headers": d["headers"].clone().as_object().cloned().unwrap_or_default(), "raw": d["raw"] == true, "sentence": s(&d, "sentence"), "fault": d["fault"].clone()});
         leptos::task::spawn_local(async move {
             match api::send("PUT", &format!("/plugins/{}/answers/{}", enc(&sv), enc(&name)), body).await {
                 Ok(v) => { err.set(String::new()); saved.set(v["answer"].clone()); draft.set(v["answer"].clone()); sel.set(name); ui::toast("Saved"); load(); }
@@ -103,7 +105,7 @@ pub fn Answers() -> impl IntoView {
                         let st = api::n(&x, "status");
                         let unused = a["usedBy"].as_array().map(|u| u.is_empty()).unwrap_or(true);
                         view! { <div class="crow" class:on=move || sel.get() == n1 on:click=move |_| { if dirty.get_untracked() == 0 { sel.set(s(&x2, "name")); saved.set(x2.clone()); draft.set(x2.clone()); } else { ui::toast_err("Save or discard the change first") } }>
-                            <span class:cap=unused>{n.replace('_', " ")}</span><span class="mono small" class:ok={st < 300} class:attn={(300..500).contains(&st) && st != 401} class:danger={st >= 400}>{st}</span></div> }
+                            <span class:cap=unused>{n.replace('_', " ")}</span>{if x["fault"].is_object() { view! { <span class="small danger">"fault"</span> }.into_any() } else { view! { <span class="mono small" class:ok={st < 300} class:attn={(300..500).contains(&st) && st != 401} class:danger={st >= 400}>{st}</span> }.into_any() }}</div> }
                     }).collect_view()}
                     <button class="link add" on:click=move |_| { sel.set("\u{0}new".into()); saved.set(Value::Null); draft.set(json!({"name": "new_answer", "status": 200, "body": "{\n  \"ok\": true\n}", "sentence": ""})); }>"+ New answer"</button>
                     <div class="small cap" style="padding:8px 24px">"Slow is not an answer: set latency on the route or in Auth and limits."</div>
@@ -122,7 +124,20 @@ pub fn Answers() -> impl IntoView {
                                 <select class="select" on:change=move |e| draft.update(|x| x["status"] = json!(event_target_value(&e).parse::<u64>().unwrap_or(200)))>
                                     {STATUSES.iter().map(|(c, l)| { let on = *c as i64 == st; view! { <option value=c.to_string() selected=on>{*l}</option> } }).collect_view()}</select>
                                 <label class="check" style="margin-left:14px"><input type="checkbox" prop:checked=d["raw"] == true on:change=move |e| draft.update(|x| x["raw"] = json!(event_target_checked(&e)))/>"Malformed on purpose (raw, not checked)"</label></div>
-                            <div class="field" style="margin-top:14px"><label>"Body"</label>
+                            {move || soap.get().then(|| { let d = draft.get(); let is_fault = d["fault"].is_object(); view! {
+                                <div class="row" style="margin-top:14px"><span style="width:80px">"Kind"</span>
+                                    <button class="btn" class:primary=!is_fault on:click=move |_| draft.update(|x| { x["fault"] = Value::Null; if api::n(x, "status") == 500 { x["status"] = json!(200); } })>"Response"</button>
+                                    <button class="btn" class:primary=is_fault on:click=move |_| draft.update(|x| { if !x["fault"].is_object() { x["fault"] = json!({"code": "Sender", "reason": s(x, "name").replace('_', " ")}); x["status"] = json!(500); } })>"Fault"</button></div>
+                                {is_fault.then(|| { let code = s(&d["fault"], "code"); view! {
+                                    <div class="row" style="margin-top:10px"><span style="width:80px">"Code"</span>
+                                        <select class="select" on:change=move |e| draft.update(|x| x["fault"]["code"] = json!(event_target_value(&e)))>
+                                            {["Sender", "Receiver"].into_iter().map(|c| view! { <option value=c selected=code == c>{c}</option> }).collect_view()}</select>
+                                        <span class="small cap">"SOAP 1.2 faults go out as 500, as real stacks send them; 1.1 says Client and Server."</span></div>
+                                    <div class="field" style="margin-top:10px"><label>"Reason"</label>
+                                        <input class="input" placeholder="Coverage exceeded: cargo value {{ body.cargoValue }}" prop:value=s(&d["fault"], "reason") on:change=move |e| draft.update(|x| x["fault"]["reason"] = json!(event_target_value(&e)))/></div>
+                                } })}
+                            } })}
+                            <div class="field" style="margin-top:14px"><label>{move || if !soap.get() { "Body" } else if draft.get()["fault"].is_object() { "Detail (XML, from the WSDL's fault type)" } else { "Body (the element inside soap:Body)" }}</label>
                                 <textarea class="yaml" style="min-height:220px" prop:value=s(&d, "body") on:input=move |e| draft.update(|x| x["body"] = json!(event_target_value(&e)))></textarea>
                                 <div class="small cap">"{{ … }} fills from the request, the lets and the data. Checked against the route's schema unless malformed on purpose."</div></div>
                             <div class="field" style="margin-top:12px"><label>"Headers"</label>

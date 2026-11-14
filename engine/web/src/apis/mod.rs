@@ -5,6 +5,7 @@ pub mod answers;
 pub mod area;
 pub mod auth;
 pub mod calls;
+pub mod operations;
 pub mod pages;
 pub mod routes;
 pub mod settings;
@@ -49,7 +50,7 @@ pub fn PluginHead(service: String, active: &'static str, #[prop(into)] right: Vi
         <div class="head">
             <div class="top">
                 <div class="titled">
-                    <div class="kind">{move || { let c = cur.get(); let o = origin_line(&c); if o.is_empty() { "HTTP API".to_string() } else { format!("HTTP API  ·  {o}") } }}</div>
+                    <div class="kind">{move || { let c = cur.get(); let mut o = origin_line(&c); if !c["soap"].is_null() { o = format!("SOAP {}  ·  {o}", s(&c["soap"], "version")); } if o.is_empty() { "HTTP API".to_string() } else { format!("HTTP API  ·  {o}") } }}</div>
                     <h1>{move || { let c = cur.get(); if none { "No services yet".to_string() } else if c.is_null() { service.clone() } else { s(&c, "title") } }}</h1>
                 </div>
                 <span class="grow"></span>
@@ -61,7 +62,7 @@ pub fn PluginHead(service: String, active: &'static str, #[prop(into)] right: Vi
                     let sv = cur;
                     view! {
                         <div class="tab" class:on=active == key class:hidden=move || key == "pages" && api::n(&sv.get(), "pages") == 0 on:click=move |_| nav(&format!("/apis/{}{tail}", enc(&s(&sv.get_untracked(), "name"))), Default::default())>
-                            {label}<span class="n">{move || match key { "calls" => api::thousands(api::n(&sv.get(), "callsToday")), "routes" => api::n(&sv.get(), "routes").to_string(), "answers" => api::n(&sv.get(), "answers").to_string(), "pages" => api::n(&sv.get(), "pages").to_string(), _ => String::new() }}</span></div>
+                            {move || if key == "routes" && !sv.get()["soap"].is_null() { "Operations" } else { label }}<span class="n">{move || match key { "calls" => api::thousands(api::n(&sv.get(), "callsToday")), "routes" if !sv.get()["soap"].is_null() => api::n(&sv.get(), "operations").to_string(), "routes" => api::n(&sv.get(), "routes").to_string(), "answers" => api::n(&sv.get(), "answers").to_string(), "pages" => api::n(&sv.get(), "pages").to_string(), _ => String::new() }}</span></div>
                     }
                 }).collect_view()}
             </div>

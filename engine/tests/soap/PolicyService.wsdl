@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Example Insurance · cargo policies over SOAP 1.2. A synthetic provider for Stuntman's docs and tests. -->
+<wsdl:definitions name="ExampleInsurance" targetNamespace="urn:example:insurance"
+    xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/" xmlns:soap12="http://schemas.xmlsoap.org/wsdl/soap12/"
+    xmlns:tns="urn:example:insurance" xmlns:c="urn:example:common" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <wsdl:types>
+    <xs:schema targetNamespace="urn:example:insurance" elementFormDefault="qualified">
+      <xs:import namespace="urn:example:common" schemaLocation="common.xsd"/>
+      <xs:element name="RegisterShipmentRequest">
+        <xs:complexType><xs:sequence>
+          <xs:element name="shipmentNumber" type="xs:string"/>
+          <xs:element name="cargoValue" type="xs:decimal"/>
+          <xs:element name="insurer" type="xs:string"/>
+          <xs:element name="departure" type="xs:date"/>
+          <xs:element name="destination" type="c:Address"/>
+          <xs:element name="notes" type="xs:string" minOccurs="0"/>
+        </xs:sequence></xs:complexType>
+      </xs:element>
+      <xs:element name="RegisterShipmentResponse">
+        <xs:complexType><xs:sequence>
+          <xs:element name="protocol" type="xs:string"/>
+          <xs:element name="status" type="c:ShipmentStatus"/>
+          <xs:element name="insurer" type="xs:string"/>
+        </xs:sequence></xs:complexType>
+      </xs:element>
+      <xs:element name="CancelShipmentRequest">
+        <xs:complexType><xs:sequence><xs:element name="protocol" type="xs:string"/></xs:sequence></xs:complexType>
+      </xs:element>
+      <xs:element name="CancelShipmentResponse">
+        <xs:complexType><xs:sequence><xs:element name="cancelled" type="xs:boolean"/></xs:sequence></xs:complexType>
+      </xs:element>
+      <xs:element name="GetStatusRequest">
+        <xs:complexType><xs:sequence><xs:element name="protocol" type="xs:string"/></xs:sequence></xs:complexType>
+      </xs:element>
+      <xs:element name="GetStatusResponse">
+        <xs:complexType><xs:sequence>
+          <xs:element name="protocol" type="xs:string"/>
+          <xs:element name="status" type="c:ShipmentStatus"/>
+        </xs:sequence></xs:complexType>
+      </xs:element>
+      <xs:element name="Ping"><xs:complexType><xs:sequence/></xs:complexType></xs:element>
+      <xs:element name="Pong"><xs:complexType><xs:sequence><xs:element name="at" type="xs:dateTime"/></xs:sequence></xs:complexType></xs:element>
+      <xs:element name="StatusChanged">
+        <xs:complexType><xs:sequence>
+          <xs:element name="protocol" type="xs:string"/>
+          <xs:element name="status" type="c:ShipmentStatus"/>
+        </xs:sequence></xs:complexType>
+      </xs:element>
+      <xs:element name="CoverageExceeded">
+        <xs:complexType><xs:sequence><xs:element name="limit" type="xs:decimal"/><xs:element name="requested" type="xs:decimal"/></xs:sequence></xs:complexType>
+      </xs:element>
+      <xs:element name="PolicySuspended">
+        <xs:complexType><xs:sequence><xs:element name="insurer" type="xs:string"/></xs:sequence></xs:complexType>
+      </xs:element>
+      <xs:element name="ShipmentNotFound">
+        <xs:complexType><xs:sequence><xs:element name="protocol" type="xs:string"/></xs:sequence></xs:complexType>
+      </xs:element>
+    </xs:schema>
+  </wsdl:types>
+
+  <wsdl:message name="RegisterShipmentIn"><wsdl:part name="body" element="tns:RegisterShipmentRequest"/></wsdl:message>
+  <wsdl:message name="RegisterShipmentOut"><wsdl:part name="body" element="tns:RegisterShipmentResponse"/></wsdl:message>
+  <wsdl:message name="CancelShipmentIn"><wsdl:part name="body" element="tns:CancelShipmentRequest"/></wsdl:message>
+  <wsdl:message name="CancelShipmentOut"><wsdl:part name="body" element="tns:CancelShipmentResponse"/></wsdl:message>
+  <wsdl:message name="GetStatusIn"><wsdl:part name="body" element="tns:GetStatusRequest"/></wsdl:message>
+  <wsdl:message name="GetStatusOut"><wsdl:part name="body" element="tns:GetStatusResponse"/></wsdl:message>
+  <wsdl:message name="PingIn"><wsdl:part name="body" element="tns:Ping"/></wsdl:message>
+  <wsdl:message name="PingOut"><wsdl:part name="body" element="tns:Pong"/></wsdl:message>
+  <wsdl:message name="StatusChangedOut"><wsdl:part name="body" element="tns:StatusChanged"/></wsdl:message>
+  <wsdl:message name="CoverageExceededFault"><wsdl:part name="detail" element="tns:CoverageExceeded"/></wsdl:message>
+  <wsdl:message name="PolicySuspendedFault"><wsdl:part name="detail" element="tns:PolicySuspended"/></wsdl:message>
+  <wsdl:message name="ShipmentNotFoundFault"><wsdl:part name="detail" element="tns:ShipmentNotFound"/></wsdl:message>
+
+  <wsdl:portType name="PolicyPort">
+    <wsdl:operation name="RegisterShipment">
+      <wsdl:input message="tns:RegisterShipmentIn"/><wsdl:output message="tns:RegisterShipmentOut"/>
+      <wsdl:fault name="CoverageExceeded" message="tns:CoverageExceededFault"/>
+      <wsdl:fault name="PolicySuspended" message="tns:PolicySuspendedFault"/>
+    </wsdl:operation>
+    <wsdl:operation name="CancelShipment">
+      <wsdl:input message="tns:CancelShipmentIn"/><wsdl:output message="tns:CancelShipmentOut"/>
+      <wsdl:fault name="ShipmentNotFound" message="tns:ShipmentNotFoundFault"/>
+    </wsdl:operation>
+    <wsdl:operation name="GetStatus"><wsdl:input message="tns:GetStatusIn"/><wsdl:output message="tns:GetStatusOut"/></wsdl:operation>
+    <wsdl:operation name="Ping"><wsdl:input message="tns:PingIn"/><wsdl:output message="tns:PingOut"/></wsdl:operation>
+    <!-- A notification: the provider calls the app back. -->
+    <wsdl:operation name="StatusChanged"><wsdl:output message="tns:StatusChangedOut"/></wsdl:operation>
+  </wsdl:portType>
+
+  <wsdl:binding name="PolicyBinding" type="tns:PolicyPort">
+    <soap12:binding transport="http://schemas.xmlsoap.org/soap/http" style="document"/>
+    <wsdl:operation name="RegisterShipment"><soap12:operation soapAction="urn:example:insurance/RegisterShipment"/></wsdl:operation>
+    <wsdl:operation name="CancelShipment"><soap12:operation soapAction="urn:example:insurance/CancelShipment"/></wsdl:operation>
+    <wsdl:operation name="GetStatus"><soap12:operation soapAction="urn:example:insurance/GetStatus"/></wsdl:operation>
+    <wsdl:operation name="Ping"><soap12:operation soapAction="urn:example:insurance/Ping"/></wsdl:operation>
+  </wsdl:binding>
+
+  <wsdl:service name="PolicyService">
+    <wsdl:port name="PolicyPort" binding="tns:PolicyBinding">
+      <soap12:address location="https://insurance.example.com/PolicyService"/>
+    </wsdl:port>
+  </wsdl:service>
+</wsdl:definitions>

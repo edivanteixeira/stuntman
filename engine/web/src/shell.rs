@@ -68,7 +68,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/apis/new") view=|| view! { <apis::area::Area><apis::area::NewService/></apis::area::Area> }/>
                     <Route path=path!("/apis/:service") view=|| view! { <apis::area::Area><apis::calls::Calls/></apis::area::Area> }/>
                     <Route path=path!("/apis/:service/calls") view=|| view! { <apis::area::Area><apis::calls::Calls/></apis::area::Area> }/>
-                    <Route path=path!("/apis/:service/routes") view=|| view! { <apis::area::Area><apis::routes::Routes/></apis::area::Area> }/>
+                    <Route path=path!("/apis/:service/routes") view=|| view! { <apis::area::Area><apis::operations::RoutesOrOperations/></apis::area::Area> }/>
                     <Route path=path!("/apis/:service/answers") view=|| view! { <apis::area::Area><apis::answers::Answers/></apis::area::Area> }/>
                     <Route path=path!("/apis/:service/pages") view=|| view! { <apis::area::Area><apis::pages::Pages/></apis::area::Area> }/>
                     <Route path=path!("/catalog") view=catalog::Store/>

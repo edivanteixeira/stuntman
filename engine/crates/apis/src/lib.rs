@@ -9,6 +9,7 @@ pub mod expr;
 pub mod pades;
 pub mod people;
 pub mod restpki;
+pub mod soap;
 pub mod steps;
 pub mod plugin;
 pub mod store;

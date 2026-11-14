@@ -34,3 +34,5 @@ png = "0.17"
 flate2 = "1"
 sha1 = "0.10"
 x509-parser = "0.18"
+# SOAP: envelopes and WSDLs.
+roxmltree = "0.20"

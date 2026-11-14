@@ -216,7 +216,7 @@ fn show_field(v: &Value) -> Value {
 }
 
 /// The first leaves of an answer body, for "Stuntman answered".
-fn leaves(v: &Value, prefix: &str, out: &mut Vec<(String, Value)>) {
+pub fn leaves(v: &Value, prefix: &str, out: &mut Vec<(String, Value)>) {
     if out.len() >= 10 {
         return;
     }
@@ -656,6 +656,14 @@ pub fn send_webhooks(ctx: &Ctx, call_id: &str, r: &Route, sc: Map<String, Value>
             }
             let url = expr::render(&s.url, &sc).unwrap_or_default();
             let body = expr::render(&s.body, &sc).unwrap_or_default();
+            // A SOAP callback: the body is the payload, inside an envelope of the call's version.
+            if !s.operation.is_empty() {
+                let v = sc.get("soap_version").and_then(|v| v.as_str()).unwrap_or("1.2").to_string();
+                let t0 = std::time::Instant::now();
+                let (status, err) = match crate::soap::post(&ctx, &url, &v, &s.operation, &body).await { Ok((st, _)) => (Some(st), String::new()), Err(e) => (None, e) };
+                let _ = store::add_send(&ctx, &id, json!({"at": util::now_ms(), "url": url, "operation": s.operation, "status": status, "error": err, "ms": t0.elapsed().as_millis() as i64})).await;
+                return;
+            }
             let mut req = ctx.http.request(s.method.parse().unwrap_or(reqwest::Method::POST), &url).header("content-type", "application/json").body(body.clone());
             if !s.secret.is_empty() {
                 use hmac::Mac;
@@ -762,6 +770,22 @@ pub async fn handle(State(envs): State<Envs>, mut req: Request) -> Response {
             let o = crate::steps::open(&ctx, p, idx, &rq, &base).await;
             let label = p.pages[idx].route.clone();
             return finish(&ctx, p, None, &label, &method, &path, &inner, &query, &headers, &rq, o, t0, kill).await;
+        }
+    }
+    // A SOAP service (A7): ?wsdl and its XSDs, and envelopes on the endpoint.
+    if let Some(sp) = &p.soap {
+        if method == "GET" || method == "HEAD" {
+            if let Some(r) = crate::soap::serve_file(&ctx, p, &inner, &query) {
+                return r;
+            }
+        }
+        if method == "POST" && inner.trim_end_matches('/').eq_ignore_ascii_case(sp.endpoint.trim_end_matches('/')) {
+            let (r, o) = crate::soap::serve(&ctx, p, &rq, false).await;
+            if o.latency_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(o.latency_ms)).await;
+            }
+            let label = r.as_ref().map(|r| format!("SOAP {}", r.operation)).unwrap_or_else(|| "SOAP".into());
+            return finish(&ctx, p, r.as_ref(), &label, &method, &path, &inner, &query, &headers, &rq, o, t0, kill).await;
         }
     }
     let Some((r, params)) = p.routes.iter().find_map(|r| {

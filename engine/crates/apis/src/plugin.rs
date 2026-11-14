@@ -210,6 +210,9 @@ pub struct Send {
     pub secret: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub header: String,
+    /// A SOAP callback: the body is the payload, sent inside an envelope with this SOAPAction.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub operation: String,
 }
 fn post() -> String {
     "POST".into()
@@ -217,8 +220,21 @@ fn post() -> String {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 pub struct Route {
-    /// "POST /datavalid/v5/pessoa-fisica/validacao", {name} segments are path params.
+    /// "POST /datavalid/v5/pessoa-fisica/validacao", {name} segments are path params. Empty for a
+    /// SOAP operation.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub route: String,
+    /// A SOAP operation (under `operations:`): its name in the WSDL.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub operation: String,
+    /// The SOAPAction that picks this operation (from the WSDL binding).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub action: String,
+    /// The request and response elements (keys of soap.types).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub input: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub output: String,
     #[serde(default, skip_serializing_if = "is_false")]
     pub billable: bool,
     /// The OAuth2 token endpoint of this service (client credentials).
@@ -264,6 +280,9 @@ pub struct Route {
 
 impl Route {
     pub fn method_path(&self) -> (String, String) {
+        if !self.operation.is_empty() {
+            return ("SOAP".into(), self.operation.clone());
+        }
         let mut p = self.route.trim().splitn(2, ' ');
         let m = p.next().unwrap_or("GET").to_uppercase();
         let path = p.next().unwrap_or("/").trim().to_string();
@@ -290,6 +309,55 @@ pub struct Answer {
     /// What this answer means, shown under its name.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
+    /// A SOAP fault instead of a response; the body (if any) is its detail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fault: Option<Fault>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Fault {
+    /// Sender | Receiver (SOAP 1.2); Client | Server are the same in 1.1.
+    #[serde(default = "sender")]
+    pub code: String,
+    /// A template: "Coverage exceeded: {{ body.cargoValue }}".
+    pub reason: String,
+}
+fn sender() -> String {
+    "Sender".into()
+}
+
+/// A SOAP service: made from the provider's WSDL. Operations take the same steps as routes.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Soap {
+    /// "1.1", "1.2", or both (the WSDL has both bindings: each call is answered in its own version)
+    #[serde(default = "v12")]
+    pub version: String,
+    /// The path the provider answers on, e.g. /PolicyService.
+    pub endpoint: String,
+    /// Where the WSDL came from (a URL): reimport_wsdl reads it again.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
+    /// The WSDL file kept next to the plugin (apis/<service>.soap/<file>), served back on ?wsdl.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub wsdl: String,
+    /// Bodies are checked against `types`; a wrong one gets the provider's validation fault.
+    #[serde(default = "yes")]
+    pub validate: bool,
+    /// "" (none) | any (a UsernameToken, any password) | username_token (checked against users).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub security: String,
+    /// user → secret://password, for security: username_token.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub users: BTreeMap<String, String>,
+    /// Element → its fields: {shipmentNumber: string, cargoValue: decimal, notes?: string, items*: Item}.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub types: BTreeMap<String, BTreeMap<String, String>>,
+    /// Element → its target namespace.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub namespace: String,
+}
+fn v12() -> String {
+    "1.2".into()
 }
 fn s200() -> u16 {
     200
@@ -412,7 +480,7 @@ impl Page {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 pub struct Plugin {
     pub service: Service,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<Route>,
     #[serde(default)]
     pub answers: Vec<Answer>,
@@ -422,6 +490,12 @@ pub struct Plugin {
     /// Pages Stuntman draws for this provider (authorize, approval).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pages: Vec<Page>,
+    /// A SOAP service (A7): envelope, WSDL, types.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub soap: Option<Soap>,
+    /// The SOAP operations, with the same steps as routes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operations: Vec<Route>,
 }
 
 /// Generic answers every service has (A1 "next calls answer", A3 route `fail`).
@@ -504,13 +578,27 @@ pub fn validate(p: &Plugin, t: &str) -> Vec<Value> {
     }
     let names: Vec<&str> = p.answers.iter().map(|a| a.name.as_str()).collect();
     let mut seen = std::collections::HashSet::new();
-    for r in &p.routes {
+    if !p.operations.is_empty() && p.soap.is_none() {
+        err("operations need a soap: block (version, endpoint)".into(), "operations:");
+    }
+    if let Some(sp) = &p.soap {
+        if !["1.1", "1.2", "both"].contains(&sp.version.as_str()) {
+            err("soap.version: \"1.1\" | \"1.2\" | both".into(), "version:");
+        }
+        if !sp.endpoint.starts_with('/') {
+            err("soap.endpoint: /path".into(), "endpoint:");
+        }
+        if !["", "none", "any", "username_token"].contains(&sp.security.as_str()) {
+            err("soap.security: none | any | username_token".into(), "security:");
+        }
+    }
+    for r in p.routes.iter().chain(p.operations.iter()) {
         let (m, path) = r.method_path();
-        if !["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"].contains(&m.as_str()) || !path.starts_with('/') {
+        if r.operation.is_empty() && (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"].contains(&m.as_str()) || !path.starts_with('/')) {
             err(format!("route “{}”: METHOD /path", r.route), &r.route);
         }
         if !seen.insert(format!("{m} {path}")) {
-            err(format!("route “{}” is there twice", r.route), &r.route);
+            err(format!("“{}” is there twice", if r.operation.is_empty() { &r.route } else { &r.operation }), if r.operation.is_empty() { &r.route } else { &r.operation });
         }
         for (k, e) in &r.lets {
             if let Err(x) = expr::parse(e) {
@@ -620,7 +708,7 @@ pub fn validate(p: &Plugin, t: &str) -> Vec<Value> {
         }
     }
     for a in &p.answers {
-        if let Err(x) = expr::check_template(&a.body).and_then(|_| expr::check_template(&a.sentence)) {
+        if let Err(x) = expr::check_template(&a.body).and_then(|_| expr::check_template(&a.sentence)).and_then(|_| expr::check_template(&a.fault.as_ref().map(|f| f.reason.clone()).unwrap_or_default())) {
             err(format!("answer {}: {x}", a.name), &format!("name: {}", a.name));
         }
     }

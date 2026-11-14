@@ -36,10 +36,11 @@ pub async fn service_view(ctx: &Ctx, p: &Plugin) -> Value {
     let base = ctx.state.file.read().unwrap().base_domain.clone();
     json!({
         "name": p.service.name, "title": if p.service.title.is_empty() { p.service.name.clone() } else { p.service.title.clone() }, "origin": p.service.origin,
-        "region": p.service.region, "description": p.service.description, "billable": p.service.billing.enabled && p.routes.iter().any(|r| r.billable),
+        "region": p.service.region, "description": p.service.description, "billable": p.service.billing.enabled && p.routes.iter().chain(p.operations.iter()).any(|r| r.billable),
         "callsToday": calls, "billableToday": billable, "costToday": (billable as f64) * p.service.billing.per_call,
         "warnAbove": warn, "overWarn": warn.map(|w| p.service.billing.enabled && billable > w).unwrap_or(false),
-        "forced": forced, "forceLog": store::force_log(ctx, Some(p.service.name.clone()), 10).await.unwrap_or_default(), "routes": p.routes.len(), "answers": p.answers.len(), "pages": p.pages.len(),
+        "forced": forced, "forceLog": store::force_log(ctx, Some(p.service.name.clone()), 10).await.unwrap_or_default(), "routes": p.routes.len(),
+        "soap": p.soap.as_ref().map(|s| json!({"version": s.version, "endpoint": s.endpoint, "wsdl": s.wsdl})), "operations": p.operations.len(), "answers": p.answers.len(), "pages": p.pages.len(),
         "mtls": p.service.auth.client_certificate.as_ref().map(|c| c.required).unwrap_or(false), "session": p.service.auth.session,
         "urls": {"local": format!("http://{ip}:{}{}/{}", crate::port(), ctx.prefix(), p.service.name), "host": format!("http://{}.{base}:{}", p.service.name, crate::port()),
                  "real": p.service.real_host, "realBase": p.service.base_url,
@@ -75,6 +76,7 @@ pub fn all() -> Vec<Tool> {
     v.extend(answers_tools());
     v.extend(service_tools());
     v.extend(crate::restpki::tools());
+    v.extend(crate::soap::tools());
     v
 }
 
@@ -268,6 +270,7 @@ fn plugin_tools() -> Vec<Tool> {
             let s = service_of(&a)?;
             plugin::get(&ctx, &s)?;
             std::fs::remove_file(plugin::file(&ctx, &s)).map_err(|e| ApiError::internal(e.to_string()))?;
+            let _ = std::fs::remove_dir_all(crate::soap::folder(&ctx, &s));
             store::wipe_service(&ctx, &s).await?;
             ctx.live.send("apis.plugin", &s, "deleted");
             Ok(json!({"removed": s}))
@@ -393,19 +396,20 @@ fn answers_tools() -> Vec<Tool> {
             let p = plugin::get(&ctx, &s)?;
             let out: Vec<Value> = p.answers.iter().map(|x| {
                 let mut used = vec![];
-                for r in &p.routes {
+                for r in p.routes.iter().chain(p.operations.iter()) {
+                    let label = if r.operation.is_empty() { r.route.clone() } else { r.operation.clone() };
                     for (i, d) in r.decide.iter().enumerate() {
                         if d.answer == x.name {
-                            used.push(json!({"route": r.route, "step": "decide", "rule": i, "when": d.when}));
+                            used.push(json!({"route": label, "step": "decide", "rule": i, "when": d.when}));
                         }
                     }
                     if let Some(w) = &r.wait {
                         if w.answer == x.name || w.then == x.name {
-                            used.push(json!({"route": r.route, "step": "wait"}));
+                            used.push(json!({"route": label, "step": "wait"}));
                         }
                     }
                     if r.receive.missing == x.name {
-                        used.push(json!({"route": r.route, "step": "receive"}));
+                        used.push(json!({"route": label, "step": "receive"}));
                     }
                 }
                 let problem = p.routes.iter().filter(|r| used.iter().any(|u| u["route"] == json!(r.route))).find_map(|r| engine::check_answer(r, x, &p));
@@ -440,13 +444,18 @@ fn answers_tools() -> Vec<Tool> {
             if let Some(t) = a.str("note") {
                 ans.note = t;
             }
+            match a.get("fault") {
+                Some(Value::Null) | Some(Value::Bool(false)) => ans.fault = None,
+                Some(f) => ans.fault = Some(serde_json::from_value(f.clone()).map_err(|e| ApiError::bad(format!("fault: {{code, reason}}: {e}")))?),
+                None => {}
+            }
             for r in p.routes.iter().filter(|r| r.decide.iter().any(|d| d.answer == old)) {
                 if let Some(e) = engine::check_answer(r, &ans, &p) {
                     return Err(ApiError::bad(e).with(json!({"route": r.route})));
                 }
             }
             if old != name {
-                for r in p.routes.iter_mut() {
+                for r in p.routes.iter_mut().chain(p.operations.iter_mut()) {
                     for d in r.decide.iter_mut().filter(|d| d.answer == old) {
                         d.answer = name.clone();
                     }
@@ -461,12 +470,13 @@ fn answers_tools() -> Vec<Tool> {
         })
         .req("service", "plugin").req("name", "answer name").param("status", "HTTP status").param("body", "template (text) or JSON").param("headers", "{name: value}").param("raw", "true: sent as typed")
         .param("sentence", "the sentence on Calls (template)").param("note", "what it means").param("old_name", "rename")
+        .param("fault", "SOAP: {code: Sender | Receiver, reason} makes it a fault (the body is its detail); null makes it a response again")
         .route("PUT", "/plugins/{service}/answers/{name}"),
         Tool::new("delete_answer", "Deletes a named answer that no route uses.", |ctx, a| async move {
             let s = service_of(&a)?;
             let mut p = plugin::get(&ctx, &s)?;
             let n = a.need("name")?;
-            if p.routes.iter().any(|r| r.decide.iter().any(|d| d.answer == n)) {
+            if p.routes.iter().chain(p.operations.iter()).any(|r| r.decide.iter().any(|d| d.answer == n)) {
                 return Err(ApiError::new(409, format!("“{n}” is used by a route; change the route first")));
             }
             p.answers.retain(|x| x.name != n);

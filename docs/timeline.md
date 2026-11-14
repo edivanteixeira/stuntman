@@ -15,7 +15,7 @@ took. Raw HTTP is one click away when you need it.
 | **Provoked** | marked on the row, with the rule or forced answer that changed it |
 | **Next** | the object, the rule, the trace, raw HTTP |
 
-Filter by service, by who acted, or show only what was provoked. Calls with the same trace id group together, so one
+Filter by service, by who acted, or show only what was provoked. Calls with the same trace ID group together, so one
 order that touched five providers reads as one journey.
 
 ## Calls that never came through
@@ -33,7 +33,7 @@ Two things can escape a test:
 
 ![Traces: spans from the app joined to the provider calls Stuntman answered](images/screen-traces.png)
 
-Stuntman takes your app's trace id on the way in and sends it back on callbacks. Spans, logs and metrics live in
+Stuntman takes your app's trace ID on the way in and sends it back on callbacks. Spans, logs and metrics live in
 their own area and open from a row, so the timeline stays readable.
 
 Point `OTEL_EXPORTER_OTLP_ENDPOINT` at `http://localhost:4318` (or gRPC `:4317`). See

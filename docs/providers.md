@@ -1,13 +1,13 @@
 # Providers
 
-Each line is an engine capability; a plugin or a flavour is one provider's version of it. For every line,
+Each line is an engine capability; a plugin or a flavor is one provider's version of it. For every line,
 Stuntman speaks the provider's protocol, keeps the provider's state, sends the provider's callbacks, and lets you
 provoke the provider's failures.
 
 Addresses below assume the default ports on `localhost`. In another environment, add `/e/<env>` after the port
 (or use its host names); see [Environments](environments.md). All ports are listed in [Configuration](configuration.md#ports).
 
-- [HTTP APIs](#http-apis) · [SMS](#sms) · [WhatsApp](#whatsapp) · [E-mail](#e-mail) · [Storage](#storage)
+- [HTTP APIs](#http-apis) · [SMS](#sms) · [WhatsApp](#whatsapp) · [Email](#email) · [Storage](#storage)
 - [Messaging](#messaging) · [Identity](#identity) · [Secrets](#secrets) · [Webhook inboxes](#webhook-inboxes) · [Telemetry](#telemetry)
 
 ---
@@ -52,9 +52,9 @@ Brazil. Writing your own: [Plugins](plugins.md).
 | **Callbacks** | Meta's messages and status webhooks, signed with your app secret |
 | **You can provoke** | 500 (#131000), 400 (#100), reset, empty, timeout (`force_whatsapp_failure`); expired tokens; text, button, image or location replies (`reply_as_user`); webhooks with a wrong, missing or old signature, or a replay (`send_bad_webhook`) |
 
-## E-mail
+## Email
 
-![E-mail messages: the rendered message, extracted code and its delivery events](images/screen-email.png)
+![Email messages: the rendered message, extracted code and its delivery events](images/screen-email.png)
 
 | | |
 |---|---|
@@ -96,7 +96,7 @@ points at Stuntman. See [Environments](environments.md#how-a-request-finds-its-e
 
 | | |
 |---|---|
-| **Speaks** | OIDC and OAuth2, in the flavour of Microsoft Entra ID (v2), Google, Okta, or generic OIDC |
+| **Speaks** | OIDC and OAuth2, in the flavor of Microsoft Entra ID (v2), Google, Okta, or generic OIDC |
 | **Point your app at** | the authority shown for the provider; discovery, JWKS and token endpoints are served per environment |
 | **It keeps** | tenants, app registrations and their redirect URIs, synthetic users with their claims, groups, roles and MFA |
 | **You can provoke** | MFA required or failing, consent required, the user cancels, wrong tenant, tokens already expired, bad signatures, IdP down (`provoke_sign_in`); discovery, JWKS or token endpoint failures (`provoke_idp`) |
@@ -138,6 +138,6 @@ Inboxes are kept with the environment or ephemeral: created by a test or an agen
 |---|---|
 | **Speaks** | OpenTelemetry OTLP over HTTP (`:4318`, protobuf or JSON) and gRPC (`:4317`) |
 | **Point your app at** | `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` |
-| **It keeps** | traces, logs and metrics in their own area, joined to the calls that caused them by trace id |
+| **It keeps** | traces, logs and metrics in their own area, joined to the calls that caused them by trace ID |
 | **You can provoke** | a collector that answers 401, 403, 429, 503, refuses, slows down or drops half (`provoke_collector`) |
 | **Also** | `real_provider_calls`: the hosts your app still calls directly, from its own spans |

@@ -95,7 +95,7 @@ Not the happy path. For example:
 
 > *Make contract uploads fail twice with a 503, then tell me whether acme-api recovers.*
 
-> *Test sign-up end to end against Stuntman: SMS down, a WhatsApp reply, an e-mail bounce, login with MFA.
+> *Test sign-up end to end against Stuntman: SMS down, a WhatsApp reply, an email bounce, login with MFA.
 > Fix what breaks.*
 
 The agent sets up the failure, runs your flow, reads what your app sent and checks the result. Everything it does

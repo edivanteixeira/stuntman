@@ -11,7 +11,7 @@ PAGES = [("index", "Home"), ("agents", "Agents"), ("providers", "Providers"), ("
 TITLES = {"index": "Stuntman — the stunt double for every provider your app calls", "agents": "Agents", "providers": "Providers",
           "failures": "Failures on cue", "timeline": "Timeline and proof", "plugins": "Plugins", "environments": "Environments",
           "start": "Get started"}
-DESC = {"index": "Stuntman stands in for SMS, WhatsApp, e-mail, storage, queues, identity, secrets and any HTTP API, "
+DESC = {"index": "Stuntman stands in for SMS, WhatsApp, email, storage, queues, identity, secrets and any HTTP API, "
                  "so you and your coding agents can test the hard cases end to end, over MCP or HTTP.",
         "agents": "Claude Code, Codex, Gemini CLI, OpenCode, Cursor and GitHub Copilot test their own work against Stuntman over MCP or HTTP.",
         "providers": "Every provider line Stuntman stands in for, what it keeps and what you can provoke.",
@@ -166,7 +166,7 @@ def agents_strip(page):
 def hero(page, title, lead, actions=True):
     crumb = "" if page == "index" else f'<p class="crumb"><a href="{rel(page, "index")}">stuntman</a> / {PAGES[[p for p, _ in PAGES].index(page)][1].lower()}</p>'
     if page == "index":
-        act = (prompt_box(page) + '<p class="hero__alt">Rather do it yourself? '
+        act = (prompt_box(page) + '<p class="hero__alt">Prefer to do it yourself? '
                '<code>docker run -p 8025:8025 edivanteixeira/stuntman</code> · '
                f'<a href="{rel(page, "start")}">step by step</a></p>')
     else:
@@ -248,8 +248,8 @@ def home():
 </section>
 <section class="wrap section"><div class="split">
   <div class="stack">{head(2, "One prompt. The whole app tested.", "You ask once. The agent sets up, provokes, reads and checks every provider path, then hands back a report you can verify on the screen.")}
-  <blockquote class="session"><div class="say"><span class="who">you</span><p>Test sign-up end to end against Stuntman: SMS down, a WhatsApp reply, an e-mail bounce, login with MFA. Fix what breaks.</p></div></blockquote></div>
-  {art(p, "run-log", 1416, 1576, "The agent's run: set up, SMS down, WhatsApp reply, e-mail bounce, login with MFA, avatar upload failed on retry limit 2, fix, avatar upload stored on attempt 3, check: no calls to real providers", True)}
+  <blockquote class="session"><div class="say"><span class="who">you</span><p>Test sign-up end to end against Stuntman: SMS down, a WhatsApp reply, an email bounce, login with MFA. Fix what breaks.</p></div></blockquote></div>
+  {art(p, "run-log", 1416, 1576, "The agent's run: set up, SMS down, WhatsApp reply, email bounce, login with MFA, avatar upload failed on retry limit 2, fix, avatar upload stored on attempt 3, check: no calls to real providers", True)}
 </div></section>
 <section class="wrap section">
   {head(2, "Any agent. Same switches.", "Anything that speaks MCP, or plain HTTP, drives Stuntman the way a person does on the screen. Every MCP tool is also an HTTP route; <code>GET /api/tools</code> lists them all.")}
@@ -300,7 +300,7 @@ def agents():
 <section class="wrap section">
   {head(2, "Connect it in one line.", "MCP runs over streamable HTTP at <code>/mcp</code>; each environment also has <code>/e/&lt;env&gt;/mcp</code>. Client formats change: if one does not load, check its docs for “remote” or “streamable HTTP” servers.")}
   <div class="trio">{cl}</div>
-  <div class="warn" style="margin-top:var(--space-xl)"><strong>There is no API key yet.</strong>Anyone who reaches the port can use every tool. Keys per agent are designed and coming; until then, keep Stuntman private.</div>
+  <div class="warn" style="margin-top:var(--space-xl)"><strong>There is no API key yet.</strong>Anyone who reaches the port can use every tool. Per-agent keys are designed and on the way; until then, keep Stuntman private.</div>
 </section>
 <section class="wrap section"><div class="split">
   {head(2, "Or plain HTTP.", "Every tool is an HTTP route under <code>/api</code>, with the same arguments. Pass <code>by</code> to name the actor on the timeline; MCP clients are named automatically.")}
@@ -335,7 +335,7 @@ def providers():
           "Point your app at <code>http://localhost:8025/zenvia/v2/channels/{0}/messages</code>."),
          ("green", "WhatsApp", "Meta WhatsApp Cloud API (Graph)", "Conversations, templates, the 24-hour window, the people who receive them.",
           "500, 400, connection failures, expired tokens, replies, wrongly signed or replayed webhooks.", "whatsapp", "Graph base URL <code>http://localhost:8025/whatsapp</code>."),
-         ("amber", "E-mail", "SMTP with STARTTLS · SendGrid v3 · signed Event Webhook", "Every message with its HTML, attachments and extracted codes and links.",
+         ("amber", "Email", "SMTP with STARTTLS · SendGrid v3 · signed Event Webhook", "Every message with its HTML, attachments and extracted codes and links.",
           "Hold and decide: deliver, defer, bounce, drop; open, click, spam report, unsubscribe.", "email", "SMTP <code>localhost:2525</code> · SendGrid <code>http://localhost:8025/sendgrid</code>."),
          ("brown", "Storage", "Azure Blob (SharedKey, SAS) · Amazon S3 (SigV4)", "Accounts, containers, objects, uploads, presigned links and their events.",
           "503 on the first N attempts, 403/404, slow or truncated reads, bad links, lost or duplicated events.", "objects", "Blob <code>:10000/&lt;account&gt;</code> · S3 <code>:9000</code>."),
@@ -358,7 +358,7 @@ def providers():
         img = shot(p, sc, f"The {name} screen") if sc else ""
         secs.append(f'<section class="wrap section"><div class="split">{txt}{img}</div></section>')
     return doc(p, hero(p, "Every provider your app calls. None of them real.",
-                       "Each line is an engine capability; a plugin or a flavour is one provider's version of it. Stuntman "
+                       "Each line is an engine capability; a plugin or a flavor is one provider's version of it. Stuntman "
                        "answers like the provider, keeps its state and sends its callbacks back.", actions=False)
                + "".join(secs) + next_link(p))
 
@@ -368,7 +368,7 @@ def failures():
     rows = [("HTTP APIs", "force_answer · expire_tokens", "any named answer; reset, empty, timeout, 500, 503, html; tokens invalid"),
             ("SMS", "force_sms_failure · reply_sms_as_user", "500, 400, reset, empty, timeout; the person texts back"),
             ("WhatsApp", "force_whatsapp_failure · send_bad_webhook", "500, 400, reset, empty, timeout; wrong, missing or old signature, replay"),
-            ("E-mail", "decide_held · simulate_recipient", "deliver, defer, bounce, drop; open, click, spam report, unsubscribe"),
+            ("Email", "decide_held · simulate_recipient", "deliver, defer, bounce, drop; open, click, spam report, unsubscribe"),
             ("Storage", "create_rule · set_next_read · set_next_use", "any status, first N or a share; slow, truncated, bad MD5; bad links"),
             ("Messaging", "set_next_delivery (namespace) · set_namespace_reachability", "lose lock, duplicate, hold, drop, dead-letter, out of order; refuse, busy"),
             ("Identity", "provoke_sign_in · provoke_idp", "MFA, consent, user cancels, wrong tenant, expired, IdP down"),
@@ -388,7 +388,7 @@ def failures():
   <ol class="often">
     <li><b>The first 2, then normal</b>{dots([1, 1, 0, 0, 0, 0, 0, 0])}</li>
     <li><b>Every time</b>{dots([1] * 8)}</li>
-    <li><b>Randomly, 25 % of the requests</b>{dots([0, 1, 0, 0, 0, 1, 0, 0])}</li>
+    <li><b>Randomly, 25% of the requests</b>{dots([0, 1, 0, 0, 0, 1, 0, 0])}</li>
   </ol>
   <p class="legend"><span><i class="on"></i>answered as the rule says</span><span><i></i>answered normally</span></p>
 </section>
@@ -430,7 +430,7 @@ def timeline():
   <p class="mono" style="color:var(--text-red);font-size:var(--text-sm);margin-top:var(--space-lg)">real_provider_calls → 1 host outside Stuntman: api.twilio.com</p>
 </section>
 <section class="wrap section"><div class="split">
-  {head(2, "A trip carries the trace.", "Stuntman takes your app's trace id on the way in and sends it back on callbacks. Spans, logs and metrics live in their own area and open from a row, so the timeline stays readable.")}
+  {head(2, "A trip carries the trace.", "Stuntman takes your app's trace ID on the way in and sends it back on callbacks. Spans, logs and metrics live in their own area and open from a row, so the timeline stays readable.")}
   {shot(p, "traces", "Traces joined to the provider calls Stuntman answered")}
 </div></section>
 <section class="wrap section">

@@ -58,7 +58,7 @@ Each environment is a folder you can read, diff and back up:
 data/environments/<name>/
   environment.yaml        lifetime, callbacks, base domain, real hosts
   apis/<service>.yaml     HTTP API plugins
-  email/services/*.yaml   e-mail services
+  email/services/*.yaml   email services
   email/extractors.yaml
   webhooks/inboxes.yaml   kept webhook inboxes
   storage/rules/*.yaml    storage rules

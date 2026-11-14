@@ -6,7 +6,7 @@ once; everyone else installs it.
 
 <p align="center"><img src="images/plugin-anatomy.png" alt="Anatomy of a plugin: service, routes, keep, decide, answers" width="100%"></p>
 
-Plugins power the **HTTP APIs** line. SMS, WhatsApp, e-mail, storage, messaging, identity, secrets, webhooks and
+Plugins power the **HTTP APIs** line. SMS, WhatsApp, email, storage, messaging, identity, secrets, webhooks and
 telemetry are built into the engine.
 
 ## A complete example

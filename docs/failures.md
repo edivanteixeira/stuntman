@@ -18,7 +18,7 @@ There are three ways to provoke:
 A rule has three parts: **when** (operation, account, container, path glob, extra conditions), **then** (the answer,
 optionally a delay) and **how often**.
 
-<p align="center"><img src="images/how-often.png" alt="How often: the first 2 then normal; every time; randomly 25 % of the requests" width="100%"></p>
+<p align="center"><img src="images/how-often.png" alt="How often: the first 2 then normal; every time; randomly 25% of the requests" width="100%"></p>
 
 The first rule that matches answers; a rule never touches other environments. The same rule from an agent:
 
@@ -53,9 +53,9 @@ named answers and `force_answer` instead.
 | WhatsApp | `expire_whatsapp_tokens` | every Graph call gets 190 "Session has expired" until restored |
 | WhatsApp | `reply_as_user` | a text, a template button, an image or a location |
 | WhatsApp | `send_bad_webhook` | `wrong_signature`, `missing_signature`, `old_secret`, `replay`; returns your app's status code |
-| E-mail | `decide_held` | `deliver`, `defer`, `bounce` (hard or soft), `drop` |
-| E-mail | `simulate_recipient` | `open`, `click`, `spamreport`, `unsubscribe` |
-| E-mail | `set_access` | an intake that refuses recipients, requires STARTTLS, or is unreachable |
+| Email | `decide_held` | `deliver`, `defer`, `bounce` (hard or soft), `drop` |
+| Email | `simulate_recipient` | `open`, `click`, `spamreport`, `unsubscribe` |
+| Email | `set_access` | an intake that refuses recipients, requires STARTTLS, or is unreachable |
 | Storage | `create_rule` | any status on matching requests, the first N, every time, or a share |
 | Storage | `set_next_read` | `403`, `404`, `503`, `slow:5s`, `truncate`, `bad_md5` |
 | Storage | `set_next_use` | a link that is `expired`, `bad_signature`, `ip_denied`, `permission`, `not_yet_valid`, `gone` |

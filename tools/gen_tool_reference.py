@@ -8,7 +8,7 @@ TOOL = re.compile(r'Tool::new\(\s*' + STR + r'\s*,\s*' + STR)
 CALL = re.compile(r'\.(req|param|route)\(\s*' + STR + r'\s*,\s*' + STR + r'\s*\)')
 AREAS = [  # (crate, title, file globs)
     ("server", "Environments and timeline", ["crates/server/src/environments.rs", "crates/server/src/timeline.rs", "crates/server/src/main.rs"]),
-    ("email", "E-mail", ["crates/email/src/tools.rs"]),
+    ("email", "Email", ["crates/email/src/tools.rs"]),
     ("sms", "SMS", ["crates/sms/src/tools.rs"]),
     ("whatsapp", "WhatsApp", ["crates/whatsapp/src/tools.rs"]),
     ("apis", "HTTP APIs (plugins)", ["crates/apis/src/tools.rs", "crates/apis/src/restpki.rs"]),

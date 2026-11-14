@@ -4,7 +4,7 @@ You are a coding agent (Claude Code, Codex, Gemini CLI, OpenCode, Cursor, GitHub
 pasted a short prompt that sent you here. Your job: **set Stuntman up for the project in the current working
 directory, end to end, and leave the developer with a working staging that never calls a real provider.**
 
-Stuntman stands in for the external providers an app calls (SMS, WhatsApp, e-mail, storage, queues, identity,
+Stuntman stands in for the external providers an app calls (SMS, WhatsApp, email, storage, queues, identity,
 secrets, webhooks, telemetry, and any HTTP API through YAML plugins). It answers like the provider, keeps state,
 sends callbacks, and fails on cue. Every action is an MCP tool and an HTTP route.
 
@@ -105,8 +105,8 @@ hosts, SDK packages and setting names. Do not print secret values you come acros
 
 | Stuntman line | Signals to look for |
 |---|---|
-| **E-mail (SMTP)** | `SMTP_HOST`, `smtp.*`, MailKit, nodemailer, smtplib, `spring.mail`, ActionMailer `smtp_settings` |
-| **E-mail (SendGrid)** | `api.sendgrid.com`, `@sendgrid/mail`, `sendgrid` packages, `SENDGRID_API_KEY` |
+| **Email (SMTP)** | `SMTP_HOST`, `smtp.*`, MailKit, nodemailer, smtplib, `spring.mail`, ActionMailer `smtp_settings` |
+| **Email (SendGrid)** | `api.sendgrid.com`, `@sendgrid/mail`, `sendgrid` packages, `SENDGRID_API_KEY` |
 | **SMS** | `api.zenvia.com`, Zenvia SDKs (Stuntman speaks Zenvia API v2) |
 | **WhatsApp** | `graph.facebook.com`, WhatsApp Cloud API, phone number id / WABA settings |
 | **Azure Blob** | `blob.core.windows.net`, `Azure.Storage.Blobs`, `@azure/storage-blob`, `azure-storage-blob`, storage connection strings |
@@ -125,7 +125,7 @@ Show the developer one table, in their language:
 
 ```text
 Provider            Found in                          Stuntman line        How
-SendGrid            src/mail/sender.ts, .env.example   E-mail               built in
+SendGrid            src/mail/sender.ts, .env.example   Email               built in
 Azure Blob          appsettings.Development.json        Storage              built in
 Acme KYC API        src/kyc/client.py (KYC_BASE_URL)    HTTP API plugin      new plugin (I will write it)
 Stripe              src/billing/*.ts                    HTTP API plugin      recorder first, then a plugin
@@ -139,10 +139,10 @@ Use the default environment (`stg-a`) unless the developer asks for another one.
 
 | Line | What to do |
 |---|---|
-| E-mail, SMS, WhatsApp, Webhook inboxes, Telemetry | Built in; nothing to install. Create webhook inboxes with `create_webhook_inbox` when the app sends its own webhooks. |
+| Email, SMS, WhatsApp, Webhook inboxes, Telemetry | Built in; nothing to install. Create webhook inboxes with `create_webhook_inbox` when the app sends its own webhooks. |
 | Azure Blob / S3 | `create_account` (service `azure-blob` or `s3`) with the account and containers the app uses; `add_container` for more. |
 | Service Bus / RabbitMQ | Create the namespace and the queues or topics the app uses (see the Messaging tools in the reference). |
-| Identity | `set_provider` with flavour `entra-v2`, `google`, `okta` or `oidc`; add the app registration and a few synthetic users. |
+| Identity | `set_provider` with flavor `entra-v2`, `google`, `okta` or `oidc`; add the app registration and a few synthetic users. |
 | Secrets | Create the vault and the secret names the app reads (values are synthetic). |
 | A provider in the catalog | `install_plugin` (or `install_collection`). |
 | Any other HTTP API | Write a plugin: read one from the catalog with `get_plugin` as a model, describe the routes the app calls (paths, bodies, the provider's real status codes and errors, a clear `sentence` per answer), save it with `put_plugin` and check it with `validate_plugin`. If you do not know the provider's API well, first install a recorder (`install_plugin` with `plugin=empty, service=<name>`), run the app, and build the plugin from what it sent. |
@@ -216,7 +216,7 @@ Finish with one message in the developer's language, shaped like this:
   To stop / start   docker stop stuntman · docker start stuntman
 
   Try next — just ask me:
-  • "Make the next e-mail bounce and show me what the app does."
+  • "Make the next email bounce and show me what the app does."
   • "Fail the first two uploads with a 503 and check that we retry."
   • "Test sign-up end to end with MFA and fix what breaks."
 ════════════════════════════════════════════════════════════

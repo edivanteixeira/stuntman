@@ -8,7 +8,7 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 **293 tools** in 11 areas.
 
 - [Environments and timeline](#environments-and-timeline) · 12 tools
-- [E-mail](#e-mail) · 35 tools
+- [Email](#email) · 35 tools
 - [SMS](#sms) · 17 tools
 - [WhatsApp](#whatsapp) · 28 tools
 - [HTTP APIs (plugins)](#http-apis-plugins) · 46 tools
@@ -36,7 +36,7 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `get_timeline_row` | `GET /api/timeline/{id}` | id | — | One Timeline row and the rest of its journey (rows with the same trace id). |
 | `wait_for_timeline` | `POST /api/timeline/wait` | — | service, who, show, q, since, timeout | Waits until a row that matches appears (after `since`, default now) and returns it; 408 after the timeout. |
 
-## E-mail
+## Email
 
 | Tool | HTTP | Required | Optional | What it does |
 |---|---|---|---|---|

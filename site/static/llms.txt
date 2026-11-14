@@ -1,6 +1,6 @@
 # Stuntman
 
-> The stunt double for every provider your app calls: SMS, WhatsApp, e-mail, storage, queues, identity, secrets,
+> The stunt double for every provider your app calls: SMS, WhatsApp, email, storage, queues, identity, secrets,
 > webhooks, telemetry and any HTTP API. It answers like the provider, keeps state, sends callbacks and fails on
 > cue. Every action is an MCP tool (streamable HTTP at /mcp) and an HTTP route under /api. Open source, Apache-2.0.
 

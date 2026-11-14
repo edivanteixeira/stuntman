@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>The stunt double for every provider your app calls.</strong><br>
-  SMS, WhatsApp, e-mail, storage, queues, identity, secrets, webhooks and any HTTP API,<br>
+  SMS, WhatsApp, email, storage, queues, identity, secrets, webhooks and any HTTP API,<br>
   answering like the real thing, so you and your coding agents can test the hard cases end to end.
 </p>
 
@@ -55,7 +55,7 @@ Every action in Stuntman is a tool: **293 of them**, each one both an **MCP tool
 Claude Code, Codex, Gemini CLI, OpenCode, Cursor, GitHub Copilot or a plain test script can:
 
 1. **Set it up.** Find the providers your app calls, install the matching plugins, point the base URLs at Stuntman.
-2. **Provoke.** Make the next send fail with a 500, bounce an e-mail, expire every token, answer as the user.
+2. **Provoke.** Make the next send fail with a 500, bounce an email, expire every token, answer as the user.
 3. **Read.** See every call your app made, in the provider's words, with its retries and callbacks.
 4. **Check.** Confirm against the timeline, not against the agent's summary, and confirm nothing leaked to a real provider.
 
@@ -114,7 +114,7 @@ claude mcp add --transport http stuntman http://localhost:8025/mcp
 | **HTTP APIs** | Any REST API, described as a YAML plugin: OAuth2 client credentials, Basic, session cookies, mTLS, browser steps | named answers, latency, 5xx, reset, timeout, expired tokens, billing and rate limits |
 | **SMS** | Zenvia API v2 | 500, 400, reset, empty reply, timeout; the person texts back, STOP / START |
 | **WhatsApp** | Meta WhatsApp Cloud API (Graph) | 500, 400, connection failures, expired tokens, user replies, badly signed or replayed webhooks |
-| **E-mail** | SMTP (STARTTLS) and SendGrid v3, signed event webhook | bounce, defer, drop, hold; open, click, spam report, unsubscribe events |
+| **Email** | SMTP (STARTTLS) and SendGrid v3, signed event webhook | bounce, defer, drop, hold; open, click, spam report, unsubscribe events |
 | **Storage** | Azure Blob (SharedKey, SAS) and Amazon S3 (SigV4) | 503 on the first N attempts, 403/404, slow reads, bad MD5, expired or tampered links, lost or duplicated events |
 | **Messaging** | Azure Service Bus and RabbitMQ over AMQP | lost locks, duplicates, held, dropped, dead-lettered or out-of-order messages, refused or busy namespace |
 | **Identity** | OIDC / OAuth2: Microsoft Entra ID, Google, Okta, generic OIDC | MFA, consent, user cancels, wrong tenant, expired tokens, bad signature, IdP down, broken discovery or JWKS |

@@ -159,7 +159,7 @@ claude mcp add --transport http stuntman http://localhost:8025/mcp
 ## How it is built
 
 A single Rust process serves every environment: the web UI (Leptos, compiled to WebAssembly), the HTTP API,
-MCP over streamable HTTP, and each provider on its own port. State lives in SQLite per environment;
+MCP over streamable HTTP and each provider on its own port. State lives in SQLite per environment;
 configuration lives in YAML files you can read, diff and commit. Each provider is a crate that implements one
 module interface, so adding a provider never touches the others. See [`engine/README.md`](engine/README.md).
 

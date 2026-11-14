@@ -209,7 +209,7 @@ def home():
 {agents_strip(p)}
 <section class="wrap section"><div class="split">
   {head(2, "It tests the whole app. No one clicks.", "The agent runs the loop on its own, as many times as the change needs. Each lap leaves calls on the timeline under the agent's name.")}
-  {art(p, "loop", 2095, 1236, "A ring of seven stations: read the code, set up Stuntman, change the code, run the real flow, provoke failures, read what the app sent, check the result", True)}
+  {art(p, "loop", 2095, 1204, "A ring of seven stations: read the code, set up Stuntman, change the code, run the real flow, provoke failures, read what the app sent, check the result", True)}
 </div></section>
 <section class="wrap section">
   {head(2, "It reads your code and sets Stuntman up.", "The agent finds every provider your app calls, installs the matching plugins and points the base URLs at Stuntman. Then it checks that nothing still goes out to a real provider.")}
@@ -217,7 +217,7 @@ def home():
   <p class="note" style="margin-top:var(--space-md)">Illustrative: file, provider and plugin names are examples. The tool names are real.</p>
 </section>
 <section class="wrap section">
-  {head(2, "Before and after.", "Before: staging talks to real providers. After: every base URL points at Stuntman, each provider has its plugin, and the agent proves no call still leaks out.")}
+  {head(2, "Before and after.", "Before: staging talks to real providers. After: every base URL points at Stuntman, each provider has its plugin and the agent proves no call still leaks out.")}
   {art(p, "env-before-after", 2656, 1116, "A staging .env before, pointing at real providers, and after, pointing at Stuntman; then list_plugins, install_plugin, set_provider, edit .env, real_provider_calls: none", True)}
 </section>
 <section class="wrap section">

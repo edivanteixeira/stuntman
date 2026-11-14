@@ -1,0 +1,54 @@
+# GCC (Gestão de Consentimento e Ciência): registers that the holder was told about the identity
+# check and returns numero_hash_consulta, a JWT the app sends to SERPRO Datavalid as
+# privacidade.senatran.token. Header Api-Key; body tipo_titular, cpf_cnpj, tipo_de_usuario,
+# cnpj_anuente, cnpj_provedor, template_id. Synthetic data only.
+# base_url and real_host are placeholders: set them to the GCC address your contract gives you.
+service:
+  name: gcc-consent
+  title: GCC consent
+  origin: community
+  region: BR
+  description: Consent registration (registro de ciência) before a Datavalid check
+  base_url: https://gcc.example.com
+  real_host: gcc.example.com
+routes:
+  - route: POST /consentimentos-ciencias
+    receive:
+      body: [cpf_cnpj, cnpj_anuente, template_id]
+    let:
+      holder: lookup('holders', 'cpf', body.cpf_cnpj)
+    keep:
+      state: consents
+      key: digits(body.cpf_cnpj)
+    decide:
+      - when: "!has(headers['api-key'])"
+        answer: api_key_missing
+      - when: body.template_id == '' || body.cnpj_anuente == ''
+        answer: critica
+      - when: holder.answer == 'critica'
+        answer: critica
+      - answer: registered
+answers:
+  - name: registered
+    note: consent registered; the hash is a JWT (jti, 24 h) the Datavalid call carries
+    sentence: "Consent registered for {{ body.cpf_cnpj | mask }}"
+    body: |
+      {"numero_hash_consulta": "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.{{ base64url(json({'jti': uuid(), 'sub': digits(body.cpf_cnpj), 'cnpj_anuente': digits(body.cnpj_anuente), 'iat': int(now_ms() / 1000), 'exp': int(now_ms() / 1000 + 86400)})) }}.c3R1bnRtYW4", "status": "REGISTRADO", "critica": null}
+  - name: critica
+    note: 200 without a hash, with a "crítica" (template or anuente not accepted); the app goes on without it
+    sentence: "Consent not registered for {{ body.cpf_cnpj | mask }}: template não encontrado"
+    body: '{"numero_hash_consulta": null, "status": "400", "critica": "template não encontrado"}'
+  - name: api_key_missing
+    status: 401
+    note: no Api-Key header
+    sentence: "Refused: no Api-Key (401)"
+    body: '{"message": "Api-Key ausente ou inválida"}'
+  - name: api_key_expired
+    status: 401
+    note: the Api-Key expired; exists only to be forced
+    sentence: "Refused: Api-Key expired (401)"
+    body: '{"message": "Api-Key expirada"}'
+data:
+  # A holder listed here gets this answer; anyone else is registered.
+  holders:
+    - {cpf: '555.666.555-99', name: Nora Mitchell, answer: critica}

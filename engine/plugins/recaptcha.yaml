@@ -1,0 +1,41 @@
+# Google reCAPTCHA siteverify (v2 and v3). A token used twice answers timeout-or-duplicate.
+service:
+  name: recaptcha
+  title: reCAPTCHA
+  origin: official
+  description: Bot check (siteverify)
+  base_url: https://www.google.com
+  real_host: www.google.com
+routes:
+  - route: POST /recaptcha/api/siteverify
+    receive:
+      body: [secret, response]
+      missing: missing_input
+    keep:
+      state: tokens
+      key: body.response
+    decide:
+      - when: body.response in state.tokens
+        answer: duplicate
+      - when: body.response.startsWith('bad')
+        answer: invalid_token
+      - when: body.response.startsWith('bot')
+        answer: low_score
+      - answer: human
+answers:
+  - name: human
+    sentence: "Verified a token from {{ body.response | default('the form') }}: score 0.9"
+    body: '{"success": true, "score": 0.9, "action": "submit", "challenge_ts": "{{ now() }}", "hostname": "stg-a.stuntman.local"}'
+  - name: low_score
+    note: a bot-like score; the app should block or challenge
+    sentence: "Verified a token: score 0.1 (bot)"
+    body: '{"success": true, "score": 0.1, "action": "submit", "challenge_ts": "{{ now() }}", "hostname": "stg-a.stuntman.local"}'
+  - name: duplicate
+    sentence: "Token used twice: timeout-or-duplicate"
+    body: '{"success": false, "error-codes": ["timeout-or-duplicate"]}'
+  - name: invalid_token
+    sentence: "Invalid token"
+    body: '{"success": false, "error-codes": ["invalid-input-response"]}'
+  - name: missing_input
+    sentence: "No token sent"
+    body: '{"success": false, "error-codes": ["missing-input-response"]}'

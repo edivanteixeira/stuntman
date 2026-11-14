@@ -1,0 +1,18 @@
+[package]
+name = "stuntman-identity"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+stuntman-core.workspace = true
+stuntman-keyvault.workspace = true
+axum.workspace = true
+tokio.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+base64.workspace = true
+rand.workspace = true
+sha2 = "0.10"
+reqwest.workspace = true

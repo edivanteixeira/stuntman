@@ -1,0 +1,29 @@
+# A bank gateway that requires the app's client certificate (mTLS) on HTTPS, as boleto and Pix
+# registration APIs do. No certificate, or one the Stuntman Test CA did not sign, fails the handshake.
+service:
+  name: bank-gateway
+  title: Bank gateway (boletos)
+  origin: community
+  region: BR
+  description: Boleto registration over mTLS
+  real_host: api.bank-gateway.example.com
+  auth:
+    client_certificate:
+      required: true
+routes:
+  - route: POST /boletos
+    receive:
+      body: [valor, pagador]
+    decide:
+      - when: double(body.valor) <= 0
+        answer: invalid_amount
+      - answer: registered
+answers:
+  - name: registered
+    status: 201
+    sentence: "Boleto of {{ body.valor }} registered for {{ body.pagador }} by {{ caller }}"
+    body: '{"nossoNumero": "{{ string(now_ms() % 100000000) }}", "linhaDigitavel": "00190.00009 01234.567891 01234.567891 1 0000000{{ body.valor }}"}'
+  - name: invalid_amount
+    status: 422
+    sentence: "Boleto refused: amount must be positive"
+    body: '{"codigo": "VALOR_INVALIDO"}'

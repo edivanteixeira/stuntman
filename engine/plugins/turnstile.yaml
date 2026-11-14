@@ -1,0 +1,35 @@
+# Cloudflare Turnstile siteverify. Test tokens: anything (passes), "fail..." (fails), a token twice (duplicate).
+service:
+  name: turnstile
+  title: Cloudflare Turnstile
+  origin: official
+  description: Bot check (siteverify)
+  base_url: https://challenges.cloudflare.com
+  real_host: challenges.cloudflare.com
+routes:
+  - route: POST /turnstile/v0/siteverify
+    receive:
+      body: [secret, response]
+      missing: missing_input
+    keep:
+      state: tokens
+      key: body.response
+    decide:
+      - when: body.response in state.tokens
+        answer: duplicate
+      - when: body.response.startsWith('fail')
+        answer: failed
+      - answer: passed
+answers:
+  - name: passed
+    sentence: "Turnstile passed for {{ caller }}"
+    body: '{"success": true, "challenge_ts": "{{ now() }}", "hostname": "stg-a.stuntman.local", "error-codes": [], "action": "login", "cdata": ""}'
+  - name: failed
+    sentence: "Turnstile failed: invalid-input-response"
+    body: '{"success": false, "error-codes": ["invalid-input-response"]}'
+  - name: duplicate
+    sentence: "Turnstile token used twice"
+    body: '{"success": false, "error-codes": ["timeout-or-duplicate"]}'
+  - name: missing_input
+    sentence: "No Turnstile token sent"
+    body: '{"success": false, "error-codes": ["missing-input-response"]}'

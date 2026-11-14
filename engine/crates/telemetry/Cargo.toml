@@ -1,0 +1,24 @@
+[package]
+name = "stuntman-telemetry"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+stuntman-core.workspace = true
+axum.workspace = true
+tokio.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+reqwest.workspace = true
+rand.workspace = true
+futures.workspace = true
+opentelemetry-proto = { version = "0.30", default-features = false, features = ["gen-tonic", "trace", "logs", "metrics", "with-serde"] }
+prost = "0.13"
+tonic = { version = "0.13", default-features = false, features = ["transport", "codegen", "prost", "router", "server"] }
+flate2 = "1"
+hex = "0.4"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

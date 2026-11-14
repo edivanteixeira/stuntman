@@ -1,0 +1,707 @@
+//! A plugin: one provider's HTTP API as a YAML file, apis/<service>.yaml. The service block (A5),
+//! routes with their steps (A3), named answers and data tables (A4). The editor, the API and agents
+//! all change the same file.
+
+use std::collections::BTreeMap;
+
+use stuntman_core::{ApiError, Ctx};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
+use crate::expr;
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct OAuth {
+    /// secret://name or a literal
+    #[serde(default)]
+    pub client_id: String,
+    #[serde(default)]
+    pub client_secret: String,
+    #[serde(default = "yes")]
+    pub any_client: bool,
+    /// 60m, 10m, 1m
+    #[serde(default = "sixty")]
+    pub token_ttl: String,
+}
+fn yes() -> bool {
+    true
+}
+fn sixty() -> String {
+    "60m".into()
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Basic {
+    /// user → secret://password
+    #[serde(default)]
+    pub users: BTreeMap<String, String>,
+    #[serde(default = "yes")]
+    pub any_user: bool,
+    /// Answer 401 with WWW-Authenticate before the client sends credentials.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub challenge: bool,
+}
+
+/// Session-cookie portals: a login route issues the cookie; routes with receive.auth: session
+/// need it; expire_tokens ends every session ("Session expired · log in again").
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Session {
+    #[serde(default = "jsession")]
+    pub cookie: String,
+    #[serde(default = "thirty")]
+    pub ttl: String,
+    /// user → secret://password
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub users: BTreeMap<String, String>,
+    #[serde(default = "yes")]
+    pub any_user: bool,
+}
+fn jsession() -> String {
+    "JSESSIONID".into()
+}
+fn thirty() -> String {
+    "30m".into()
+}
+
+/// The provider asks for the app's certificate (mTLS) on the HTTPS port: none, or one not signed
+/// by the Stuntman Test CA, fails the TLS handshake.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct ClientCertificate {
+    #[serde(default)]
+    pub required: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Auth {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth2_client_credentials: Option<OAuth>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basic: Option<Basic>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Session>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_certificate: Option<ClientCertificate>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Billing {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Price per billable call, only for the counter (nothing is charged).
+    #[serde(default)]
+    pub per_call: f64,
+    /// "100/day": a strip on Calls above it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub warn_above: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Limits {
+    /// "300ms..600ms" or "50ms"
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub latency: String,
+    /// "10/s"
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub rate: String,
+    /// Share of calls answered 503, 0 to 1 (circuit breaker tests).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub fail_share: f64,
+}
+fn is_zero(f: &f64) -> bool {
+    *f == 0.0
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Service {
+    pub name: String,
+    #[serde(default)]
+    pub title: String,
+    /// official | community | yours
+    #[serde(default = "yours")]
+    pub origin: String,
+    /// "BR", or empty for global
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub region: String,
+    /// What the provider calls itself (the real base URL), shown and used to recognise its host.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub base_url: String,
+    /// The real host name Stuntman also answers for (with the Stuntman Test CA).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub real_host: String,
+    #[serde(default)]
+    pub auth: Auth,
+    #[serde(default)]
+    pub billing: Billing,
+    #[serde(default)]
+    pub limits: Limits,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// Browsers call it: preflights answered 204 and every answer has Access-Control-Allow-Origin: *.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cors: bool,
+    /// Routes match whatever the case of the path ("Api/v2/PadesSignatures" and "api/v2/padessignatures").
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ignore_case: bool,
+}
+fn yours() -> String {
+    "yours".into()
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Receive {
+    /// "" | none | bearer | basic | session. bearer: a token from this service's token route;
+    /// session: the cookie the login route issued.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub auth: String,
+    /// Fields that must be in the body (dotted paths); a missing one is answered 400 (or the
+    /// answer named by `missing`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub body: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub missing: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Keep {
+    /// The state collection, e.g. validations.
+    pub state: String,
+    /// The key expression, e.g. body.cpf.
+    pub key: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Decide {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<String>,
+    pub answer: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Respond {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub latency: String,
+}
+
+/// "Answer processing 3 times, then done": counts calls per key.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Wait {
+    pub key: String,
+    pub answer: String,
+    pub times: u32,
+    pub then: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Send {
+    /// URL template (literal or with {{ }}), e.g. {{ body.callback_url }}.
+    pub url: String,
+    #[serde(default = "post")]
+    pub method: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub body: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub delay: String,
+    /// secret://name: the body is signed with HMAC-SHA256 hex into `header`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub secret: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub header: String,
+}
+fn post() -> String {
+    "POST".into()
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Route {
+    /// "POST /datavalid/v5/pessoa-fisica/validacao", {name} segments are path params.
+    pub route: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub billable: bool,
+    /// The OAuth2 token endpoint of this service (client credentials).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub token: bool,
+    /// The session portal's login: user and password in, the session cookie out.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub login: bool,
+    /// An OAuth token endpoint for people: authorization_code (the code a page or a push approval
+    /// gave, PKCE S256 checked) or password (CPF + OTP). The token carries the person: auth.person.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub grant: String,
+    /// A push approval the app polls: the expression giving its code (query.code); read as `step`
+    /// (status pending | approved | rejected | expired, grant, person).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub step: String,
+    #[serde(default)]
+    pub receive: Receive,
+    /// Named values computed before deciding: person: lookup('people', 'cpf', body.cpf).
+    #[serde(default, rename = "let", skip_serializing_if = "BTreeMap::is_empty")]
+    pub lets: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep: Option<Keep>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait: Option<Wait>,
+    #[serde(default)]
+    pub decide: Vec<Decide>,
+    #[serde(default)]
+    pub respond: Respond,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub send: Vec<Send>,
+    /// A generic failure on this route only: reset | empty | timeout | 401 | 403 | 500 | 503 | html.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fail: String,
+    /// Response fields and their types (number, string, bool, object, array): answers are checked.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub schema: BTreeMap<String, String>,
+    /// A step Stuntman runs in code instead of let/decide (restpki.start…): it picks one of the
+    /// plugin's answers and gives it {{ result }} to render and {{ call }} for the sentence.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub native: String,
+}
+
+impl Route {
+    pub fn method_path(&self) -> (String, String) {
+        let mut p = self.route.trim().splitn(2, ' ');
+        let m = p.next().unwrap_or("GET").to_uppercase();
+        let path = p.next().unwrap_or("/").trim().to_string();
+        (m, path)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Answer {
+    pub name: String,
+    #[serde(default = "s200")]
+    pub status: u16,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    /// A template; JSON unless headers say otherwise.
+    #[serde(default)]
+    pub body: String,
+    /// Sent exactly as typed, not checked against the schema (malformed on purpose).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub raw: bool,
+    /// The sentence on Calls, a template: "Validated {{ body.cpf | mask }} with a selfie".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sentence: String,
+    /// What this answer means, shown under its name.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
+}
+fn s200() -> u16 {
+    200
+}
+
+fn people() -> String {
+    "people".into()
+}
+fn six() -> u8 {
+    6
+}
+fn zeros() -> String {
+    "000000".into()
+}
+fn three() -> u32 {
+    3
+}
+fn s180() -> u32 {
+    180
+}
+fn authorize_deny() -> Vec<String> {
+    vec!["Authorize".into(), "Deny".into()]
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct PersonField {
+    /// The data table the people come from.
+    #[serde(default = "people")]
+    pub from: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct OtpField {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+    #[serde(default = "six")]
+    pub digits: u8,
+    /// This code is refused on purpose.
+    #[serde(default = "zeros")]
+    pub refuse: String,
+    /// Wrong codes before the page locks.
+    #[serde(default = "three")]
+    pub tries: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct TextField {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ChoiceField {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+    pub options: Vec<String>,
+}
+
+/// One field of a page. Pages are declared, never HTML: Stuntman draws these and nothing else.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Field {
+    Person(PersonField),
+    Otp(OtpField),
+    Text(TextField),
+    Choice(ChoiceField),
+}
+
+/// A push approval instead of the page: the app gets an answer at once and polls a `step` route
+/// while someone approves on "the phone" (a Stuntman page, or approve_push).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct Push {
+    /// When the request is a push (query.redirect_uri == 'push://').
+    pub when: String,
+    /// The person's CPF (query.login_hint).
+    pub person: String,
+    /// The answer sent at once; it reads {{ step.code }}.
+    pub answer: String,
+    #[serde(default = "s180")]
+    pub seconds: u32,
+}
+
+/// A page the provider shows in the browser (login, consent, approval), served by Stuntman.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct Page {
+    /// "GET /v0/oauth/authorize"
+    pub route: String,
+    pub title: String,
+    /// A template: "{{ query.client_id }} wants to sign".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ask: String,
+    #[serde(default, with = "serde_yaml::with::singleton_map_recursive")]
+    pub fields: Vec<Field>,
+    /// The first one authorizes (redirect with code and state); the second denies (error=access_denied).
+    #[serde(default = "authorize_deny")]
+    pub buttons: Vec<String>,
+    /// pkce_s256 | state | redirect_uri: refused on the page when missing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push: Option<Push>,
+}
+
+impl Page {
+    pub fn method_path(&self) -> (String, String) {
+        Route { route: self.route.clone(), ..Default::default() }.method_path()
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Plugin {
+    pub service: Service,
+    #[serde(default)]
+    pub routes: Vec<Route>,
+    #[serde(default)]
+    pub answers: Vec<Answer>,
+    /// Data tables the answers read: irregular_cpfs, people, selfies…
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub data: BTreeMap<String, Value>,
+    /// Pages Stuntman draws for this provider (authorize, approval).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pages: Vec<Page>,
+}
+
+/// Generic answers every service has (A1 "next calls answer", A3 route `fail`).
+pub const GENERIC: [(&str, &str); 8] = [("reset", "Connection reset"), ("empty", "Empty reply"), ("timeout", "Timeout (no answer)"), ("401", "401 Unauthorized, empty body"), ("403", "403 Forbidden, empty body"), ("500", "500 Internal error"), ("503", "503 Unavailable"), ("html", "HTML error page with 200")];
+
+pub fn dir(ctx: &Ctx) -> std::path::PathBuf {
+    ctx.path("apis")
+}
+
+pub fn file(ctx: &Ctx, name: &str) -> std::path::PathBuf {
+    dir(ctx).join(format!("{name}.yaml"))
+}
+
+pub fn rel(name: &str) -> String {
+    format!("apis/{name}.yaml")
+}
+
+pub fn valid_name(n: &str) -> Result<(), ApiError> {
+    if n.is_empty() || n.len() > 48 || !n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+        return Err(ApiError::bad("Service name: lowercase letters, numbers and dashes, like serpro-datavalid"));
+    }
+    Ok(())
+}
+
+pub fn text(ctx: &Ctx, name: &str) -> String {
+    std::fs::read_to_string(file(ctx, name)).unwrap_or_default()
+}
+
+pub fn version(t: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    t.hash(&mut h);
+    format!("{:016x}", h.finish())
+}
+
+pub fn parse(t: &str) -> Result<Plugin, String> {
+    serde_yaml::from_str(t).map_err(|e| match e.location() {
+        Some(l) => format!("line {}: {}", l.line(), e.to_string().split(" at line").next().unwrap_or("")),
+        None => e.to_string(),
+    })
+}
+
+pub fn get(ctx: &Ctx, name: &str) -> Result<Plugin, ApiError> {
+    valid_name(name)?;
+    let t = std::fs::read_to_string(file(ctx, name)).map_err(|_| ApiError::not_found(format!("No API service “{name}” in {}", ctx.env)))?;
+    parse(&t).map_err(|e| ApiError::bad(format!("{}: {e}", rel(name))))
+}
+
+/// Every plugin that loads; broken files are reported by list_api_services.
+pub fn all(ctx: &Ctx) -> Vec<Plugin> {
+    let mut v: Vec<Plugin> = std::fs::read_dir(dir(ctx)).into_iter().flatten().flatten()
+        .filter(|e| e.path().extension().map(|x| x == "yaml").unwrap_or(false))
+        .filter_map(|e| std::fs::read_to_string(e.path()).ok().and_then(|t| parse(&t).ok()))
+        .collect();
+    v.sort_by(|a, b| a.service.name.cmp(&b.service.name));
+    v
+}
+
+pub fn broken(ctx: &Ctx) -> Vec<(String, String)> {
+    std::fs::read_dir(dir(ctx)).into_iter().flatten().flatten()
+        .filter(|e| e.path().extension().map(|x| x == "yaml").unwrap_or(false))
+        .filter_map(|e| {
+            let t = std::fs::read_to_string(e.path()).ok()?;
+            parse(&t).err().map(|err| (e.file_name().to_string_lossy().trim_end_matches(".yaml").to_string(), err))
+        })
+        .collect()
+}
+
+/// Line of the first occurrence of `needle` in the file (for errors "at line N").
+fn line_of(t: &str, needle: &str) -> Option<usize> {
+    t.lines().position(|l| l.contains(needle)).map(|i| i + 1)
+}
+
+/// Schema and expression errors with line numbers.
+pub fn validate(p: &Plugin, t: &str) -> Vec<Value> {
+    let mut out = vec![];
+    let mut err = |msg: String, needle: &str| out.push(json!({"error": msg, "line": line_of(t, needle)}));
+    if p.service.name.is_empty() {
+        err("service.name is required".into(), "service:");
+    }
+    let names: Vec<&str> = p.answers.iter().map(|a| a.name.as_str()).collect();
+    let mut seen = std::collections::HashSet::new();
+    for r in &p.routes {
+        let (m, path) = r.method_path();
+        if !["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"].contains(&m.as_str()) || !path.starts_with('/') {
+            err(format!("route “{}”: METHOD /path", r.route), &r.route);
+        }
+        if !seen.insert(format!("{m} {path}")) {
+            err(format!("route “{}” is there twice", r.route), &r.route);
+        }
+        for (k, e) in &r.lets {
+            if let Err(x) = expr::parse(e) {
+                err(format!("let {k}: {x}"), e);
+            }
+        }
+        if let Some(k) = &r.keep {
+            if let Err(x) = expr::parse(&k.key) {
+                err(format!("keep.key: {x}"), &k.key);
+            }
+        }
+        let lets: Vec<&str> = r.lets.keys().map(String::as_str).collect();
+        for d in &r.decide {
+            if let Some(w) = &d.when {
+                if let Err(x) = expr::parse(w) {
+                    err(format!("{w}: {x}"), w);
+                } else {
+                    // A field read on a let that the data tables don't have: "No field tg on person".
+                    for p2 in expr::paths(w) {
+                        let mut parts = p2.split('.');
+                        let root = parts.next().unwrap_or("");
+                        if let (true, Some(field)) = (lets.contains(&root), parts.next()) {
+                            if let Some(table) = r.lets.get(root).and_then(|e| e.split('\'').nth(1).or(e.split('"').nth(1))) {
+                                let cols: Vec<String> = p.data.get(table).and_then(|t| t.as_array()).and_then(|a| a.first()).and_then(|row| row.as_object()).map(|o| o.keys().cloned().collect()).unwrap_or_default();
+                                if !cols.is_empty() && !cols.iter().any(|c| c == field) {
+                                    let close = cols.iter().min_by_key(|c| strsim(c, field)).cloned().unwrap_or_default();
+                                    err(format!("No field “{field}” on {root}. Did you mean “{close}”?"), w);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !names.contains(&d.answer.as_str()) && !GENERIC.iter().any(|g| g.0 == d.answer) {
+                err(format!("decide → “{}”: no such answer", d.answer), &format!("answer: {}", d.answer));
+            }
+        }
+        if let Some(w) = &r.wait {
+            for a in [&w.answer, &w.then] {
+                if !names.contains(&a.as_str()) {
+                    err(format!("wait → “{a}”: no such answer"), &format!("answer: {a}"));
+                }
+            }
+        }
+        if !r.fail.is_empty() && !GENERIC.iter().any(|g| g.0 == r.fail) {
+            err(format!("fail: {}", GENERIC.iter().map(|g| g.0).collect::<Vec<_>>().join(" | ")), "fail:");
+        }
+        if !["", "authorization_code", "password"].contains(&r.grant.as_str()) {
+            err("grant: authorization_code | password".into(), "grant:");
+        }
+        if !r.step.is_empty() {
+            if let Err(x) = expr::parse(&r.step) {
+                err(format!("step: {x}"), &r.step);
+            }
+        }
+        if !r.native.is_empty() {
+            match crate::restpki::NATIVE.iter().find(|n| n.0 == r.native) {
+                None => err(format!("native: {}", crate::restpki::NATIVE.iter().map(|n| n.0).collect::<Vec<_>>().join(" | ")), "native:"),
+                Some((_, answers)) => {
+                    for a in answers.iter().filter(|a| !names.contains(a)) {
+                        err(format!("native {} answers “{a}”: no such answer", r.native), &r.native);
+                    }
+                }
+            }
+        }
+        if !r.receive.auth.is_empty() && !["none", "bearer", "basic", "session"].contains(&r.receive.auth.as_str()) {
+            err("receive.auth: none | bearer | basic | session".into(), "auth:");
+        }
+        for s in &r.send {
+            if let Err(x) = expr::check_template(&s.url).and_then(|_| expr::check_template(&s.body)) {
+                err(format!("send: {x}"), &s.url);
+            }
+        }
+    }
+    for pg in &p.pages {
+        let (m, path) = pg.method_path();
+        if m != "GET" || !path.starts_with('/') {
+            err(format!("page “{}”: GET /path", pg.route), &pg.route);
+        }
+        if let Err(x) = expr::check_template(&pg.ask) {
+            err(format!("page ask: {x}"), &pg.ask);
+        }
+        for c in &pg.checks {
+            if !["pkce_s256", "state", "redirect_uri"].contains(&c.as_str()) {
+                err(format!("checks: “{c}”; known: pkce_s256, state, redirect_uri"), c);
+            }
+        }
+        if pg.buttons.is_empty() || pg.buttons.len() > 2 {
+            err("buttons: one or two (authorize, then deny)".into(), "buttons:");
+        }
+        for f in &pg.fields {
+            if let Field::Person(pf) = f {
+                if !p.data.contains_key(&pf.from) {
+                    err(format!("person.from: no data table “{}”", pf.from), &pf.from);
+                }
+            }
+        }
+        if let Some(pu) = &pg.push {
+            for e in [&pu.when, &pu.person] {
+                if let Err(x) = expr::parse(e) {
+                    err(format!("push: {x}"), e);
+                }
+            }
+            if !names.contains(&pu.answer.as_str()) {
+                err(format!("push.answer “{}”: no such answer", pu.answer), &pu.answer);
+            }
+        }
+    }
+    for a in &p.answers {
+        if let Err(x) = expr::check_template(&a.body).and_then(|_| expr::check_template(&a.sentence)) {
+            err(format!("answer {}: {x}", a.name), &format!("name: {}", a.name));
+        }
+    }
+    if p.service.limits.fail_share < 0.0 || p.service.limits.fail_share > 1.0 {
+        err("limits.fail_share: 0 to 1".into(), "fail_share");
+    }
+    out
+}
+
+fn strsim(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut cur = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            cur.push((prev[j] + (ca != *cb) as usize).min(prev[j + 1] + 1).min(cur[j] + 1));
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
+/// Saves after validating; refuses a file with errors.
+pub fn save(ctx: &Ctx, p: &Plugin) -> Result<String, ApiError> {
+    valid_name(&p.service.name)?;
+    let t = serde_yaml::to_string(p).map_err(|e| ApiError::internal(e.to_string()))?;
+    save_text(ctx, &p.service.name, &t)
+}
+
+pub fn save_text(ctx: &Ctx, name: &str, t: &str) -> Result<String, ApiError> {
+    let p = parse(t).map_err(|e| ApiError::bad(format!("{}: {e}", rel(name))))?;
+    let errs = validate(&p, t);
+    if !errs.is_empty() {
+        return Err(ApiError::bad(format!("{}: {}", rel(name), errs[0]["error"].as_str().unwrap_or(""))).with(json!({"errors": errs})));
+    }
+    if p.service.name != name {
+        return Err(ApiError::bad(format!("service.name is “{}” but the file is {}", p.service.name, rel(name))));
+    }
+    std::fs::create_dir_all(dir(ctx)).map_err(|e| ApiError::internal(e.to_string()))?;
+    std::fs::write(file(ctx, name), t).map_err(|e| ApiError::internal(e.to_string()))?;
+    ctx.live.send("apis.plugin", name, "updated");
+    Ok(version(t))
+}
+
+/// "300ms..600ms" → (300, 600)
+pub fn latency(s: &str) -> (u64, u64) {
+    let s = s.replace(' ', "");
+    match s.split_once("..") {
+        Some((a, b)) => (stuntman_core::util::parse_ms(a).unwrap_or(0), stuntman_core::util::parse_ms(b).unwrap_or(0)),
+        None => {
+            let x = stuntman_core::util::parse_ms(&s).unwrap_or(0);
+            (x, x)
+        }
+    }
+}
+
+/// "10/s" → 10 per 1000 ms; "100/day" → 100 per day.
+pub fn per(s: &str) -> Option<(u64, i64)> {
+    let (n, u) = s.split_once('/')?;
+    let w = match u.trim() { "s" | "sec" => 1000, "m" | "min" => 60_000, "h" | "hour" => 3_600_000, "d" | "day" => 86_400_000, _ => return None };
+    Some((n.trim().parse().ok()?, w))
+}
+
+/// The catalog: plugin files shipped with Stuntman (engine/plugins/*.yaml).
+pub fn catalog_dir() -> std::path::PathBuf {
+    std::env::var("STUNTMAN_PLUGINS").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins"))
+}
+
+#[cfg(test)]
+mod t {
+    use super::*;
+
+    #[test]
+    fn validation_names_the_line() {
+        let t = "service:\n  name: s\nroutes:\n  - route: POST /v\n    let:\n      person: lookup('people', 'cpf', body.cpf)\n    decide:\n      - when: person.tg == 'x'\n        answer: ok\nanswers:\n  - name: ok\ndata:\n  people:\n    - {cpf: '1', tag: a}\n";
+        let p = parse(t).unwrap();
+        let e = validate(&p, t);
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert!(e[0]["error"].as_str().unwrap().contains("Did you mean “tag”"));
+        assert_eq!(e[0]["line"], 8);
+        assert_eq!(latency("300ms..600ms"), (300, 600));
+        assert_eq!(per("10/s"), Some((10, 1000)));
+    }
+}

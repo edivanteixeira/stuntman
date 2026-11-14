@@ -1,0 +1,29 @@
+# Stuntman for a shared test environment.
+# STUNTMAN_HOST is the name apps and people use to reach it (shown in base URLs, links and MCP).
+# Stuntman has no sign-in yet: publish it only behind something that does (VPN, Cloudflare Access,
+# a reverse proxy with auth) or bind the ports to a private interface. See README › Running in Docker.
+services:
+  stuntman:
+    build: .
+    image: stuntman:latest
+    restart: unless-stopped
+    environment:
+      STUNTMAN_HOST: ${STUNTMAN_HOST:-localhost:8025}
+      STUNTMAN_ENV: ${STUNTMAN_ENV:-stg-a}
+    volumes:
+      - stuntman-data:/data
+    ports:
+      - "${BIND:-127.0.0.1}:8025:8025"   # UI, API, MCP, Zenvia, WhatsApp, Identity, webhooks intake
+      - "${BIND:-127.0.0.1}:2525:2525"   # SMTP
+      - "${BIND:-127.0.0.1}:8027:8027"   # webhook inboxes
+      - "${BIND:-127.0.0.1}:8028:8028"   # HTTP APIs (plugins)
+      - "${BIND:-127.0.0.1}:8443:8443"   # HTTP APIs over TLS (Test CA)
+      - "${BIND:-127.0.0.1}:8444:8444"   # Key Vault (TLS)
+      - "${BIND:-127.0.0.1}:5673:5673"   # AMQP (Service Bus / RabbitMQ)
+      - "${BIND:-127.0.0.1}:5671:5671"   # AMQPS
+      - "${BIND:-127.0.0.1}:10000:10000" # Azure Blob
+      - "${BIND:-127.0.0.1}:9000:9000"   # S3
+      - "${BIND:-127.0.0.1}:4317:4317"   # OTLP gRPC
+      - "${BIND:-127.0.0.1}:4318:4318"   # OTLP HTTP
+volumes:
+  stuntman-data:

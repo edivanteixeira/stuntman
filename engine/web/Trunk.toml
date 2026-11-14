@@ -1,0 +1,11 @@
+[build]
+target = "index.html"
+dist = "dist"
+
+[serve]
+port = 8026
+
+[[proxy]]
+backend = "http://localhost:8025/api/"
+[[proxy]]
+backend = "http://localhost:8025/sendgrid/"

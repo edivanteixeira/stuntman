@@ -1,0 +1,81 @@
+# Valid ViDaaS: the PSC API of an ICP-Brasil cloud certificate with push approval. The app asks
+# authorize with redirect_uri=push:// and login_hint=<CPF>, gets "push://?code=…" at once and polls
+# trusted-services/authentications until someone approves "on the phone" (a Stuntman page, or
+# approve_push). Synthetic people; certificates from the Stuntman Test CA.
+service:
+  name: vidaas
+  title: Valid ViDaaS
+  origin: community
+  region: BR
+  description: Cloud certificates, push approval on the phone
+pages:
+  - route: GET /v0/oauth/authorize
+    title: Valid ViDaaS
+    ask: "{{ query.client_id | default('The app') }} wants to use a cloud certificate to sign"
+    fields:
+      - person: {from: people, label: Who is signing}
+    buttons: [Authorize, Deny]
+    checks: [pkce_s256, redirect_uri]
+    push:
+      when: query.redirect_uri == 'push://'
+      person: query.login_hint
+      answer: push_sent
+      seconds: 180
+routes:
+  - route: GET /valid/api/v1/trusted-services/authentications
+    step: query.code
+    decide:
+      - when: step.status == 'approved'
+        answer: approved
+      - answer: pending
+  - route: POST /v0/oauth/token
+    grant: authorization_code
+  - route: POST /v0/oauth/user-discovery
+    receive: {body: [val_cpf_cnpj]}
+    let:
+      person: lookup('people', 'cpf', body.val_cpf_cnpj)
+    decide:
+      - when: has(person) && person.certificate != 'none'
+        answer: user_found
+      - answer: user_not_found
+  - route: GET /v0/oauth/certificate-discovery
+    receive: {auth: bearer}
+    let:
+      person: auth.person
+    decide:
+      - answer: certificates
+  - route: POST /v0/oauth/signature
+    receive: {auth: bearer, body: [hashes]}
+    let:
+      person: auth.person
+    decide:
+      - answer: signed
+answers:
+  - name: push_sent
+    headers: {content-type: text/plain}
+    sentence: "Push approval sent for {{ query.login_hint | mask }}"
+    body: "push://?code={{ step.code }}"
+  - name: pending
+    note: nobody approved yet (or rejected, or it expired); the app keeps polling
+    sentence: "Push {{ query.code }}: {{ step.status | default('unknown') }}"
+    body: '{"authorizationToken": null, "redirectUrl": null}'
+  - name: approved
+    sentence: "Push {{ query.code }} approved"
+    body: '{"authorizationToken": "{{ step.grant }}", "redirectUrl": null}'
+  - name: user_found
+    sentence: "{{ person.name }} has a certificate"
+    body: '{"status": "S", "slots": [{"slot_alias": "{{ person.alias }}", "label": "{{ person.kind }}"}]}'
+  - name: user_not_found
+    sentence: "No certificate for {{ body.val_cpf_cnpj | mask }}"
+    body: '{"status": "N", "slots": []}'
+  - name: certificates
+    sentence: "Certificate of {{ person.name }} ({{ person.certificate | default('valid') }})"
+    body: '{"status": "S", "certificates": [{"alias": "{{ person.alias }}", "certificate": {{ cert_pem(person) | json }}}]}'
+  - name: signed
+    note: RAW PKCS#1 v1.5 over each SHA-256 hash (base64)
+    sentence: "{{ size(body.hashes) }} hash(es) signed by {{ person.name }}"
+    body: '{"signatures": {{ sign_all(person, body.hashes, "base64") | json }}, "certificate_alias": "{{ person.alias }}"}'
+data:
+  people:
+    - {name: Olivia Brooks, cpf: "321.654.987-91", alias: CERT-01, kind: e-CPF A1, certificate: valid}
+    - {name: Ethan Price, cpf: "741.852.963-55", alias: CERT-02, kind: e-CPF A1, certificate: expired}

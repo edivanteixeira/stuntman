@@ -1,0 +1,27 @@
+[package]
+name = "stuntman"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+stuntman-core.workspace = true
+stuntman-email.workspace = true
+stuntman-webhook.workspace = true
+stuntman-telemetry.workspace = true
+stuntman-storage.workspace = true
+stuntman-apis.workspace = true
+stuntman-whatsapp.workspace = true
+stuntman-sms.workspace = true
+stuntman-keyvault.workspace = true
+stuntman-identity.workspace = true
+stuntman-messaging.workspace = true
+axum.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+tower-http = { version = "0.6", features = ["fs"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+reqwest.workspace = true
+serde_urlencoded = "0.7"
+tower = { version = "0.5", features = ["util"] }
+serde_yaml.workspace = true

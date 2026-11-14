@@ -1,0 +1,32 @@
+[workspace]
+members = ["crates/core", "crates/email", "crates/webhook", "crates/telemetry", "crates/storage", "crates/apis", "crates/whatsapp", "crates/sms", "crates/keyvault",
+    "crates/identity", "crates/messaging", "crates/server", "web"]
+resolver = "2"
+
+[workspace.dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+base64 = "0.22"
+rand = "0.8"
+futures = "0.3"
+stuntman-core = { path = "crates/core" }
+stuntman-email = { path = "crates/email" }
+stuntman-webhook = { path = "crates/webhook" }
+stuntman-telemetry = { path = "crates/telemetry" }
+stuntman-storage = { path = "crates/storage" }
+stuntman-apis = { path = "crates/apis" }
+stuntman-whatsapp = { path = "crates/whatsapp" }
+stuntman-sms = { path = "crates/sms" }
+stuntman-keyvault = { path = "crates/keyvault" }
+stuntman-identity = { path = "crates/identity" }
+stuntman-messaging = { path = "crates/messaging" }
+
+# RSA key generation is seconds slow unoptimised; vault keys are made at run time.
+[profile.dev.package.rsa]
+opt-level = 3

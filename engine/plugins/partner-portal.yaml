@@ -1,0 +1,38 @@
+# A partner portal that logs in once and keeps a session cookie (EDI-style portals). Stuntman issues the
+# cookie, expires it on demand (expire_tokens) and answers "Session expired" like the portal.
+service:
+  name: partner-portal
+  title: Partner portal
+  origin: community
+  description: Session-cookie login, then shipments
+  auth:
+    session:
+      cookie: JSESSIONID
+      ttl: 30m
+      any_user: true
+routes:
+  - route: POST /login
+    login: true
+  - route: GET /api/shipments
+    receive:
+      auth: session
+    decide:
+      - answer: shipments
+  - route: GET /api/shipments/{id}
+    receive:
+      auth: session
+    decide:
+      - when: path.id.startsWith('lost')
+        answer: not_found
+      - answer: shipment
+answers:
+  - name: shipments
+    sentence: "Listed shipments for {{ caller }}"
+    body: '{"shipments": [{"id": "shp_1042", "status": "in_transit"}, {"id": "shp_1043", "status": "delivered"}]}'
+  - name: shipment
+    sentence: "Shipment {{ path.id }}: in transit"
+    body: '{"id": "{{ path.id }}", "status": "in_transit", "updated": "{{ now | tz(''America/Sao_Paulo'') }}"}'
+  - name: not_found
+    status: 404
+    sentence: "Shipment {{ path.id }} not found"
+    body: '{"error": "not_found"}'

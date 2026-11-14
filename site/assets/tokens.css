@@ -1,0 +1,74 @@
+/* Stuntman site tokens. Values come from the app palette (design/png/00-palette.png):
+ * warm neutrals on a fixed ramp, ink for text and actions, one colour per provider line. Nothing purple. */
+:root {
+  color-scheme: light;
+
+  /* neutrals */
+  --color-surface: oklch(100% 0 0);          /* #FFFFFF */
+  --color-paper: oklch(98.4% 0.002 106);     /* #FAFAF8 */
+  --color-subtle: oklch(95.6% 0.004 106);    /* #F1F1EE */
+  --color-rule: oklch(91.4% 0.005 106);      /* #E3E3DF */
+  --color-border: oklch(82.6% 0.007 106);    /* #C9C9C4 */
+  --color-caption: oklch(52.6% 0.009 106);   /* #6F6F68, 4.9:1 on paper */
+  --color-text-2: oklch(43.8% 0.006 255);    /* #55575A */
+  --color-raised: oklch(29.6% 0.006 265);    /* #2E3034 */
+  --color-ink: oklch(19.8% 0.006 265);       /* #16181B */
+  --color-on-ink: oklch(98.4% 0.002 106);
+  --color-on-ink-2: oklch(82.6% 0.007 106);
+  --color-on-ink-3: oklch(70.4% 0.008 106);  /* #A3A39C */
+  --color-ok-on-ink: oklch(80.5% 0.1 160);   /* #7FD1A8 */
+  --color-bad-on-ink: oklch(78.6% 0.08 22);  /* #F2A3A3 */
+
+  /* provider lines (line / text-safe) */
+  --line-red: oklch(57.5% 0.236 22);   --text-red: oklch(48% 0.19 24);
+  --line-green: oklch(61% 0.15 158);   --text-green: oklch(50% 0.11 162);
+  --line-blue: oklch(53.5% 0.16 252);  --text-blue: oklch(46% 0.13 252);
+  --line-amber: oklch(78.5% 0.165 82); --text-amber: oklch(50.5% 0.11 75);
+  --line-teal: oklch(65% 0.11 205);    --text-teal: oklch(50% 0.085 205);
+  --line-brown: oklch(50% 0.09 60);    --text-brown: oklch(50% 0.09 60);
+  --line-graphite: oklch(43.8% 0.006 255);
+  --line-orange: oklch(64.5% 0.19 45); --text-orange: oklch(52% 0.15 45);
+
+  /* states */
+  --color-attention-fg: oklch(50.5% 0.11 75);
+  --color-attention-bg: oklch(95.5% 0.045 88);
+  --color-focus: oklch(19.8% 0.006 265);
+
+  /* type */
+  --font-display: "Archivo", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Archivo", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-md: 1.125rem;
+  --text-lg: 1.25rem;
+  --text-xl: clamp(1.5rem, 1.2rem + 1.2vw, 1.875rem);
+  --text-2xl: clamp(2rem, 1.4rem + 2.4vw, 2.75rem);
+  --text-display: clamp(2.5rem, 1.5rem + 4.2vw, 4.5rem);
+
+  /* space (4 pt) */
+  --space-2xs: 0.25rem;
+  --space-xs: 0.5rem;
+  --space-sm: 0.75rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2rem;
+  --space-2xl: 3rem;
+  --space-3xl: 4.5rem;
+  --space-4xl: 7.5rem;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-full: 999px;
+  --rule: 1px solid var(--color-rule);
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+
+  --page-max: 80rem;
+  --gutter: clamp(1rem, 0.4rem + 2.6vw, 5rem);
+}

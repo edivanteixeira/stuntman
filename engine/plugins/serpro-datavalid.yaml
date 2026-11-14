@@ -1,0 +1,238 @@
+# SERPRO Datavalid V5: CPF validation, with or without a selfie (face match + liveness).
+# One route takes both calls an app makes on POST /{datavalid|datavalid-demonstracao}/v5/pessoa-fisica/validacao:
+# with validacao.biometria_facial it is the face check, without it the CPF-only check ("pf-basica").
+# The CPF picks the situation (the people table); any other CPF is approved. Synthetic data only:
+# the CPFs pass the check digits and belong to no one.
+service:
+  name: serpro-datavalid
+  title: SERPRO Datavalid
+  origin: community
+  region: BR
+  description: Identity validation (CPF, face, liveness) - Datavalid V5
+  base_url: https://gateway.apiserpro.serpro.gov.br
+  real_host: gateway.apiserpro.serpro.gov.br
+  auth:
+    oauth2_client_credentials:
+      client_id: secret://serpro-client-id
+      client_secret: secret://serpro-client-secret
+      any_client: true
+      token_ttl: 60m
+  billing:
+    enabled: true
+    per_call: 0.2
+    warn_above: 100/day
+  limits:
+    latency: 300ms..600ms
+    rate: 10/s
+routes:
+  # Basic auth (consumer key:secret), form body grant_type=client_credentials.
+  - route: POST /token
+    token: true
+  # product: datavalid, or datavalid-demonstracao (the demo gateway answers the same way here).
+  - route: POST /{product}/v5/pessoa-fisica/validacao
+    billable: true
+    receive:
+      auth: bearer
+      body: [cpf]
+    let:
+      person: lookup('people', 'cpf', body.cpf)
+    keep:
+      state: validations
+      key: digits(body.cpf)
+    decide:
+      - when: has(path.product) && path.product != 'datavalid' && path.product != 'datavalid-demonstracao'
+        answer: no_product
+      - when: "!has(body.privacidade.rfb.id_template)"
+        answer: template_not_found
+      - when: person.answer == 'name_mismatch'
+        answer: name_mismatch
+      - when: person.answer == 'face_mismatch'
+        answer: face_mismatch
+      - when: person.answer == 'borderline'
+        answer: borderline
+      - when: person.answer == 'liveness_fake'
+        answer: liveness_fake
+      - when: person.answer == 'liveness_bad_quality'
+        answer: liveness_bad_quality
+      - when: person.answer == 'name_similarity_missing'
+        answer: name_similarity_missing
+      - when: person.answer == 'cpf_irregular'
+        answer: cpf_irregular
+      - when: person.answer == 'no_biometrics'
+        answer: no_biometrics
+      - when: person.answer == 'not_found'
+        answer: not_found
+      - when: person.answer == 'invalid_cpf'
+        answer: invalid_cpf
+      - when: person.answer == 'bad_photo'
+        answer: bad_photo
+      - when: person.answer == '500'
+        answer: '500'
+      - when: person.answer == 'token_expired'
+        answer: token_expired
+      - when: person.answer == 'malformed_json'
+        answer: malformed_json
+      - when: person.answer == 'timeout'
+        answer: timeout
+      - answer: approved
+    schema:
+      rfb_existe: bool
+      cnh_existe: bool
+      rfb.situacao_cpf: bool
+      rfb.nome_similaridade: number
+      biometria_facial.disponivel: bool
+      biometria_facial.similaridade: number
+      biometria_facial.vivacidade: string
+answers:
+  # 200 bodies: rfb for both calls; biometria_facial only when the request sent a selfie;
+  # rfb.data_nascimento only when the request sent a birth date.
+  - name: approved
+    note: CPF regular, name matches (0.98); with a selfie, face 0.99 and alive
+    sentence: "Validated {{ body.cpf | mask }}{{ has(body.validacao.biometria_facial) ? ' with a selfie: face 0.99, alive' : ': CPF regular' }}"
+    body: |
+      {
+        "rfb_existe": true,
+        "cnh_existe": false,
+        "rfb": { "situacao_cpf": true, "nome_similaridade": 0.98{{ has(body.validacao.data_nascimento) ? ', "data_nascimento": true' : '' }} }{{ has(body.validacao.biometria_facial) ? ', "biometria_facial": { "disponivel": true, "probabilidade": "Altíssima probabilidade", "similaridade": 0.99, "vivacidade": "real" }' : '' }}
+      }
+  - name: name_mismatch
+    note: everything matches except the name (similarity 0.10)
+    sentence: "Validated {{ body.cpf | mask }}: name similarity 0.10"
+    body: |
+      {
+        "rfb_existe": true,
+        "cnh_existe": false,
+        "rfb": { "situacao_cpf": true, "nome_similaridade": 0.10{{ has(body.validacao.data_nascimento) ? ', "data_nascimento": true' : '' }} }{{ has(body.validacao.biometria_facial) ? ', "biometria_facial": { "disponivel": true, "probabilidade": "Altíssima probabilidade", "similaridade": 0.99, "vivacidade": "real" }' : '' }}
+      }
+  - name: face_mismatch
+    note: the selfie is someone else (face 0.30); the CPF-only check passes
+    sentence: "Validated {{ body.cpf | mask }}{{ has(body.validacao.biometria_facial) ? ': face 0.30, another person' : ': CPF regular' }}"
+    body: |
+      {
+        "rfb_existe": true,
+        "cnh_existe": false,
+        "rfb": { "situacao_cpf": true, "nome_similaridade": 0.98{{ has(body.validacao.data_nascimento) ? ', "data_nascimento": true' : '' }} }{{ has(body.validacao.biometria_facial) ? ', "biometria_facial": { "disponivel": true, "probabilidade": "Baixíssima probabilidade", "similaridade": 0.30, "vivacidade": "real" }' : '' }}
+      }
+  - name: borderline
+    note: face and name similarity exactly 0.80 (tests >= against >)
+    sentence: "Validated {{ body.cpf | mask }}: similarity 0.80, on the line"
+    body: |
+      {
+        "rfb_existe": true,
+        "cnh_existe": false,
+        "rfb": { "situacao_cpf": true, "nome_similaridade": 0.80{{ has(body.validacao.data_nascimento) ? ', "data_nascimento": true' : '' }} }{{ has(body.validacao.biometria_facial) ? ', "biometria_facial": { "disponivel": true, "probabilidade": "Média probabilidade", "similaridade": 0.80, "vivacidade": "real" }' : '' }}
+      }
+  - name: liveness_fake
+    note: the selfie is a photo of a photo (vivacidade fake)
+    sentence: "Validated {{ body.cpf | mask }}: liveness fake"
+    body: |
+      {
+        "rfb_existe": true,
+        "cnh_existe": false,
+        "rfb": { "situacao_cpf": true, "nome_similaridade": 0.98{{ has(body.validacao.data_nascimento) ? ', "data_nascimento": true' : '' }} }{{ has(body.validacao.biometria_facial) ? ', "biometria_facial": { "disponivel": true, "probabilidade": "Altíssima probabilidade", "similaridade": 0.99, "vivacidade": "fake" }' : '' }}
+      }
+  - name: liveness_bad_quality
+    note: the selfie is too poor to judge liveness (vivacidade bad_quality)
+    sentence: "Validated {{ body.cpf | mask }}: liveness bad_quality"
+    body: |
+      {
+        "rfb_existe": true,
+        "cnh_existe": false,
+        "rfb": { "situacao_cpf": true, "nome_similaridade": 0.98{{ has(body.validacao.data_nascimento) ? ', "data_nascimento": true' : '' }} }{{ has(body.validacao.biometria_facial) ? ', "biometria_facial": { "disponivel": true, "probabilidade": "Altíssima probabilidade", "similaridade": 0.99, "vivacidade": "bad_quality" }' : '' }}
+      }
+  - name: name_similarity_missing
+    note: a degraded 200 without rfb.nome_similaridade
+    sentence: "Validated {{ body.cpf | mask }}: no name similarity in the answer"
+    body: |
+      {
+        "rfb_existe": true,
+        "cnh_existe": false,
+        "rfb": { "situacao_cpf": true{{ has(body.validacao.data_nascimento) ? ', "data_nascimento": true' : '' }} }{{ has(body.validacao.biometria_facial) ? ', "biometria_facial": { "disponivel": true, "probabilidade": "Altíssima probabilidade", "similaridade": 0.99, "vivacidade": "real" }' : '' }}
+      }
+  - name: cpf_irregular
+    note: the face matches but the CPF is not regular at the Receita (suspended, cancelled)
+    sentence: "Validated {{ body.cpf | mask }}: CPF not regular"
+    body: |
+      {
+        "rfb_existe": true,
+        "cnh_existe": false,
+        "rfb": { "situacao_cpf": false, "nome_similaridade": 0.98{{ has(body.validacao.data_nascimento) ? ', "data_nascimento": true' : '' }} }{{ has(body.validacao.biometria_facial) ? ', "biometria_facial": { "disponivel": true, "probabilidade": "Altíssima probabilidade", "similaridade": 0.99, "vivacidade": "real" }' : '' }}
+      }
+  - name: no_biometrics
+    note: 200, but the CPF has no photo in the base (biometria_facial.disponivel false)
+    sentence: "Validated {{ body.cpf | mask }}: no photo on file"
+    body: |
+      {
+        "rfb_existe": true,
+        "cnh_existe": false,
+        "rfb": { "situacao_cpf": true, "nome_similaridade": 0.98{{ has(body.validacao.data_nascimento) ? ', "data_nascimento": true' : '' }} }{{ has(body.validacao.biometria_facial) ? ', "biometria_facial": { "disponivel": false, "probabilidade": "", "similaridade": 0 }' : '' }}
+      }
+  - name: not_found
+    status: 204
+    note: HTTP 204, the CPF is not in the base
+    sentence: "{{ body.cpf | mask }} not found (204)"
+  - name: invalid_cpf
+    status: 422
+    note: DV040, CPF invalid
+    sentence: "Refused {{ body.cpf | mask }}: DV040 CPF invalid"
+    body: '{"codigo": "DV040", "mensagem": "CPF invalido"}'
+  - name: bad_photo
+    status: 422
+    note: DV045, the photo is not good enough to process
+    sentence: "Refused {{ body.cpf | mask }}: DV045 photo quality"
+    body: '{"codigo": "DV045", "mensagem": "Imagem sem qualidade para o processamento"}'
+  - name: template_not_found
+    status: 422
+    note: DV207, privacidade.rfb.id_template missing or not registered (the app's configuration)
+    sentence: "Refused: DV207 template not found"
+    body: '{"code": "DV207", "args": ["TEMPLATE_NOT_FOUND"]}'
+  - name: gcc_hash_refused
+    status: 422
+    note: DV300, the GCC consent hash (privacidade.senatran.token) was refused; exists only to be forced
+    sentence: "Refused: DV300 consent hash refused"
+    body: '{"code": "DV300", "args": ["HASH_INVALIDO"]}'
+  - name: token_expired
+    status: 401
+    note: the gateway refuses the Bearer token (none, expired or revoked)
+    sentence: "Refused: invalid credentials (401)"
+    body: '{"fault": {"code": 900901, "message": "Invalid Credentials", "description": "Invalid Credentials. Make sure you have provided the correct security credentials"}}'
+  - name: malformed_json
+    note: 200 with a body that is not JSON
+    sentence: "Answered 200 with a body that is not JSON"
+    raw: true
+    body: isto-nao-e-json
+  - name: serpro_down
+    status: 503
+    note: exists only to be forced
+    sentence: "SERPRO down (503)"
+    headers: {Retry-After: '30'}
+    body: '{"message": "Service Unavailable"}'
+  - name: token_refused
+    status: 401
+    note: "POST /token refuses the consumer key and secret; force it with route: POST /token"
+    sentence: "Token refused: invalid_client"
+    body: '{"error": "invalid_client", "error_description": "A valid OAuth client could not be found for client_id"}'
+  - name: no_product
+    status: 404
+    note: a path other than /datavalid or /datavalid-demonstracao
+    sentence: "No product /{{ path.product }} on the gateway"
+    body: '{"code": "404", "message": "No matching resource found for given API Request"}'
+data:
+  # The CPF picks the answer; a CPF not listed here is approved.
+  people:
+    - {cpf: '111.111.111-11', name: Emma Carter, answer: approved}
+    - {cpf: '111.222.111-55', name: Liam Foster, answer: name_mismatch}
+    - {cpf: '222.222.222-22', name: Olivia Brooks, answer: face_mismatch}
+    - {cpf: '333.333.333-33', name: Noah Price, answer: borderline}
+    - {cpf: '444.444.444-44', name: Ava Reed, answer: liveness_fake}
+    - {cpf: '444.555.444-88', name: Ethan Moore, answer: liveness_bad_quality}
+    - {cpf: '555.555.555-55', name: Mia Collins, answer: name_similarity_missing}
+    - {cpf: '666.666.666-66', name: Lucas Hayes, answer: cpf_irregular}
+    - {cpf: '101.010.101-33', name: Grace Turner, answer: no_biometrics}
+    - {cpf: '777.777.777-77', name: Henry Walsh, answer: not_found}
+    - {cpf: '888.888.888-88', name: Chloe Bennett, answer: invalid_cpf}
+    - {cpf: '888.999.888-11', name: Jack Morgan, answer: bad_photo}
+    - {cpf: '999.999.999-99', name: Lily Parker, answer: '500'}
+    - {cpf: '999.888.999-55', name: Owen Hughes, answer: token_expired}
+    - {cpf: '131.313.131-88', name: Zoe Fleming, answer: malformed_json}
+    - {cpf: '121.212.121-08', name: Caleb Ross, answer: timeout}

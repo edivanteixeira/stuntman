@@ -1,0 +1,68 @@
+# Lacuna REST PKI with the Web PKI extension: PAdES signatures with the certificate installed in the
+# signer's machine. The app starts (PDF, page, position in cm, stamp PNG) and gets a token; the
+# browser (the Web PKI stand-in) posts the certificate to __webpki/{token}/start, signs toSignData
+# with its own key and posts it to __webpki/{token}/signature; the app collects the signed PDF, a
+# real PAdES (ETSI.CAdES.detached) incremental update. Endpoint: <APIs port>[/e/<env>]/restpki/.
+# The signer's issuers go in the CMS: the Stuntman Test CA, the chain the browser sends and the
+# `issuers` table (PEM or base64 DER) for a CA of your own.
+service:
+  name: restpki
+  title: Lacuna REST PKI
+  origin: community
+  region: BR
+  base_url: https://pki.rest
+  description: PAdES signatures with the browser's certificate (Web PKI), signed PDF back
+  cors: true
+  ignore_case: true
+routes:
+  - route: GET /Api/system/info
+    decide:
+      - answer: info
+  - route: POST /Api/v2/PadesSignatures
+    native: restpki.start
+  - route: POST /__webpki/{token}/start
+    native: restpki.webpki_start
+  - route: POST /__webpki/{token}/signature
+    native: restpki.webpki_signature
+  - route: POST /Api/v2/PadesSignatures/{token}/SignedBytes
+    native: restpki.finish
+answers:
+  - name: info
+    sentence: REST PKI version asked
+    body: '{"productName": "REST PKI (Stuntman)", "productVersion": "1.30.0"}'
+  - name: started
+    note: the token; the browser signs it with the Web PKI
+    sentence: "PAdES started on page {{ call.page }} at {{ call.position.left }}, {{ call.position.bottom }} cm ({{ call.position.width }} × {{ call.position.height }} cm){{ call.image ? ' with a stamp image' : ', no image' }}"
+    body: '{{ result | json }}'
+  - name: to_sign
+    note: the signed attributes (DER) the browser signs with the certificate's key
+    sentence: "Web PKI: certificate of {{ call.signer }} ({{ call.thumbprint }}), attributes to sign"
+    body: '{{ result | json }}'
+  - name: signature_ok
+    sentence: "Web PKI: signature checked against {{ call.thumbprint }}"
+    body: '{{ result | json }}'
+  - name: invalid_signature
+    status: 422
+    note: the signature does not match the certificate's public key
+    sentence: "Web PKI: the signature does not match {{ call.thumbprint }}"
+    body: '{{ result | json }}'
+  - name: signed
+    note: the signed PDF (PAdES) and the signer's CertificateModel
+    sentence: "Signed PDF ({{ call.signedBytes }} bytes) by {{ call.thumbprint }}"
+    body: '{{ result | json }}'
+  - name: signature_not_found
+    status: 422
+    note: the app finished before the browser signed
+    sentence: "Finished {{ call.token }} but the Web PKI never signed it"
+    body: '{{ result | json }}'
+  - name: token_not_found
+    status: 404
+    sentence: "Unknown token {{ call.token }}"
+    body: '{{ result | json }}'
+  - name: validation_error
+    status: 422
+    note: REST PKI refuses the request (forced, or the PDF or certificate cannot be read)
+    sentence: "Refused: {{ call.error | default('forced ValidationError') }}"
+    body: '{"code": "ValidationError", "message": {{ result.message | default("Stuntman: forced failure") | json }}, "detail": {{ result.detail | default("Stuntman: forced failure") | json }}}'
+data:
+  issuers: []

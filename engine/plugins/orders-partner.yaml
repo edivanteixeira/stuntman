@@ -1,0 +1,56 @@
+# A partner's REST API written by hand (origin: yours): create, poll and cancel orders, with a
+# webhook back to the app after creating.
+service:
+  name: orders-partner
+  title: orders-partner
+  origin: yours
+  description: Generic REST example (wait and webhook steps)
+  limits:
+    latency: 50ms..150ms
+routes:
+  - route: POST /api/orders
+    receive:
+      body: [customer, items]
+    let:
+      id: "'ord_' + string(now_ms() % 100000)"
+    keep:
+      state: orders
+      key: id
+    decide:
+      - answer: created
+    send:
+      - url: "{{ body.callback_url | default('http://localhost:8027/in/orders') }}"
+        delay: 1s
+        body: '{"event": "order.created", "id": "{{ id }}", "customer": "{{ body.customer }}"}'
+        secret: secret://orders-partner-hook
+        header: X-Partner-Signature
+  - route: GET /api/orders/{id}/status
+    wait:
+      key: path.id
+      answer: processing
+      times: 3
+      then: done
+  - route: PUT /api/orders/{id}/cancel
+    decide:
+      - when: path.id.startsWith('shipped')
+        answer: cannot_cancel
+      - answer: cancelled
+answers:
+  - name: created
+    status: 201
+    sentence: "Order {{ id }} created for {{ body.customer }}"
+    body: '{"id": "{{ id }}", "status": "received"}'
+  - name: processing
+    status: 202
+    sentence: "Order {{ path.id }} still processing"
+    body: '{"id": "{{ path.id }}", "status": "processing"}'
+  - name: done
+    sentence: "Order {{ path.id }} done"
+    body: '{"id": "{{ path.id }}", "status": "done"}'
+  - name: cancelled
+    sentence: "Order {{ path.id }} cancelled"
+    body: '{"id": "{{ path.id }}", "status": "cancelled"}'
+  - name: cannot_cancel
+    status: 409
+    sentence: "Order {{ path.id }} already shipped: not cancelled"
+    body: '{"error": "already_shipped"}'

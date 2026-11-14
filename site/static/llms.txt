@@ -1,0 +1,24 @@
+# Stuntman
+
+> The stunt double for every provider your app calls: SMS, WhatsApp, e-mail, storage, queues, identity, secrets,
+> webhooks, telemetry and any HTTP API. It answers like the provider, keeps state, sends callbacks and fails on
+> cue. Every action is an MCP tool (streamable HTTP at /mcp) and an HTTP route under /api. Open source, Apache-2.0.
+
+To set Stuntman up for a project, read and follow the agent setup guide step by step:
+
+- [Agent setup guide](https://edivanteixeira.github.io/stuntman/agent-setup.md): start it, connect, find providers, configure, verify, welcome
+
+## Docs
+
+- [Getting started](https://github.com/edivanteixeira/stuntman/blob/main/docs/getting-started.md)
+- [Agents: MCP and HTTP, client setup, tools by intent](https://github.com/edivanteixeira/stuntman/blob/main/docs/agents.md)
+- [Providers: what each line speaks, keeps and provokes](https://github.com/edivanteixeira/stuntman/blob/main/docs/providers.md)
+- [Failures on cue](https://github.com/edivanteixeira/stuntman/blob/main/docs/failures.md)
+- [Plugins: the YAML format and expressions](https://github.com/edivanteixeira/stuntman/blob/main/docs/plugins.md)
+- [Environments](https://github.com/edivanteixeira/stuntman/blob/main/docs/environments.md)
+- [Configuration and ports](https://github.com/edivanteixeira/stuntman/blob/main/docs/configuration.md)
+- [Tool reference: all tools, routes and arguments](https://github.com/edivanteixeira/stuntman/blob/main/docs/reference/tools.md)
+
+## Image
+
+- Docker Hub: edivanteixeira/stuntman (linux/amd64, linux/arm64)

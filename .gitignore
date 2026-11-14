@@ -1,0 +1,7 @@
+engine/target/
+engine/data/
+engine/data.log
+engine/web/dist/
+site/dist/
+*.log
+.DS_Store

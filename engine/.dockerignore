@@ -1,0 +1,6 @@
+target
+data
+data.log
+web/dist
+**/*.log
+.DS_Store

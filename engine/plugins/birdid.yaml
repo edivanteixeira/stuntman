@@ -1,0 +1,64 @@
+# Soluti BirdID: the PSC API of an ICP-Brasil cloud certificate (OAuth2 with PKCE, OTP, certificate
+# discovery, RAW signatures). Synthetic people only; their certificates come from the Stuntman Test CA,
+# so every signature verifies. Base URL: <service>/v0 (the app's BaseUrl includes /v0).
+service:
+  name: birdid
+  title: Soluti BirdID
+  origin: community
+  region: BR
+  description: Cloud signature certificates (PSC), OTP and authorize page
+pages:
+  - route: GET /v0/oauth/authorize
+    title: Soluti BirdID
+    ask: "{{ query.client_id | default('The app') }} wants to use a cloud certificate to sign"
+    fields:
+      - person: {from: people, label: Who is signing}
+      - otp: {label: Code from the BirdID app, digits: 6, refuse: "000000", tries: 3}
+    buttons: [Authorize, Deny]
+    checks: [pkce_s256, state, redirect_uri]
+routes:
+  - route: POST /v0/oauth/token
+    grant: authorization_code
+  - route: POST /v0/oauth/pwd_authorize
+    grant: password
+  - route: GET /v0/oauth/certificate-discovery
+    receive: {auth: bearer}
+    let:
+      person: auth.person
+    decide:
+      - when: person.certificate == 'none'
+        answer: no_certificate
+      - answer: certificates
+  - route: POST /v0/oauth/signature
+    receive: {auth: bearer, body: [hashes]}
+    let:
+      person: auth.person
+    decide:
+      - when: person.certificate == 'none'
+        answer: no_certificate
+      - answer: signed
+answers:
+  - name: certificates
+    note: the person's certificate chain (leaf, then the Test CA), PEM
+    sentence: "Certificate of {{ person.name }} ({{ person.certificate | default('valid') }})"
+    body: '{"status": "S", "certificates": [{"alias": "{{ person.alias }}", "certificate": {{ cert_pem(person) | json }}}]}'
+  - name: signed
+    note: RAW PKCS#1 v1.5 over each SHA-256 hash (hex), with the person's key
+    sentence: "{{ size(body.hashes) }} hash(es) signed by {{ person.name }}"
+    body: '{"signatures": {{ sign_all(person, body.hashes, "hex") | json }}, "certificate_alias": "{{ person.alias }}"}'
+  - name: unexpected_status_1106
+    status: 500
+    raw: true
+    note: BirdID's own 500 seen in production on the signature step; a careful app logs it as the provider being unavailable and tells the signer the provider is unavailable
+    sentence: "BirdID answered 500 · 1106 UNEXPECTED_RESPONSE_STATUS_OUT_OF_LIST"
+    body: '{"detail": {"code": 1106, "status": "UNEXPECTED_RESPONSE_STATUS_OUT_OF_LIST", "message": "Unexpected response status, out of valid list"}}'
+  - name: no_certificate
+    status: 200
+    note: the person has no certificate in the cloud
+    sentence: "{{ person.name }} has no certificate"
+    body: '{"status": "N", "certificates": [], "signatures": []}'
+data:
+  people:
+    - {name: Emma Carter, cpf: "123.456.789-09", alias: emma-carter-a3, kind: e-CPF A3, certificate: valid}
+    - {name: Liam Walker, cpf: "987.654.321-00", alias: liam-walker-a3, kind: e-CPF A3, certificate: expired}
+    - {name: Noah Bennett, cpf: "456.789.123-64", alias: noah-bennett, kind: e-CPF A3, certificate: none}

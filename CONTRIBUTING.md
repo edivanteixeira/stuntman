@@ -1,0 +1,39 @@
+# Contributing to Stuntman
+
+Thank you for helping. The most valuable contribution is a **plugin for a provider you know well**: you describe its
+behaviour once, and everyone who calls that provider can test against it.
+
+## Ways to help
+
+- **Write or improve a plugin.** See [Plugins](docs/plugins.md). Plugins live in [`engine/plugins/`](engine/plugins).
+- **Report a provider behaviour Stuntman gets wrong.** Include the provider's documented request and response.
+- **Fix a bug or improve a line** (SMS, storage, identity…). Each line is a crate in `engine/crates/`.
+- **Improve the docs.** Plain, short, correct English beats long English.
+
+## Before you open a pull request
+
+```sh
+cd engine
+cargo build -p stuntman
+cargo test --workspace --exclude stuntman-web
+```
+
+If you touched a line, run its end-to-end check against a running server (see [`engine/README.md`](engine/README.md#check)).
+If you added or changed a tool, regenerate the reference:
+
+```sh
+python3 tools/gen_tool_reference.py
+```
+
+## Rules of the house
+
+1. **Synthetic data only.** People, companies and addresses are made up (`@example.com`, Acme, Globex). Never paste
+   real customer data, real tokens or production logs, not even in tests.
+2. **The provider's words.** Sentences on the timeline read like the provider would say them.
+3. **Text is the source of truth.** Anything the screen can change must round-trip through the YAML.
+4. **Safe by default.** Nothing reaches the network or the disk unless it is declared.
+5. **One line, one crate.** A new line implements the module interface and does not touch the others.
+
+## License
+
+By contributing, you agree that your contributions are licensed under the [Apache License 2.0](LICENSE).

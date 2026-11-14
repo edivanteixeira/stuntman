@@ -1,0 +1,5 @@
+# Collections shown on the Catalog: a name, what it is for, and plugin names. Nothing more.
+collections:
+  - name: Brazil · ICP-Brasil
+    description: "Everything a Brazilian signing app calls: identity checks, consent and cloud certificates. Synthetic CPFs; every certificate comes from the Stuntman Test CA."
+    plugins: [serpro-datavalid, gcc-consent, birdid, vidaas, restpki]

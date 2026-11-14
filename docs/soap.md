@@ -9,18 +9,20 @@ steps as a REST route: receive, keep, decide, respond and send. A fault is a nam
 What Stuntman does with each envelope:
 
 - Picks the operation by its **SOAPAction** (the SOAP 1.1 header or the SOAP 1.2 `action` parameter). Without
-  one, it uses the element inside `soap:Body`, and the call says that it guessed.
+  one, it uses the element inside `soap:Body`, and the call's steps note that the operation was
+  picked from the body.
 - Reads the body as fields for the steps: `body.cargoValue`, `body.destination.city`.
 - Checks the body against the **types in the WSDL and its XSDs**. When a body breaks them, Stuntman answers with
   the provider's validation fault, as a real SOAP stack would.
-- Checks **WS-Security** UsernameToken credentials when the service asks for them.
+- Checks the **WS-Security** UsernameToken when the service asks for one: that it is present, or that its user
+  and password match.
 - Answers in a **SOAP 1.1 or 1.2** envelope, or with a fault in that version's shape.
 - Sends **callbacks** to your app as SOAP calls.
 - Serves the WSDL back on `?wsdl`, with the XSDs it imports, so clients generated from it work unchanged.
 
 ## Create one from a WSDL
 
-You can start from a URL, a file on the machine that runs Stuntman, or the WSDL text. The examples use
+You can start from a URL, a file on the machine that runs Stuntman or the WSDL text. The examples use
 [`PolicyService.wsdl`](../engine/tests/soap/PolicyService.wsdl), a synthetic cargo-insurance provider with four
 operations, three faults and one callback.
 
@@ -43,7 +45,7 @@ curl -X POST http://localhost:8025/api/plugins/wsdl -H 'Content-Type: applicatio
 
 The result lists the operations, the faults, the callbacks (one-way operations that the provider sends to the
 app) and any file that could not be read. If an imported XSD cannot be fetched, Stuntman still creates the service,
-and the types from that file answer as empty elements.
+and fields of the types in that file answer as empty elements.
 
 Stuntman then creates:
 
@@ -53,7 +55,7 @@ Stuntman then creates:
 - one named answer per declared fault, with its detail element;
 - the WSDL and its XSDs, kept in `apis/<service>.soap/` and served back.
 
-Until you add rules, every operation answers its default.
+Until you add rules, every operation gives its default answer.
 
 ## Point your app at it
 
@@ -76,7 +78,7 @@ service:
   base_url: https://insurance.example.com
   real_host: insurance.example.com
 soap:
-  version: '1.2'              # '1.1', '1.2', or both (each call is answered in its own version)
+  version: '1.2'              # '1.1', '1.2' or both (each call is answered in its own version)
   endpoint: /PolicyService
   wsdl: PolicyService.wsdl     # kept in apis/example-insurance.soap/
   source: https://insurance.example.com/PolicyService?wsdl
@@ -144,13 +146,13 @@ answers:
 
 **Types.** Each type lists its fields. A name that ends in `?` is optional, `*` is optional and repeated, and `+`
 is required and repeated. A field type is either another type in the list or one of these: `string`, `decimal`,
-`double`, `int`, `boolean`, `date`, `dateTime`, `time`, `base64`, or `enum(A, B, C)`. The import writes this block
+`double`, `int`, `boolean`, `date`, `dateTime`, `time`, `base64` or `enum(A, B, C)`. The import writes this block
 from the WSDL, and you can edit it like the rest of the file.
 
 **Answers.** The `body` of an answer is the element that goes inside `soap:Body`. Stuntman adds the envelope in
 the version of the call. With `fault:`, the answer is a fault instead: `code` is `Sender` or `Receiver` (SOAP 1.1
-calls get `Client` and `Server`), `reason` is a template, and `body` is the fault's detail. Faults go out with
-HTTP 500, as real SOAP stacks send them. Text from the request is escaped before it goes back into XML.
+calls get `Client` and `Server`), `reason` is a template, and `body` is the fault's detail. Faults go out with HTTP 500 unless the answer sets another
+status, as real SOAP stacks send them. Text from the request is escaped before it goes back into XML.
 
 **Steps.** Operations take the same steps and expressions as REST routes; see [Plugins](plugins.md). Fields of
 the request are `body.<field>`, and numbers that arrive as text compare as numbers.
@@ -162,16 +164,16 @@ the call that triggered it. `send_callback` sends one on demand.
 
 1. **The envelope.** A body that is not a SOAP envelope gets a `Sender` fault.
 2. **The version.** A SOAP 1.1 envelope sent to a 1.2 service (or the reverse) gets a `VersionMismatch` fault.
-3. **The operation.** The SOAPAction picks it, or the body's element does. An operation that the WSDL does not
-   have gets a fault and goes to **Unmatched** with the whole envelope.
+3. **The operation.** The SOAPAction picks it, or the body's element does. A call for an operation that the WSDL does not have
+   gets a `Sender` fault and goes to **Unmatched** with the whole envelope.
 4. **WS-Security.** With `security: any`, a UsernameToken must be present. With `username_token`, the user and
-   password must match `users`. Otherwise, the call gets the fault "The security token could not be authenticated
+   password must match `users`. When the check fails, the call gets a `Sender` fault: "The security token could not be authenticated
    or authorized".
-5. **Types.** With `validate: true`, a missing required field, a value of the wrong type, or an element that the
+5. **Types.** With `validate: true`, a missing required field, a value of the wrong type or an element that the
    type does not have gets a `Sender` fault that names the field.
 6. **The steps** decide the answer, and Stuntman sends it in an envelope or as a fault.
 
-Every call appears in **Calls** and on the timeline with its sentence, the steps it took, and the raw envelopes
+Every call appears in **Calls** and on the timeline with its sentence, the steps it took and the raw envelopes
 in and out.
 
 ## What you can provoke
@@ -198,7 +200,7 @@ service settings stay as they are. The result lists what was added and removed.
 |---|---|
 | `import_wsdl` | creates a SOAP service from a WSDL (URL, file or text) |
 | `reimport_wsdl` | reads the WSDL again and keeps your steps |
-| `list_operations` | operations, SOAPActions, types, and the served WSDL's URL |
+| `list_operations` | operations, SOAPActions, types and the served WSDL's URL |
 | `set_operation` | replaces an operation's steps |
 | `try_operation` | runs an envelope through the service without keeping, counting or sending anything |
 | `send_callback` | calls your app's endpoint as the provider would |
@@ -209,7 +211,8 @@ Arguments are in the [tool reference](reference/tools.md#http-apis-plugins).
 ## Limits
 
 - WSDL 1.1, document/literal. WSDL 2.0 and RPC/encoded services are not read.
-- The type check covers required fields, simple types, enumerations and unknown elements. It does not check
+- The type check covers required fields, numbers, booleans, dates, enumerations and unknown
+  elements. `time` and `base64` values are not checked. It does not check
   element order or facets such as length and pattern.
 - WS-Security covers UsernameToken with a plain-text password. It does not check signatures, encryption or
   timestamps.

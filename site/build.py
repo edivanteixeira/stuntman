@@ -333,7 +333,7 @@ def providers():
           "Point your app at <code>http://localhost:8028/&lt;service&gt;</code>."),
          ("blue", "SOAP services", "SOAP 1.1 and 1.2 · made from the WSDL · WS&#8209;Security UsernameToken",
           "Operations from the WSDL with the same steps as routes; bodies checked against its XSD; the WSDL served back.",
-          "Any fault the WSDL declares, the provider's validation fault, refused credentials, slow or failed calls, callbacks.", "soap",
+          "Any fault the WSDL declares, the provider's validation fault, refused credentials, slow or failed calls.", "soap",
           f"Create it with <code>import_wsdl</code> or <b>+ New service</b>, then point your app at <code>http://localhost:8028/&lt;service&gt;&lt;endpoint&gt;</code>. <a href='{DOCS}/soap.md'>SOAP guide</a>."),
          ("red", "SMS", "Zenvia API v2", "Messages, delivery steps per recipient, opt-outs.", "500, 400, reset, empty reply, timeout; the person texts back, STOP and START.", None,
           "Point your app at <code>http://localhost:8025/zenvia/v2/channels/{0}/messages</code>."),

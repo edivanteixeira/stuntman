@@ -419,7 +419,7 @@ fn answers_tools() -> Vec<Tool> {
         })
         .req("service", "plugin")
         .route("GET", "/plugins/{service}/answers"),
-        Tool::new("set_answer", "Creates or replaces a named answer (status, body template, headers, sentence); checked against the schema unless raw=true (malformed on purpose).", |ctx, a| async move {
+        Tool::new("set_answer", "Creates or replaces a named answer (status, body template, headers, sentence); checked against the schema unless raw=true (malformed on purpose); fault={code, reason} makes it a SOAP fault.", |ctx, a| async move {
             let s = service_of(&a)?;
             let mut p = plugin::get(&ctx, &s)?;
             let name = a.need("name")?;

@@ -5,7 +5,7 @@ pasted a short prompt that sent you here. Your job: **set Stuntman up for the pr
 directory, end to end, and leave the developer with a working staging environment that never calls a real provider.**
 
 Stuntman stands in for the external providers an app calls (SMS, WhatsApp, email, storage, queues, identity,
-secrets, webhooks, telemetry, and any REST or SOAP API through YAML plugins). It answers like the provider, keeps state,
+secrets, webhooks, telemetry and any REST or SOAP API through YAML plugins). It answers like the provider, keeps state,
 sends callbacks and fails on cue. Every action is an MCP tool and an HTTP route.
 
 - Site: https://edivanteixeira.github.io/stuntman/
@@ -145,7 +145,7 @@ Use the default environment (`stg-a`) unless the developer asks for another one.
 | Identity | `set_provider` with flavor `entra-v2`, `google`, `okta` or `oidc`; add the app registration and a few synthetic users. |
 | Secrets | Create the vault and the secret names the app reads (values are synthetic). |
 | A provider in the catalog | `install_plugin` (or `install_collection`). |
-| A SOAP provider (the app sends XML envelopes, or the repository has a `.wsdl` file or a WSDL URL) | `import_wsdl` with the WSDL's URL, a file path, or its text. Operations, types and faults come from it; add rules with `set_operation` and check them with `try_operation`. Point the app at `http://localhost:8028/<service><endpoint>`. Guide: https://github.com/edivanteixeira/stuntman/blob/main/docs/soap.md |
+| A SOAP provider (the app sends XML envelopes, or the repository has a `.wsdl` file or a WSDL URL) | `import_wsdl` with the WSDL's URL, a file path or its text. Operations, types and faults come from it; add rules with `set_operation` and check them with `try_operation`. Point the app at `http://localhost:8028/<service><endpoint>`. Guide: https://github.com/edivanteixeira/stuntman/blob/main/docs/soap.md |
 | Any other HTTP API | Write a plugin: read one from the catalog with `get_plugin` as a model, describe the routes the app calls (paths, bodies, the provider's real status codes and errors, a clear `sentence` per answer), save it with `put_plugin` and check it with `validate_plugin`. If you do not know the provider's API well, first install a recorder (`install_plugin` with `plugin=empty, service=<name>`), run the app and build the plugin from what it sent. |
 
 Plugin format and expressions: https://github.com/edivanteixeira/stuntman/blob/main/docs/plugins.md

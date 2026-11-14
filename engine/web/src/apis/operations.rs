@@ -41,7 +41,7 @@ fn sample(types: &Value, ty: &str, name: &str, ns: &str, depth: usize, pad: &str
             "boolean" => "true".into(),
             "date" => "2026-11-14".into(),
             "dateTime" => "2026-11-14T10:00:00Z".into(),
-            t if t.starts_with("enum(") => t[5..t.len() - 1].split(", ").next().unwrap_or("").to_string(),
+            t if t.starts_with("enum(") => t[5..t.len() - 1].split(',').next().unwrap_or("").trim().to_string(),
             _ => format!("{}-20481", name.chars().filter(|c| c.is_ascii_alphabetic()).take(3).collect::<String>().to_uppercase()),
         };
         return format!("{pad}<{name}{xmlns}>{v}</{name}>");

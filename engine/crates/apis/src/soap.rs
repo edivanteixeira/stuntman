@@ -170,7 +170,7 @@ fn field(k: &str) -> (&str, bool, bool) {
 fn simple_ok(ty: &str, s: &str) -> bool {
     let s = s.trim();
     if let Some(list) = ty.strip_prefix("enum(").and_then(|l| l.strip_suffix(')')) {
-        return list.split(", ").any(|v| v == s);
+        return list.split(',').any(|v| v.trim() == s);
     }
     match ty {
         "decimal" | "double" | "float" => s.parse::<f64>().is_ok(),
@@ -591,7 +591,7 @@ fn sample(ty: &str, field: &str, input_fields: &[String]) -> String {
         "boolean" => "true".into(),
         "date" => "2026-01-01".into(),
         "dateTime" => "{{ now() }}".into(),
-        t if t.starts_with("enum(") => t[5..t.len() - 1].split(", ").next().unwrap_or("").to_string(),
+        t if t.starts_with("enum(") => t[5..t.len() - 1].split(',').next().unwrap_or("").trim().to_string(),
         _ => format!("{}-000123", field.chars().filter(|c| c.is_ascii_alphabetic()).take(3).collect::<String>().to_uppercase()),
     }
 }

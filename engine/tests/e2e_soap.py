@@ -119,6 +119,8 @@ def run():
     assert st == 200 and "<protocol>EXP-SHP-20481</protocol>" in body, body
     cb = wait(lambda: GOT[:1], "the StatusChanged callback")[0]
     assert cb["path"] == "/soap/callback" and 'action="StatusChanged"' in cb["headers"]["content-type"] and "<protocol>EXP-SHP-20481</protocol>" in cb["body"] and NS12 in cb["body"], cb
+    st, body, _ = soap(register(insurer="Smith &amp; Sons"), "RegisterShipment")
+    assert st == 200 and "<insurer>Smith &amp; Sons</insurer>" in body, body
     st, body, _ = soap(register("SHP-20479", "2450000"), "RegisterShipment")
     assert st == 500 and "<soap:Value>soap:Sender</soap:Value>" in body and "Coverage exceeded: cargo value 2450000" in body and "<requested>2450000</requested>" in body, body
 

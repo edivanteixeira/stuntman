@@ -288,7 +288,7 @@ def agents():
     return doc(p, f"""
 {hero(p, "Built for agents that test their own work.",
       "Claude Code, Codex, Gemini CLI, OpenCode, Cursor and GitHub Copilot connect over MCP. Anything else uses plain HTTP. "
-      "Both reach the same 293 tools, and the timeline records who acted.")}
+      "Both reach the same 299 tools, and the timeline records who acted.")}
 {agents_strip(p)}
 <section class="wrap section">
   {head(2, "The loop it runs on its own.")}
@@ -331,6 +331,10 @@ def providers():
     L = [("blue", "HTTP APIs", "REST · OAuth2 client credentials · Basic · session cookies · mTLS · browser steps",
           "Routes, state per route and data tables, written in YAML.", "Named answers, latency, 5xx, reset, timeout, expired tokens, rate limits.", "route-editor",
           "Point your app at <code>http://localhost:8028/&lt;service&gt;</code>."),
+         ("blue", "SOAP services", "SOAP 1.1 and 1.2 · made from the WSDL · WS&#8209;Security UsernameToken",
+          "Operations from the WSDL with the same steps as routes; bodies checked against its XSD; the WSDL served back.",
+          "Any fault the WSDL declares, the provider's validation fault, refused credentials, slow or failed calls, callbacks.", "soap",
+          f"Create it with <code>import_wsdl</code> or <b>+ New service</b>, then point your app at <code>http://localhost:8028/&lt;service&gt;&lt;endpoint&gt;</code>. <a href='{DOCS}/soap.md'>SOAP guide</a>."),
          ("red", "SMS", "Zenvia API v2", "Messages, delivery steps per recipient, opt-outs.", "500, 400, reset, empty reply, timeout; the person texts back, STOP and START.", None,
           "Point your app at <code>http://localhost:8025/zenvia/v2/channels/{0}/messages</code>."),
          ("green", "WhatsApp", "Meta WhatsApp Cloud API (Graph)", "Conversations, templates, the 24-hour window and the recipients.",
@@ -365,7 +369,7 @@ def providers():
 
 def failures():
     p = "failures"
-    rows = [("HTTP APIs", "force_answer · expire_tokens", "any named answer; reset, empty, timeout, 500, 503, HTML; invalid tokens"),
+    rows = [("HTTP APIs", "force_answer · expire_tokens", "any named answer or SOAP fault; reset, empty, timeout, 500, 503, HTML; invalid tokens"),
             ("SMS", "force_sms_failure · reply_sms_as_user", "500, 400, reset, empty, timeout; the person texts back"),
             ("WhatsApp", "force_whatsapp_failure · send_bad_webhook", "500, 400, reset, empty, timeout; wrong, missing or old signature, replay"),
             ("Email", "decide_held · simulate_recipient", "deliver, defer, bounce, drop; open, click, spam report, unsubscribe"),

@@ -15,6 +15,7 @@ To set Stuntman up for a project, read and follow the agent setup guide step by 
 - [Providers: what each line speaks, keeps and provokes](https://github.com/edivanteixeira/stuntman/blob/main/docs/providers.md)
 - [Failures on cue](https://github.com/edivanteixeira/stuntman/blob/main/docs/failures.md)
 - [Plugins: the YAML format and expressions](https://github.com/edivanteixeira/stuntman/blob/main/docs/plugins.md)
+- [SOAP services: a provider from its WSDL](https://github.com/edivanteixeira/stuntman/blob/main/docs/soap.md)
 - [Environments](https://github.com/edivanteixeira/stuntman/blob/main/docs/environments.md)
 - [Configuration and ports](https://github.com/edivanteixeira/stuntman/blob/main/docs/configuration.md)
 - [Tool reference: all tools, routes and arguments](https://github.com/edivanteixeira/stuntman/blob/main/docs/reference/tools.md)

@@ -7,7 +7,8 @@ once; everyone else installs it.
 <p align="center"><img src="images/plugin-anatomy.png" alt="Anatomy of a plugin: service, routes, keep, decide, answers" width="100%"></p>
 
 Plugins power the **HTTP APIs** line. SMS, WhatsApp, email, storage, messaging, identity, secrets, webhooks and
-telemetry are built into the engine.
+telemetry are built into the engine. A SOAP provider is a plugin too, made from its WSDL: see
+[SOAP services](soap.md).
 
 ## A complete example
 

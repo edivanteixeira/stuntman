@@ -105,6 +105,15 @@ fn indent(s: &str, pad: &str) -> String {
     s.lines().map(|l| format!("{pad}{l}")).collect::<Vec<_>>().join("\n")
 }
 
+fn esc_json(v: &Value) -> Value {
+    match v {
+        Value::String(s) => json!(esc(s)),
+        Value::Array(a) => Value::Array(a.iter().map(esc_json).collect()),
+        Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (k.clone(), esc_json(x))).collect()),
+        x => x.clone(),
+    }
+}
+
 pub fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
@@ -286,7 +295,8 @@ pub async fn serve(ctx: &Ctx, p: &Plugin, rq: &Req, dry: bool) -> (Option<Route>
     }
 
     let mut req = rq.clone();
-    req.body = env.body.clone();
+    // Text goes back into XML answers as it came: escaped, so "Smith & Sons" stays valid XML.
+    req.body = esc_json(&env.body);
     o = engine::run(ctx, p, &op, Map::new(), &req, dry).await;
     pre.append(&mut o.steps);
     o.steps = pre;

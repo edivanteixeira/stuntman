@@ -5,13 +5,13 @@ Every action in Stuntman is one tool. Each tool is an **MCP tool** (same name) a
 
 _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit by hand._
 
-**293 tools** in 11 areas.
+**299 tools** in 11 areas.
 
 - [Environments and timeline](#environments-and-timeline) · 12 tools
 - [Email](#email) · 35 tools
 - [SMS](#sms) · 17 tools
 - [WhatsApp](#whatsapp) · 28 tools
-- [HTTP APIs (plugins)](#http-apis-plugins) · 46 tools
+- [HTTP APIs (plugins)](#http-apis-plugins) · 52 tools
 - [Storage (Azure Blob, S3)](#storage-azure-blob-s3) · 45 tools
 - [Messaging (Service Bus, RabbitMQ)](#messaging-service-bus-rabbitmq) · 19 tools
 - [Identity (OIDC / OAuth2)](#identity-oidc-oauth2) · 26 tools
@@ -155,7 +155,7 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `try_route` | `POST /api/plugins/{service}/try` | service, method, path | request, steps | Runs a route's steps on a sample request; nothing is kept, counted, billed or sent. steps= tries an unsaved version of the route. |
 | `validate_plugin` | `POST /api/plugins/{service}/validate` | service | yaml | Schema and expression errors with line numbers; answers checked against the routes' schema. yaml= checks text before saving. |
 | `list_answers` | `GET /api/plugins/{service}/answers` | service | — | Named answers: status, body, and which route step uses each (an answer used by none exists only to be forced). |
-| `set_answer` | `PUT /api/plugins/{service}/answers/{name}` | service, name | status, body, headers, raw, sentence, note, old_name | Creates or replaces a named answer (status, body template, headers, sentence); checked against the schema unless raw=true (malformed on purpose). |
+| `set_answer` | `PUT /api/plugins/{service}/answers/{name}` | service, name | status, body, headers, raw, sentence, note, old_name, fault | Creates or replaces a named answer (status, body template, headers, sentence); checked against the schema unless raw=true (malformed on purpose). |
 | `delete_answer` | `DELETE /api/plugins/{service}/answers/{name}` | service, name | — | Deletes a named answer that no route uses. |
 | `get_data` | `GET /api/plugins/{service}/data` | service | table | A data table the answers read (irregular_cpfs, people, selfies…), or every table. |
 | `set_data` | `PUT /api/plugins/{service}/data/{table}` | service, table, rows | add | Replaces (or with add=true appends to) a data table as the plugin declares it. |
@@ -181,6 +181,12 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `get_restpki_session` | `GET /api/apis/{service}/sessions/{token}` | token | service | One REST PKI signature by token, with the certificate and its chain (base64 DER) once the browser started it. |
 | `fail_restpki` | `POST /api/apis/{service}/fail` | step | status, count, service | The next call of a step fails: step=start (the app's POST PadesSignatures) \| webpki_start \| webpki_signature \| finish (SignedBytes); status=422 (ValidationError, default) or 500; count=N calls (default 1). status=default stops. |
 | `reset_restpki` | `POST /api/apis/{service}/reset` | — | service | Forgets every REST PKI signature of the service and stops a forced failure (calls stay in the history). |
+| `import_wsdl` | `POST /api/plugins/wsdl` | service | source, wsdl, title, real_host | A SOAP service from the provider's WSDL (a URL, a file path, or its text): operations with their SOAPActions, types for checking bodies, a default answer per operation and the faults as named answers. The WSDL is served back on ?wsdl. |
+| `reimport_wsdl` | `POST /api/plugins/{service}/wsdl` | service | source, wsdl | Reads the WSDL again (or a new one): new operations start with their default answer; existing ones keep their steps; answers, data, security and service settings stay. Lists what was added and removed. |
+| `list_operations` | `GET /api/plugins/{service}/operations` | service | — | A SOAP service's operations: SOAPAction, request and response elements, the answers each can give; plus the version, endpoint and the URL of the served WSDL. |
+| `set_operation` | `PUT /api/plugins/{service}/operations` | service, operation | steps | Replaces an operation's steps (receive, let, keep, wait, decide, respond, send, fail, billable), like set_route for SOAP; its SOAPAction and types stay as the WSDL says. Validated before saving. |
+| `try_operation` | `POST /api/plugins/{service}/operations/try` | service | envelope, operation, body, action | Runs a SOAP service on an envelope (or an operation and its body XML): the operation it picks, the XSD and WS-Security checks, the steps and the envelope it answers. Nothing is kept, counted, billed or sent. |
+| `send_callback` | `POST /api/plugins/{service}/callback` | service, url, operation, body | version | Calls the app's endpoint as the provider would: an envelope with this operation's SOAPAction and body (the payload XML). Returns the app's status and answer. |
 
 ## Storage (Azure Blob, S3)
 

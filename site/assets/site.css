@@ -11,6 +11,7 @@ body { margin: 0; overflow-x: clip; background: var(--color-paper); color: var(-
   font-size: var(--text-base); line-height: 1.55; font-variant-numeric: tabular-nums; }
 img { display: block; max-width: 100%; height: auto; }
 h1, h2, h3, p, ol, ul, dl, dd, figure, pre, blockquote { margin: 0; }
+p, dd, li { text-wrap: pretty; }
 ol, ul { padding: 0; list-style: none; }
 ::selection { background: var(--color-ink); color: var(--color-on-ink); }
 :focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; border-radius: 2px; }

@@ -85,7 +85,7 @@ def main():
     data = tempfile.mkdtemp(prefix="duble-e2e-")
     hook = http.server.ThreadingHTTPServer(("127.0.0.1", HOOK), Hook)
     threading.Thread(target=hook.serve_forever, daemon=True).start()
-    env = dict(os.environ, STUNTMAN_DATA=data, STUNTMAN_PORT=str(HTTP), STUNTMAN_SMTP_PORT=str(SMTP), STUNTMAN_WEB="/nonexistent")
+    env = dict(os.environ, STUNTMAN_ENV=os.environ.get("STUNTMAN_ENV", "stg-a"), STUNTMAN_DATA=data, STUNTMAN_PORT=str(HTTP), STUNTMAN_SMTP_PORT=str(SMTP), STUNTMAN_WEB="/nonexistent")
     srv = subprocess.Popen([BIN], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     try:
         wait(lambda: call("GET", "/env")[0] == 200 if _up() else False, "server")

@@ -4,6 +4,7 @@
 
 pub mod ca;
 pub mod catalog;
+pub mod certs;
 pub mod engine;
 pub mod expr;
 pub mod hbs;
@@ -62,7 +63,7 @@ impl Module for Apis {
 
     fn migrations(&self) -> &'static str {
         static SQL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-        SQL.get_or_init(|| format!("{}{}", store::SQL, steps::SQL))
+        SQL.get_or_init(|| format!("{}{}{}", store::SQL, steps::SQL, certs::SQL))
     }
 
     fn tools(&self) -> Vec<Tool> {

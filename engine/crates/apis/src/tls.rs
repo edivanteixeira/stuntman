@@ -27,6 +27,10 @@ impl rustls::server::ResolvesServerCert for Fixed {
 #[derive(Clone)]
 pub struct ClientCert(pub String);
 
+/// The client certificate itself (DER), for the CNPJ of an ICP-Brasil style one.
+#[derive(Clone)]
+pub struct ClientCertDer(pub Vec<u8>);
+
 pub fn fingerprint(der: &[u8]) -> String {
     hex::encode(&sha2::Sha256::digest(der)[..8])
 }
@@ -106,7 +110,20 @@ pub async fn serve(port: u16, envs: Envs, app: Router) {
                     return;
                 }
             };
-            let cert = tls.get_ref().1.peer_certificates().and_then(|c| c.first()).map(|c| client_name(c.as_ref()));
+            let der = tls.get_ref().1.peer_certificates().and_then(|c| c.first()).map(|c| c.as_ref().to_vec());
+            let cert = der.as_ref().map(|d| client_name(d));
+            // ICP-Brasil style: a certificate without a CNPJ is refused, as SEFAZ does.
+            let icp = svc.as_ref().map(|p| p.service.auth.client_certificate.as_ref().map(|c| c.icp).unwrap_or(false)).unwrap_or(false);
+            if icp && der.as_ref().and_then(|d| ca::cnpj_of(d)).is_none() {
+                if let (Some(ctx), Some(p)) = (&ctx, &svc) {
+                    let _ = store::record(ctx, store::Call {
+                        id: util::id("call"), service: p.service.name.clone(), route: String::new(), method: "TLS".into(), path: sni.clone(), status: 0, answer: "tls_refused".into(),
+                        sentence: format!("TLS refused for {sni}: the client certificate has no CNPJ (ICP-Brasil e-CNPJ required)"), billable: false, caller: addr.ip().to_string(), trace_id: None, ms: 0,
+                        provoked: Some("no CNPJ in the certificate".into()), sent: json!({}), answered: json!({}), request: json!({"sni": sni}), response: json!({}), steps: json!([]),
+                    }).await;
+                }
+                return;
+            }
             let kill = Kill::new();
             let k2 = kill.clone();
             let svc_fn = hyper::service::service_fn(move |mut req: hyper::Request<hyper::body::Incoming>| {
@@ -114,6 +131,9 @@ pub async fn serve(port: u16, envs: Envs, app: Router) {
                 req.extensions_mut().insert(Remote(addr));
                 if let Some(c) = &cert {
                     req.extensions_mut().insert(ClientCert(c.clone()));
+                }
+                if let Some(d) = &der {
+                    req.extensions_mut().insert(ClientCertDer(d.clone()));
                 }
                 let app = app.clone();
                 async move {

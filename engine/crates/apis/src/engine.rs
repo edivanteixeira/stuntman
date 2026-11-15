@@ -30,6 +30,8 @@ use crate::{
 pub struct Req {
     /// The client certificate the app presented over HTTPS (mTLS), by name.
     pub client_cert: Option<String>,
+    /// The CNPJ in an ICP-Brasil style client certificate (A18).
+    pub client_cnpj: Option<String>,
     pub method: String,
     pub path: String,
     pub query: Map<String, Value>,
@@ -217,7 +219,7 @@ pub fn read_request(method: &str, path: &str, query: &str, headers: BTreeMap<Str
         (serde_json::from_slice(&raw).unwrap_or_else(|_| json!(String::from_utf8_lossy(&raw))), vec![])
     };
     let c = caller(&headers);
-    Req { client_cert: None, method: method.into(), path: path.into(), query: q, headers, body, raw_body: raw, files, caller: c }
+    Req { client_cert: None, client_cnpj: None, method: method.into(), path: path.into(), query: q, headers, body, raw_body: raw, files, caller: c }
 }
 
 fn get_path<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
@@ -301,6 +303,7 @@ pub async fn run(ctx: &Ctx, p: &Plugin, r: &Route, params: Map<String, Value>, r
     sc.insert("state".into(), state);
     sc.insert("caller".into(), json!(req.caller));
     sc.insert("client_cert".into(), json!(req.client_cert));
+    sc.insert("client_cnpj".into(), json!(req.client_cnpj));
     sc.insert("auth".into(), Value::Null);
     sc.insert("__now".into(), json!(stuntman_core::clock::now(ctx)));
     sc.insert("raw".into(), json!(String::from_utf8_lossy(&req.raw_body)));
@@ -916,6 +919,7 @@ pub async fn handle(State(envs): State<Envs>, mut req: Request) -> Response {
     let kill = req.extensions().get::<Kill>().cloned();
     let _remote = req.extensions().get::<Remote>().map(|r| r.0.ip().to_string()).unwrap_or_default();
     let client_cert = req.extensions().get::<crate::tls::ClientCert>().map(|c| c.0.clone());
+    let client_cnpj = req.extensions().get::<crate::tls::ClientCertDer>().and_then(|c| crate::ca::cnpj_of(&c.0));
     let routed = match netserve::route(&envs, &mut req) {
         Ok(r) => r,
         Err(r) => return r,
@@ -941,6 +945,7 @@ pub async fn handle(State(envs): State<Envs>, mut req: Request) -> Response {
     let base = format!("{}{}", ctx.prefix(), path[..path.len() - inner.len().min(path.len())].trim_end_matches('/'));
     let mut rq = read_request(&method, &inner, &query, headers.clone(), raw);
     rq.client_cert = client_cert;
+    rq.client_cnpj = client_cnpj;
     if !headers.contains_key("x-stuntman-app") && !headers.contains_key("x-duble-app") {
         if let Some(c) = &rq.client_cert {
             rq.caller = c.clone();

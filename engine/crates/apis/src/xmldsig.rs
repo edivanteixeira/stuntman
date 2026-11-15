@@ -227,6 +227,31 @@ pub fn verify(xml: &str, key_pem: Option<&str>) -> Result<Vec<Checked>, String> 
     Ok(out)
 }
 
+/// As verify, for a signed document carried inside another (a SOAP Body): when the whole does
+/// not check (inclusive c14n sees the envelope's namespaces), each ancestor of the signature is
+/// checked as the standalone document it was when signed, as SEFAZ does with nfeDadosMsg.
+pub fn verify_embedded(xml: &str) -> Result<Vec<Checked>, String> {
+    let first = match verify(xml, None) {
+        Ok(c) => return Ok(c),
+        Err(e) => e,
+    };
+    let doc = Document::parse(xml).map_err(|e| format!("not XML: {e}"))?;
+    let mut tried = std::collections::HashSet::new();
+    for sig in doc.descendants().filter(|n| n.is_element() && n.tag_name().name() == "Signature" && n.tag_name().namespace() == Some(DSIG)) {
+        for anc in sig.ancestors().filter(|a| a.is_element()).skip(1) {
+            let r = anc.range();
+            if !tried.insert(r.start) {
+                continue;
+            }
+            let part = &xml[r.clone()];
+            if let Ok(c) = verify(part, None) {
+                return Ok(c);
+            }
+        }
+    }
+    Err(first)
+}
+
 fn verify_with_cert(der: &[u8], sha1: bool, digest: &[u8], sig: &[u8]) -> Result<bool, String> {
     use rsa::pkcs1::DecodeRsaPublicKey;
     let (_, cert) = x509_parser::parse_x509_certificate(der).map_err(|e| format!("KeyInfo certificate: {e}"))?;

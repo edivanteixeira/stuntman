@@ -73,6 +73,9 @@ fn thirty() -> String {
 pub struct ClientCertificate {
     #[serde(default)]
     pub required: bool,
+    /// ICP-Brasil style: the certificate must carry a CNPJ (OID 2.16.76.1.3.3), as SEFAZ asks.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub icp: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -503,6 +506,25 @@ pub struct Soap {
     /// Element → its target namespace.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub namespace: String,
+    /// XML signatures (A18): check the request's ds:Signature, sign the answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<SoapSignature>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct SoapSignature {
+    /// Each request must carry a valid ds:Signature (digest and value checked).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub check: bool,
+    /// The answer named here is given when the signature is missing or broken (else a fault).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub invalid: String,
+    /// Sign the answers: the element (local name, with an Id attribute) to sign, e.g. infProt.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sign: String,
+    /// RSA-SHA256 and SHA-256 digests (default: RSA-SHA1, as NF-e and CT-e).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub sha256: bool,
 }
 /// A service made from an OpenAPI 3.x or Swagger 2.0 spec: the spec kept next to the plugin and
 /// the schemas the routes check bodies against.

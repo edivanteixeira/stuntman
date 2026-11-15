@@ -81,6 +81,7 @@ pub fn all() -> Vec<Tool> {
     v.extend(crate::soap::tools());
     v.extend(crate::openapi::tools());
     v.extend(crate::mocks::tools());
+    v.extend(crate::certs::tools());
     v.extend(crate::record::tools());
     v
 }
@@ -566,7 +567,10 @@ fn service_tools() -> Vec<Tool> {
                 sv.auth.oauth2_client_credentials.get_or_insert_with(Default::default).any_client = x;
             }
             if let Some(x) = a.bool("client_certificate") {
-                sv.auth.client_certificate = if x { Some(plugin::ClientCertificate { required: true }) } else { None };
+                sv.auth.client_certificate = if x { Some(plugin::ClientCertificate { required: true, icp: sv.auth.client_certificate.as_ref().map(|c| c.icp).unwrap_or(false) }) } else { None };
+            }
+            if let Some(x) = a.bool("client_certificate_icp") {
+                sv.auth.client_certificate.get_or_insert(plugin::ClientCertificate { required: true, icp: false }).icp = x;
             }
             if let Some(x) = a.str("session_ttl") {
                 util::parse_ms(&x).ok_or_else(|| ApiError::bad("session_ttl: 30m, 5m, 1m"))?;
@@ -645,7 +649,7 @@ fn service_tools() -> Vec<Tool> {
             let v = plugin::save(&ctx, &p)?;
             Ok(json!({"service": p.service, "version": v}))
         })
-        .req("service", "plugin").param("any_client", "bool").param("token_ttl", "60m").param("client_certificate", "bool: require the app's certificate (mTLS) on HTTPS").param("session_ttl", "30m: session-cookie portals").param("billing", "bool: count billable calls").param("per_call", "price").param("warn_above", "100/day")
+        .req("service", "plugin").param("any_client", "bool").param("token_ttl", "60m").param("client_certificate", "bool: require the app's certificate (mTLS) on HTTPS").param("client_certificate_icp", "bool: the certificate must carry a CNPJ (ICP-Brasil e-CNPJ)").param("session_ttl", "30m: session-cookie portals").param("billing", "bool: count billable calls").param("per_call", "price").param("warn_above", "100/day")
         .param("latency", "300ms..600ms | none").param("rate", "10/s | none").param("fail_share", "0 to 1, or 50%").param("base_url", "real base URL").param("real_host", "real host name").param("title", "display name").param("version", "the version you read")
         .param("webhook_signing", "hex | hex_ts | stripe | svix | github | cloudevents | none").param("webhook_secret", "secret://name").param("webhook_header", "the signature header").param("webhook_tolerance", "seconds, 300")
         .param("webhook_provoke", "wrong_signature, old_timestamp, no_signature, twice, out_of_order | none").param("idempotency", "true | false | the header name (Idempotency-Key)")

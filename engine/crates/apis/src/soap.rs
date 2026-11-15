@@ -283,6 +283,27 @@ pub async fn serve(ctx: &Ctx, p: &Plugin, rq: &Req, dry: bool) -> (Option<Route>
         }
         pre.push(json!({"step": "receive", "text": format!("WS-Security UsernameToken {}", env.token.as_ref().map(|t| t.0.as_str()).unwrap_or("")), "ok": true}));
     }
+    // A18: the request's XML signature.
+    let mut sig_failed: Option<String> = None;
+    if let Some(sg) = sp.signature.as_ref().filter(|s| s.check) {
+        let raw = String::from_utf8_lossy(&rq.raw_body).to_string();
+        match crate::xmldsig::verify_embedded(&raw) {
+            Ok(c) => {
+                let who = c.first().and_then(|x| crate::ca::cnpj_of(&x.certificate)).map(|n| format!(" by CNPJ {n}")).unwrap_or_default();
+                pre.push(json!({"step": "receive", "text": format!("XML signature of #{} checked{who} ({})", c.first().map(|x| x.reference.as_str()).unwrap_or(""), if c.first().map(|x| x.algorithm.ends_with("sha1")).unwrap_or(true) { "RSA-SHA1" } else { "RSA-SHA256" }), "ok": true}));
+            }
+            Err(e) => {
+                if sg.invalid.is_empty() {
+                    o.steps = pre;
+                    early(&mut o, &v, "Sender", &format!("Invalid XML signature: {e}"), "signature invalid", json!({"step": "receive", "text": format!("XML signature refused: {e}"), "ok": false}));
+                    o.sentence = format!("{} called {}: the XML signature was refused ({e})", rq.caller, op.operation);
+                    return (Some(op), o);
+                }
+                pre.push(json!({"step": "receive", "text": format!("XML signature refused: {e} → {}", sg.invalid), "ok": false}));
+                sig_failed = Some(e);
+            }
+        }
+    }
     // The XSD
     if sp.validate && !op.input.is_empty() {
         if let Err(e) = check(&sp.types, &op.input, &env.body) {
@@ -298,6 +319,18 @@ pub async fn serve(ctx: &Ctx, p: &Plugin, rq: &Req, dry: bool) -> (Option<Route>
     // Text goes back into XML answers as it came: escaped, so "Smith & Sons" stays valid XML.
     req.body = esc_json(&env.body);
     o = engine::run(ctx, p, &op, Map::new(), &req, dry).await;
+    if let (Some(e), Some(name)) = (&sig_failed, sp.signature.as_ref().map(|s| s.invalid.clone())) {
+        if let Some(a) = p.answers.iter().find(|a| a.name == name) {
+            o.scope.insert("signature_error".into(), json!(e));
+            let (st, h, b, ans) = engine::render_answer(a, &o.scope);
+            o.status = st;
+            o.headers = h;
+            o.body = b;
+            o.answered = ans;
+            o.answer = a.name.clone();
+            o.provoked = None;
+        }
+    }
     pre.append(&mut o.steps);
     o.steps = pre;
     // "The app sent": the envelope's first fields (SOAP operations declare no receive.body).
@@ -307,8 +340,42 @@ pub async fn serve(ctx: &Ctx, p: &Plugin, rq: &Req, dry: bool) -> (Option<Route>
         o.sent = Value::Object(lv.into_iter().collect());
     }
     o.scope.insert("soap_version".into(), json!(v));
+    // A18: answers signed with the service's certificate.
+    if let Some(el) = sp.signature.as_ref().map(|s| s.sign.clone()).filter(|s| !s.is_empty()) {
+        if p.answers.iter().find(|a| a.name == o.answer).map(|a| a.fault.is_none()).unwrap_or(false) {
+            let payload = String::from_utf8_lossy(&o.body).to_string();
+            let id = roxmltree::Document::parse(&payload).ok().and_then(|d| d.descendants().find(|n| n.is_element() && n.tag_name().name() == el).and_then(|n| n.attribute("Id").or(n.attribute("ID")).map(String::from)));
+            match (id, signing_identity(ctx, p)) {
+                (Some(id), Ok((key, der))) => match crate::xmldsig::sign(&payload, &id, &key, &der, !sp.signature.as_ref().unwrap().sha256, false, crate::xmldsig::Place::AfterElement, "") {
+                    Ok(signed) => {
+                        o.body = signed.into_bytes();
+                        o.steps.push(json!({"step": "respond", "text": format!("{el} #{id} signed with the service's certificate"), "ok": true}));
+                    }
+                    Err(e) => o.steps.push(json!({"step": "respond", "text": format!("could not sign {el}: {e}"), "ok": false})),
+                },
+                (None, _) => o.steps.push(json!({"step": "respond", "text": format!("no {el} with an Id in the answer: not signed"), "ok": false})),
+                (_, Err(e)) => o.steps.push(json!({"step": "respond", "text": format!("no signing certificate: {e}"), "ok": false})),
+            }
+        }
+    }
     wrap(p, &op, &v, &mut o);
     (Some(op), o)
+}
+
+/// The certificate a SOAP service signs its answers with (made once, kept next to the plugin).
+pub fn signing_identity(ctx: &Ctx, p: &Plugin) -> Result<(String, Vec<u8>), String> {
+    let dir = crate::record::files_dir(ctx, &p.service.name);
+    let (kp, cp) = (dir.join("signing-key.pem"), dir.join("signing-cert.der"));
+    if let (Ok(k), Ok(c)) = (std::fs::read_to_string(&kp), std::fs::read(&cp)) {
+        return Ok((k, c));
+    }
+    let now = util::now_ms() / 1000;
+    let title = if p.service.title.is_empty() { p.service.name.clone() } else { p.service.title.clone() };
+    let (k, c) = crate::ca::get().icp(&title, Some("11.222.333/0001-81"), None, now - 86_400, now + 86_400 * 3650, false)?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(&kp, &k).map_err(|e| e.to_string())?;
+    std::fs::write(&cp, &c).map_err(|e| e.to_string())?;
+    Ok((k, c))
 }
 
 /// Puts what the steps chose inside an envelope, or a fault.

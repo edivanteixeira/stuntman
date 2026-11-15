@@ -68,6 +68,27 @@ pub fn get() -> &'static Ca {
     })
 }
 
+/// The CNPJ (OID 2.16.76.1.3.3) or CPF (in 2.16.76.1.3.1) in a certificate's SAN otherNames.
+pub fn cnpj_of(der: &[u8]) -> Option<String> {
+    icp_field(der, "2.16.76.1.3.3")
+}
+
+pub fn icp_field(der: &[u8], oid: &str) -> Option<String> {
+    let (_, cert) = x509_parser::parse_x509_certificate(der).ok()?;
+    let san = cert.subject_alternative_name().ok().flatten()?;
+    for n in &san.value.general_names {
+        if let x509_parser::extensions::GeneralName::OtherName(o, v) = n {
+            if o.to_id_string() == oid {
+                // [0] EXPLICIT wrapping a string: keep the printable bytes.
+                let txt: String = v.iter().filter(|b| b.is_ascii_graphic() || **b == b' ').map(|b| *b as char).collect();
+                let digits: String = txt.chars().filter(|c| c.is_ascii_digit()).collect();
+                return Some(if oid == "2.16.76.1.3.3" { digits.chars().rev().take(14).collect::<Vec<_>>().into_iter().rev().collect() } else { txt });
+            }
+        }
+    }
+    None
+}
+
 pub fn der_of(pem: &str) -> Vec<CertificateDer<'static>> {
     pem.split("-----BEGIN CERTIFICATE-----").skip(1).filter_map(|b| b.split("-----END CERTIFICATE-----").next())
         .filter_map(|b| B64.decode(b.chars().filter(|c| !c.is_whitespace()).collect::<String>()).ok()).map(CertificateDer::from).collect()
@@ -180,6 +201,22 @@ impl Ca {
         }
         .map_err(|e| e.to_string())?;
         Ok((pem, c.der().to_vec()))
+    }
+
+    /// The PFX (PKCS#12) of a key and its certificate, with the CA in the chain.
+    pub fn pfx(&self, key_pem: &str, cert_der: &[u8], password: &str) -> Result<Vec<u8>, String> {
+        use p12_keystore::{Certificate, KeyStore, KeyStoreEntry, PrivateKey, PrivateKeyChain};
+        use rsa::pkcs8::DecodePrivateKey;
+        use sha2::Digest;
+        let k = rsa::RsaPrivateKey::from_pkcs8_pem(key_pem).map_err(|e| e.to_string())?;
+        let der = rsa::pkcs8::EncodePrivateKey::to_pkcs8_der(&k).map_err(|e| e.to_string())?;
+        let cert = Certificate::from_der(cert_der).map_err(|e| e.to_string())?;
+        let ca = der_of(&self.pem).into_iter().filter_map(|d| Certificate::from_der(d.as_ref()).ok());
+        let key = PrivateKey::from_der(der.as_bytes()).map_err(|e| e.to_string())?;
+        let mut ks = KeyStore::new();
+        let id = sha2::Sha256::digest(cert_der)[..20].to_vec();
+        ks.add_entry("certificate", KeyStoreEntry::PrivateKeyChain(PrivateKeyChain::new(id, key, std::iter::once(cert).chain(ca))));
+        ks.writer(password).write().map_err(|e| e.to_string())
     }
 
     pub fn roots(&self) -> rustls::RootCertStore {

@@ -97,7 +97,7 @@ h3.display { font-size: var(--text-xl); }
 .shot img { width: 100%; }
 .num { flex: none; display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: var(--color-ink);
   color: var(--color-on-ink); font: 600 var(--text-sm)/1 var(--font-body); }
-.shot .num { position: absolute; left: var(--x); top: var(--y); transform: translate(-50%, -50%); box-shadow: 0 0 0 3px var(--color-surface); }
+.shot > .num { position: absolute; left: var(--x); top: var(--y); transform: translate(-50%, -50%); box-shadow: 0 0 0 3px var(--color-surface); }
 .notes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-lg); margin-top: var(--space-xl); }
 .notes li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--space-sm); }
 .notes b { display: block; font-weight: 600; } .notes p { color: var(--color-text-2); font-size: var(--text-sm); }
@@ -265,8 +265,8 @@ pre.code .c { color: var(--color-caption); } pre.code.dark .c { color: var(--col
 .pshot { margin-top: var(--space-2xl); }
 .pshot h3 { font-size: var(--text-lg); margin-bottom: var(--space-md); }
 .pshot .num, .callouts .num { width: 26px; height: 26px; background: var(--c); font-size: var(--text-xs); }
-.pshot .shot .num { transform: translate(-112%, -112%); box-shadow: 0 0 0 2px var(--color-surface), 0 2px 6px rgb(22 24 27 / 25%); }
-.pshot .shot .num::after { content: ""; position: absolute; right: -9px; bottom: -9px; width: 6px; height: 6px; border-radius: 50%; background: var(--c); }
+.pshot .shot > .num { transform: translate(-112%, -112%); box-shadow: 0 0 0 2px var(--color-surface), 0 2px 6px rgb(22 24 27 / 25%); }
+.pshot .shot > .num::after { content: ""; position: absolute; right: -9px; bottom: -9px; width: 6px; height: 6px; border-radius: 50%; background: var(--c); }
 .callouts { list-style: none; margin: var(--space-lg) 0 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--space-md) var(--space-lg); }
 .callouts li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--space-sm); }
@@ -309,5 +309,23 @@ pre.code .c { color: var(--color-caption); } pre.code.dark .c { color: var(--col
 @media (max-width: 600px) {
   .pcards, .pprov, .callouts, .padv, .pnext { grid-template-columns: minmax(0, 1fr); }
   .pnext a, .pnext a:last-child, .pnext a:nth-child(2) { text-align: left; }
-  .pshot .shot .num { width: 20px; height: 20px; font-size: 10px; }
+  .pshot .shot > .num { width: 20px; height: 20px; font-size: 10px; }
 }
+
+/* numbered marks on screens: a gentle pulse; a click opens the explanation beside the mark */
+.shot .pinb { border: 0; cursor: pointer; padding: 0; z-index: 1; transition: transform .15s ease; }
+.shot .pinb::before { content: ""; position: absolute; inset: 0; border-radius: 50%; background: inherit; opacity: .45; animation: pinpulse 2.4s ease-out infinite; z-index: -1; }
+.shot .pinb:hover, .shot .pinb:focus-visible { outline: none; filter: brightness(1.08); }
+.shot .pinb:focus-visible { box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-ink); }
+@keyframes pinpulse { 0% { transform: scale(1); opacity: .45; } 70% { transform: scale(2.1); opacity: 0; } 100% { transform: scale(2.1); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .shot .pinb::before { animation: none; } }
+.pinpop { position: fixed; inset: auto; margin: 0; max-width: min(22rem, calc(100vw - 24px)); padding: var(--space-md) var(--space-lg);
+  border: 1px solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-surface); color: var(--color-ink);
+  box-shadow: 0 18px 40px rgb(22 24 27 / 16%), 0 2px 6px rgb(22 24 27 / 8%); text-align: left; }
+.pinpop:popover-open { animation: pinpop .16s ease-out; }
+@keyframes pinpop { from { opacity: 0; transform: translateY(4px) scale(.98); } to { opacity: 1; transform: none; } }
+.pinpop b { display: flex; gap: var(--space-sm); align-items: center; font-weight: 600; }
+.pinpop b .num { width: 22px; height: 22px; font-size: 11px; background: var(--c, var(--color-ink)); }
+.pinpop p { margin-top: var(--space-xs); color: var(--color-text-2); font-size: var(--text-sm); line-height: 1.5; }
+/* on wide screens the explanation lives in the popover; small screens keep the list under the screen */
+@media (min-width: 761px) { .callouts, .notes { display: none; } }

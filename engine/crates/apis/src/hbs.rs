@@ -492,7 +492,7 @@ pub fn context(tpl: &str, sc: &Map<String, Value>) -> Value {
     let path = sc.get("__path").and_then(|v| v.as_str()).unwrap_or("/").to_string();
     let query: Map<String, Value> = sc.get("query").and_then(|v| v.as_object()).cloned().unwrap_or_default();
     let mut headers: Map<String, Value> = sc.get("headers").and_then(|v| v.as_object()).cloned().unwrap_or_default();
-    let re = regex::Regex::new(r"request\.headers\.\[?([\w-]+)").unwrap();
+    let re = regex::Regex::new(r"(?i)request\.headers\.\[?([\w-]+)").unwrap();
     for c in re.captures_iter(tpl) {
         let want = c[1].to_string();
         if let Some(v) = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(&want)).map(|x| x.1.clone()) {
@@ -501,12 +501,15 @@ pub fn context(tpl: &str, sc: &Map<String, Value>) -> Value {
     }
     let qs: Vec<String> = query.iter().map(|(k, v)| format!("{k}={}", s(v))).collect();
     let host = headers.get("host").map(s).unwrap_or_default();
-    json!({"request": {
+    let request = json!({
         "url": if qs.is_empty() { path.clone() } else { format!("{path}?{}", qs.join("&")) },
         "path": path, "pathSegments": path.trim_matches('/').split('/').collect::<Vec<_>>(),
         "query": query, "headers": headers, "body": sc.get("raw").cloned().unwrap_or(json!("")),
         "method": sc.get("__method").cloned().unwrap_or(json!("GET")), "baseUrl": format!("http://{host}"), "host": host,
-    }})
+    });
+    // Webhooks (postServeActions) read the call that triggered them as originalRequest, and the
+    // answer it got as originalResponse.
+    json!({"request": request, "originalRequest": request, "originalResponse": sc.get("__response").cloned().unwrap_or(Value::Null)})
 }
 
 pub fn render(tpl: &str, sc: &Map<String, Value>) -> Result<String, String> {

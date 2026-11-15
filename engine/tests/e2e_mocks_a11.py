@@ -4,9 +4,9 @@ faults, scenarios); a folder of WSDLs becomes SOAP services.
 
     cargo build -p stuntman && python3 tests/e2e_mocks_a11.py
 """
-import http.client, json, os, re, shutil, tempfile, time
+import base64, http.client, http.server, json, os, re, shutil, tempfile, threading, time
 
-from harness import ROOT, Stuntman
+from harness import ROOT, Stuntman, free_port, wait
 
 WM = os.path.join(ROOT, "tests", "wiremock")
 
@@ -66,6 +66,48 @@ def main():
         shutil.copy(os.path.join(ROOT, "tests", "soap", "common.xsd"), os.path.join(d, "common.xsd"))
         w = s.call("POST", "/plugins/import", {"source": d})
         assert w["kind"] == "wsdl" and w["services"][0]["service"] == "policyservice" and w["services"][0]["operations"] >= 3, w
+        shutil.rmtree(d)
+
+        # Basic auth, cookies, nested equalToJson and a webhook written as a WireMock template.
+        hook_port, got = free_port(), []
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                got.append({"path": self.path, "headers": {k.lower(): v for k, v in self.headers.items()}, "body": self.rfile.read(n).decode()})
+                self.send_response(200); self.end_headers()
+            def log_message(self, *a):
+                pass
+        srv = http.server.HTTPServer(("127.0.0.1", hook_port), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        d = tempfile.mkdtemp()
+        os.makedirs(os.path.join(d, "mappings"))
+        json.dump({"mappings": [{"name": "order accepted",
+            "request": {"method": "POST", "urlPath": "/orders", "basicAuthCredentials": {"username": "acme", "password": "pw"},
+                        "cookies": {"region": {"equalTo": "north"}}, "bodyPatterns": [{"equalToJson": {"order": {"id": "A-1042", "lines": [1, 2]}}}],
+                        "customMatcher": {"name": "shop-only"}},
+            "response": {"status": 202, "jsonBody": {"accepted": True}},
+            "postServeActions": [{"name": "webhook", "parameters": {"method": "POST", "url": f"http://127.0.0.1:{hook_port}/hooks/{{{{jsonPath originalRequest.body '$.order.id'}}}}",
+                "headers": {"Content-Type": "application/json", "X-Order": "{{jsonPath originalRequest.body '$.order.id'}}"},
+                "body": "{\"order\": \"{{jsonPath originalRequest.body '$.order.id'}}\", \"method\": \"{{originalRequest.method}}\", \"status\": {{originalResponse.status}}}",
+                "delay": {"type": "fixed", "milliseconds": 100}}}]}]}, open(os.path.join(d, "mappings", "orders.json"), "w"))
+        w = s.call("POST", "/plugins/import", {"source": d, "group_by": "one", "name": "acme-orders"})
+        svc = w["services"][0]
+        assert any("customMatcher" in g for g in w.get("gaps", []) + svc.get("gaps", [])), w
+        auth = "Basic " + base64.b64encode(b"acme:pw").decode()
+        body = {"order": {"id": "A-1042", "lines": [1, 2]}}
+        name = svc["service"]
+        st, b, _ = s.api("POST", f"/{name}/orders", body, {"Authorization": auth, "Cookie": "sid=1; region=north"})
+        assert st == 202 and b == {"accepted": True}, (st, b)
+        st, _, _ = s.api("POST", f"/{name}/orders", body, {"Authorization": "Basic eDp5", "Cookie": "region=north"})
+        assert st == 404, st
+        st, _, _ = s.api("POST", f"/{name}/orders", {"order": {"id": "A-1042", "lines": [2, 1]}}, {"Authorization": auth, "Cookie": "region=north"})
+        assert st == 404, st
+        h = wait(lambda: got, "the webhook")[0]
+        assert h["path"] == "/hooks/A-1042" and h["headers"].get("x-order") == "A-1042", h
+        assert json.loads(h["body"]) == {"order": "A-1042", "method": "POST", "status": 202}, h
+        time.sleep(0.3)
+        assert len(got) == 1, got
+        srv.shutdown()
         shutil.rmtree(d)
     print("A11 e2e: ok")
 

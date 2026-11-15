@@ -329,6 +329,10 @@ pub struct Send {
     /// Sent only when this is true: "body.status == 'paid'".
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub when: String,
+    /// "handlebars": url, body and header values are WireMock templates ({{originalRequest.body}},
+    /// {{jsonPath originalRequest.body '$.id'}}), as imported webhooks are written.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub template: String,
 }
 fn post() -> String {
     "POST".into()
@@ -921,7 +925,8 @@ pub fn validate(p: &Plugin, t: &str) -> Vec<Value> {
             err("receive.auth: none | bearer | basic | session".into(), "auth:");
         }
         for s in &r.send {
-            if let Err(x) = expr::check_template(&s.url).and_then(|_| expr::check_template(&s.body)).and_then(|_| if s.when.is_empty() { Ok(()) } else { expr::parse(&s.when) }) {
+            let chk = |t: &str| if s.template == "handlebars" { crate::hbs::check(t) } else { expr::check_template(t) };
+            if let Err(x) = chk(&s.url).and_then(|_| chk(&s.body)).and_then(|_| if s.when.is_empty() { Ok(()) } else { expr::parse(&s.when) }) {
                 err(format!("send: {x}"), &s.url);
             }
             if !s.sign.is_empty() && !SIGNS.contains(&s.sign.as_str()) {

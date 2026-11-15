@@ -319,16 +319,14 @@ pub fn plugin_of(g: &Group, files_root: &Path) -> (Plugin, Vec<(String, Vec<u8>)
         for act in actions {
             let pr = &act["parameters"];
             if act["name"] == "webhook" && pr["url"].is_string() {
-                let tpl = |x: &str| x.contains("{{");
                 let body = pr["body"].as_str().map(String::from).or_else(|| pr.get("jsonBody").map(|j| j.to_string())).unwrap_or_default();
-                if tpl(&body) || tpl(pr["url"].as_str().unwrap_or("")) {
-                    gaps.push(format!("{}: webhook templates ({{{{originalRequest…}}}}) are sent as text", file.file_name().and_then(|f| f.to_str()).unwrap_or("")));
-                }
-                let headers = pr["headers"].as_object().map(|h| h.iter().map(|(k, v)| (k.clone(), v.as_str().map(String::from).unwrap_or_else(|| v.to_string()).replace("{{", "{ {"))).collect()).unwrap_or_default();
+                let headers: BTreeMap<String, String> = pr["headers"].as_object().map(|h| h.iter().map(|(k, v)| (k.clone(), v.as_str().map(String::from).unwrap_or_else(|| v.to_string()))).collect()).unwrap_or_default();
+                // WireMock renders webhook parts as templates ({{originalRequest.body}}, {{jsonPath …}}): so does the send.
+                let templated = body.contains("{{") || pr["url"].as_str().unwrap_or("").contains("{{") || headers.values().any(|v| v.contains("{{"));
                 let delay = pr["delay"]["milliseconds"].as_u64().or(pr["fixedDelayMilliseconds"].as_u64()).map(|d| format!("{d}ms")).unwrap_or_default();
                 route_sends.entry(w.methods.iter().map(|m| format!("{m} {}", w.path)).collect::<Vec<_>>()).or_default().push(plugin::Send {
-                    url: pr["url"].as_str().unwrap_or("").replace("{{", "{ {"), method: pr["method"].as_str().unwrap_or("POST").to_uppercase(), body: body.replace("{{", "{ {"),
-                    delay, headers, when: format!("answer == {}", q(&answer_name)), ..Default::default() });
+                    url: pr["url"].as_str().unwrap_or("").to_string(), method: pr["method"].as_str().unwrap_or("POST").to_uppercase(), body,
+                    delay, headers, when: format!("answer == {}", q(&answer_name)), template: if templated { "handlebars".into() } else { String::new() }, ..Default::default() });
             } else {
                 gaps.push(format!("{}: action {} is not converted", file.file_name().and_then(|f| f.to_str()).unwrap_or(""), act["name"]));
             }

@@ -667,6 +667,8 @@ pub async fn run(ctx: &Ctx, p: &Plugin, r: &Route, params: Map<String, Value>, r
         steps.push(json!({"step": "send", "text": format!("{} webhook(s) after responding{}", r.send.len(), if dry { " (not sent: Try it)" } else { "" }), "ok": true}));
     }
     sc.insert("answer".into(), json!(o.answer));
+    sc.insert("__response".into(), json!({"status": o.status, "body": String::from_utf8_lossy(&o.body).chars().take(256 * 1024).collect::<String>(),
+        "headers": o.headers.iter().map(|(k, v)| (k.clone(), json!(v))).collect::<Map<String, Value>>()}));
     o.scope = sc;
     o.steps = steps;
     o
@@ -842,8 +844,10 @@ async fn fire(ctx: &Ctx, job: Value) {
     let wh: Option<plugin::Webhooks> = serde_json::from_value(job["webhooks"].clone()).ok().flatten();
     let sc: Map<String, Value> = job["scope"].as_object().cloned().unwrap_or_default();
     let id = job["call"].as_str().unwrap_or("").to_string();
-    let url = expr::render(&s.url, &sc).unwrap_or_default();
-    let body = expr::render(&s.body, &sc).unwrap_or_default();
+    let hb = s.template == "handlebars";
+    let tpl = |t: &str| if hb { crate::hbs::render(t, &sc).unwrap_or_default() } else { expr::render(t, &sc).unwrap_or_default() };
+    let url = tpl(&s.url);
+    let body = tpl(&s.body);
     // A SOAP callback: the body is the payload, inside an envelope of the call's version.
     if !s.operation.is_empty() {
         let v = sc.get("soap_version").and_then(|v| v.as_str()).unwrap_or("1.2").to_string();
@@ -862,8 +866,8 @@ async fn fire(ctx: &Ctx, job: Value) {
     // Header names are templates too; a name that renders empty is left out.
     // "*": the value renders to "Name: value" lines, one header each (headers a subscriber chose).
     for (k, v) in &s.headers {
-        let k = expr::render(k, &sc).unwrap_or_default();
-        let v = expr::render(v, &sc).unwrap_or_default();
+        let k = if hb { k.clone() } else { expr::render(k, &sc).unwrap_or_default() };
+        let v = tpl(v);
         if k.trim() == "*" {
             for line in v.lines() {
                 if let Some((n, x)) = line.split_once(':').filter(|(n, _)| !n.trim().is_empty()) {

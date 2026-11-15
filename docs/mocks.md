@@ -61,7 +61,7 @@ service.
 | `fault` | `EMPTY_RESPONSE` becomes `empty`, the others `reset` |
 | `scenarioName`, `requiredScenarioState`, `newScenarioState` | [scenarios](plugins.md#scenarios): rules with `scenario == '…'` and a `scenario:` move after the answer |
 | a body with `{{ }}` or the `response-template` transformer | an answer with `template: handlebars` |
-| `postServeActions` / `serveEventListeners` `webhook` | a `send` on the route that fires only after that mapping's answer (`when: answer == '…'`), with its method, URL, headers, body and delay |
+| `postServeActions` / `serveEventListeners` `webhook` | a `send` on the route that fires only after that mapping's answer (`when: answer == '…'`), with its method, URL, headers, body and delay; templates stay WireMock templates (`template: handlebars`) reading `originalRequest` and `originalResponse` |
 | no mapping matched | the answer `not_matched`: 404 "Request was not matched", as WireMock answers |
 
 Imported routes have `fallthrough: true`: when none of a route's rules match, the next route whose path matches is
@@ -125,6 +125,5 @@ Helpers:
   forms listed above, not full XPath. Helpers not listed here (`pickRandom`, `dateFormat`, `parseDate`,
   `formData`, `request.cookies`…) are not available.
 - Delays from `delayDistribution` use the median only; `chunkedDribbleDelay` is not read.
-- Proxying (`proxyBaseUrl`) is not imported: use [Recording](recording.md). Webhook templates
-  (`{{originalRequest.body}}`…) are sent as text and reported as a gap; rewrite them with Stuntman's expressions.
+- Proxying (`proxyBaseUrl`) is not imported: use [Recording](recording.md).
 - Request journals and the WireMock admin API (`/__admin`) are not served.

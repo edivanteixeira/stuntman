@@ -15,6 +15,7 @@ stuntman-sms.workspace = true
 stuntman-keyvault.workspace = true
 stuntman-identity.workspace = true
 stuntman-messaging.workspace = true
+stuntman-ai.workspace = true
 axum.workspace = true
 tokio.workspace = true
 serde_json.workspace = true

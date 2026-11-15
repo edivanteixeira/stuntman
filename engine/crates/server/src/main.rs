@@ -31,6 +31,7 @@ fn modules() -> Vec<Box<dyn Module>> {
         Box::new(stuntman_apis::Apis { port: env("STUNTMAN_APIS_PORT", "8028").parse().unwrap_or(8028), tls_port: env("STUNTMAN_APIS_TLS_PORT", "8443").parse().unwrap_or(8443) }),
         Box::new(stuntman_whatsapp::WhatsApp),
         Box::new(stuntman_sms::Sms),
+        Box::new(stuntman_ai::Ai),
         Box::new(stuntman_identity::Identity),
         Box::new(stuntman_keyvault::KeyVault { port: env("STUNTMAN_KEYVAULT_PORT", "8444").parse().unwrap_or(8444) }),
         Box::new(stuntman_messaging::Messaging { port: env("STUNTMAN_AMQP_PORT", "5673").parse().unwrap_or(5673), tls_port: env("STUNTMAN_AMQPS_PORT", "5671").parse().unwrap_or(5671) }),

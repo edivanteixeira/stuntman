@@ -4041,6 +4041,7 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "serde_yaml",
+ "stuntman-ai",
  "stuntman-apis",
  "stuntman-core",
  "stuntman-email",
@@ -4056,6 +4057,24 @@ dependencies = [
  "tokio-stream",
  "tower",
  "tower-http",
+]
+
+[[package]]
+name = "stuntman-ai"
+version = "0.3.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "bytes",
+ "futures",
+ "rand 0.8.8",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "stuntman-core",
+ "tokio",
 ]
 
 [[package]]

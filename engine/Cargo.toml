@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/core", "crates/email", "crates/webhook", "crates/telemetry", "crates/storage", "crates/apis", "crates/whatsapp", "crates/sms", "crates/keyvault",
-    "crates/identity", "crates/messaging", "crates/server", "web"]
+    "crates/identity", "crates/messaging", "crates/ai", "crates/server", "web"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -26,6 +26,7 @@ stuntman-sms = { path = "crates/sms" }
 stuntman-keyvault = { path = "crates/keyvault" }
 stuntman-identity = { path = "crates/identity" }
 stuntman-messaging = { path = "crates/messaging" }
+stuntman-ai = { path = "crates/ai" }
 
 # RSA key generation is seconds slow unoptimised; vault keys are made at run time.
 [profile.dev.package.rsa]

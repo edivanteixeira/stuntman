@@ -40,7 +40,9 @@ pub async fn service_view(ctx: &Ctx, p: &Plugin) -> Value {
         "callsToday": calls, "billableToday": billable, "costToday": (billable as f64) * p.service.billing.per_call,
         "warnAbove": warn, "overWarn": warn.map(|w| p.service.billing.enabled && billable > w).unwrap_or(false),
         "forced": forced, "forceLog": store::force_log(ctx, Some(p.service.name.clone()), 10).await.unwrap_or_default(), "routes": p.routes.len(),
-        "soap": p.soap.as_ref().map(|s| json!({"version": s.version, "endpoint": s.endpoint, "wsdl": s.wsdl})), "operations": p.operations.len(), "answers": p.answers.len(), "pages": p.pages.len(),
+        "soap": p.soap.as_ref().map(|s| json!({"version": s.version, "endpoint": s.endpoint, "wsdl": s.wsdl})), "operations": p.operations.len(),
+        "spec": p.spec.as_ref().map(|s| json!({"version": s.version, "file": s.openapi, "apiVersion": s.api_version, "source": s.source, "validate": s.validate, "schemas": s.schemas.len()})),
+        "record": p.record.as_ref().map(|r| json!({"upstream": r.upstream, "mode": r.mode, "until": r.until, "stopped": r.stopped, "paused": r.paused, "live": crate::record::live(r), "started": r.started})), "recorded": match &p.record { Some(r) => store::count_recorded(ctx, &p.service.name, r.started).await.unwrap_or(0), None => 0 }, "answers": p.answers.len(), "pages": p.pages.len(),
         "mtls": p.service.auth.client_certificate.as_ref().map(|c| c.required).unwrap_or(false), "session": p.service.auth.session,
         "urls": {"local": format!("http://{ip}:{}{}/{}", crate::port(), ctx.prefix(), p.service.name), "host": format!("http://{}.{base}:{}", p.service.name, crate::port()),
                  "real": p.service.real_host, "realBase": p.service.base_url,
@@ -77,6 +79,8 @@ pub fn all() -> Vec<Tool> {
     v.extend(service_tools());
     v.extend(crate::restpki::tools());
     v.extend(crate::soap::tools());
+    v.extend(crate::openapi::tools());
+    v.extend(crate::record::tools());
     v
 }
 
@@ -270,7 +274,9 @@ fn plugin_tools() -> Vec<Tool> {
             let s = service_of(&a)?;
             plugin::get(&ctx, &s)?;
             std::fs::remove_file(plugin::file(&ctx, &s)).map_err(|e| ApiError::internal(e.to_string()))?;
-            let _ = std::fs::remove_dir_all(crate::soap::folder(&ctx, &s));
+            for d in [crate::soap::folder(&ctx, &s), crate::openapi::folder(&ctx, &s), crate::record::folder(&ctx, &s), crate::record::files_dir(&ctx, &s)] {
+                let _ = std::fs::remove_dir_all(d);
+            }
             store::wipe_service(&ctx, &s).await?;
             ctx.live.send("apis.plugin", &s, "deleted");
             Ok(json!({"removed": s}))
@@ -397,7 +403,7 @@ fn answers_tools() -> Vec<Tool> {
             let out: Vec<Value> = p.answers.iter().map(|x| {
                 let mut used = vec![];
                 for r in p.routes.iter().chain(p.operations.iter()) {
-                    let label = if r.operation.is_empty() { r.route.clone() } else { r.operation.clone() };
+                    let label = if !r.route.is_empty() { r.route.clone() } else { r.operation.clone() };
                     for (i, d) in r.decide.iter().enumerate() {
                         if d.answer == x.name {
                             used.push(json!({"route": label, "step": "decide", "rule": i, "when": d.when}));

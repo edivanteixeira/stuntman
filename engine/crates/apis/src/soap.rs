@@ -402,11 +402,11 @@ fn strip(q: &str) -> &str {
     q.rsplit(':').next().unwrap_or(q)
 }
 
-fn base_name(loc: &str) -> String {
+pub(crate) fn base_name(loc: &str) -> String {
     loc.split(['?', '#']).next().unwrap_or(loc).rsplit(['/', '\\']).next().unwrap_or(loc).to_string()
 }
 
-fn join(base: &str, loc: &str) -> String {
+pub(crate) fn join(base: &str, loc: &str) -> String {
     if loc.contains("://") || loc.starts_with('/') && !base.contains("://") {
         return loc.to_string();
     }
@@ -416,7 +416,7 @@ fn join(base: &str, loc: &str) -> String {
     }
 }
 
-async fn fetch(http: &reqwest::Client, src: &str) -> Result<String, String> {
+pub(crate) async fn fetch(http: &reqwest::Client, src: &str) -> Result<String, String> {
     if src.contains("://") {
         let r = http.get(src).send().await.map_err(|e| e.to_string())?;
         if !r.status().is_success() {
@@ -566,7 +566,7 @@ impl Schemas {
     }
 }
 
-fn snake(s: &str) -> String {
+pub(crate) fn snake(s: &str) -> String {
     let mut o = String::new();
     for (i, c) in s.chars().enumerate() {
         if c.is_uppercase() && i > 0 && !o.ends_with('_') {

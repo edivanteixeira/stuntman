@@ -379,6 +379,8 @@ fn call(name: &str, a: &[Value], sc: &Scope) -> Result<Value, String> {
         // base64url(json({"jti": uuid()})): JWT parts, no padding.
         "base64url" => json!(base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, s0().as_bytes())),
         "uuid" => json!(stuntman_core::util::uuid()),
+        // random_id(): 8 letters and digits, for ids that change on every call ("ch_{{ random_id() }}").
+        "random_id" => json!(stuntman_core::util::uuid().replace('-', "")[..8].to_string()),
         "now" => json!(iso(stuntman_core::util::now_ms(), None)),
         "now_ms" => json!(stuntman_core::util::now_ms()),
         "matches" => json!(regex::Regex::new(&a.get(1).map(text).unwrap_or_default()).map(|r| r.is_match(&s0())).unwrap_or(false)),

@@ -51,7 +51,7 @@ callbacks back and **fails exactly when you ask it to**.
 
 <p align="center"><img src="docs/images/agent-loop.png" alt="The loop an agent runs on its own: read the code, set up Stuntman, change the code, run the real flow, provoke failures, read what the app sent, check the result" width="100%"></p>
 
-Every action in Stuntman is a tool: **299 of them**, each one both an **MCP tool** and an **HTTP route**.
+Every action in Stuntman is a tool: **306 of them**, each one both an **MCP tool** and an **HTTP route**.
 Claude Code, Codex, Gemini CLI, OpenCode, Cursor, GitHub Copilot or a plain test script can:
 
 1. **Set it up.** Find the providers your app calls, install the matching plugins, point the base URLs at Stuntman.
@@ -111,7 +111,7 @@ claude mcp add --transport http stuntman http://localhost:8025/mcp
 
 | Line | Providers today | You can provoke |
 |---|---|---|
-| **HTTP APIs** | Any REST API, described as a YAML plugin: OAuth2 client credentials, Basic, session cookies, mTLS, browser steps. Any SOAP API, made from its WSDL | named answers, SOAP faults, latency, 5xx, reset, timeout, expired tokens, billing and rate limits |
+| **HTTP APIs** | Any REST API, described as a YAML plugin: OAuth2 client credentials, Basic, session cookies, mTLS, browser steps. Any SOAP API, made from its WSDL. Made from an OpenAPI spec, or by recording the real provider | named answers, SOAP faults, latency, 5xx, reset, timeout, expired tokens, billing and rate limits |
 | **SMS** | Zenvia API v2 | 500, 400, reset, empty reply, timeout; the person texts back, STOP / START |
 | **WhatsApp** | Meta WhatsApp Cloud API (Graph) | 500, 400, connection failures, expired tokens, user replies, badly signed or replayed webhooks |
 | **Email** | SMTP (STARTTLS) and SendGrid v3, signed event webhook | bounce, defer, drop, hold; open, click, spam report, unsubscribe events |
@@ -151,11 +151,13 @@ claude mcp add --transport http stuntman http://localhost:8025/mcp
 | [Failures on cue](docs/failures.md) | Rules, forced answers and every provocation, line by line |
 | [Timeline and proof](docs/timeline.md) | Reading what your app did; unmatched calls; telemetry |
 | [Plugins](docs/plugins.md) | The YAML format, expressions, installing, validating |
+| [OpenAPI specs](docs/openapi.md) | A provider from its OpenAPI or Swagger spec: routes, answers, body checks |
+| [Recording](docs/recording.md) | Record the real provider's sandbox and turn the calls into a plugin |
 | [SOAP services](docs/soap.md) | A provider from its WSDL: operations, faults, WS-Security, callbacks |
 | [Environments](docs/environments.md) | One environment per branch: clone, pause, expire, route requests |
 | [Configuration](docs/configuration.md) | Environment variables, ports, Docker, data layout |
 | [Security](docs/security.md) | What is and is not protected today |
-| [Tool reference](docs/reference/tools.md) | All 299 tools, generated from the source |
+| [Tool reference](docs/reference/tools.md) | All 306 tools, generated from the source |
 
 ## How it is built
 

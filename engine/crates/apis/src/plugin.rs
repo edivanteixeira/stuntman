@@ -163,6 +163,12 @@ pub struct Receive {
     pub body: Vec<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub missing: String,
+    /// The body is checked against this schema (a key of spec.schemas); a body that breaks it gets
+    /// the answer named by `invalid`, or 400 naming the field.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub schema: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub invalid: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -224,7 +230,8 @@ pub struct Route {
     /// SOAP operation.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub route: String,
-    /// A SOAP operation (under `operations:`): its name in the WSDL.
+    /// A SOAP operation (under `operations:`): its name in the WSDL. On a route made from an
+    /// OpenAPI spec: its operationId.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub operation: String,
     /// The SOAPAction that picks this operation (from the WSDL binding).
@@ -280,7 +287,7 @@ pub struct Route {
 
 impl Route {
     pub fn method_path(&self) -> (String, String) {
-        if !self.operation.is_empty() {
+        if self.route.is_empty() && !self.operation.is_empty() {
             return ("SOAP".into(), self.operation.clone());
         }
         let mut p = self.route.trim().splitn(2, ' ');
@@ -309,6 +316,10 @@ pub struct Answer {
     /// What this answer means, shown under its name.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
+    /// A file kept next to the plugin (apis/<service>.files/<file>), sent as is instead of `body`:
+    /// a PDF, an image, anything binary.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub file: String,
     /// A SOAP fault instead of a response; the body (if any) is its detail.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fault: Option<Fault>,
@@ -356,6 +367,65 @@ pub struct Soap {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub namespace: String,
 }
+/// A service made from an OpenAPI 3.x or Swagger 2.0 spec: the spec kept next to the plugin and
+/// the schemas the routes check bodies against.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Spec {
+    /// The spec file kept in apis/<service>.spec/, served back on /<file>.
+    pub openapi: String,
+    /// Where it came from (a URL): reimport_spec reads it again.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
+    /// "3.1.0", "2.0"…
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub version: String,
+    /// The spec's own version (info.version).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub api_version: String,
+    #[serde(default = "yes")]
+    pub validate: bool,
+    /// Name → JSON Schema, $refs resolved: what receive.schema names.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub schemas: BTreeMap<String, Value>,
+}
+
+/// A recording: calls go to the real provider (its sandbox) and back; each pair is kept, with
+/// secrets out, to make the plugin from.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Record {
+    /// https://sandbox.provider.example
+    pub upstream: String,
+    /// every (each call goes to the provider) | unknown (routes answer; the rest go)
+    #[serde(default = "every")]
+    pub mode: String,
+    /// ms; calls since then are the recording
+    #[serde(default)]
+    pub started: i64,
+    /// ms; it stops by itself then (0: never)
+    #[serde(default, skip_serializing_if = "is_zero_i")]
+    pub until: i64,
+    /// it stops by itself after this many calls (0: never)
+    #[serde(default, skip_serializing_if = "is_zero_u")]
+    pub max: u32,
+    /// ms; stopped, waiting for the review
+    #[serde(default, skip_serializing_if = "is_zero_i")]
+    pub stopped: i64,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub paused: bool,
+    /// More body fields masked in what is kept (secrets, card numbers, CPF and e-mails always are).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mask: Vec<String>,
+}
+fn every() -> String {
+    "every".into()
+}
+fn is_zero_i(x: &i64) -> bool {
+    *x == 0
+}
+fn is_zero_u(x: &u32) -> bool {
+    *x == 0
+}
+
 fn v12() -> String {
     "1.2".into()
 }
@@ -496,6 +566,12 @@ pub struct Plugin {
     /// The SOAP operations, with the same steps as routes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub operations: Vec<Route>,
+    /// Made from an OpenAPI spec (A8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<Spec>,
+    /// Recording the real provider (A9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<Record>,
 }
 
 /// Generic answers every service has (A1 "next calls answer", A3 route `fail`).
@@ -594,11 +670,11 @@ pub fn validate(p: &Plugin, t: &str) -> Vec<Value> {
     }
     for r in p.routes.iter().chain(p.operations.iter()) {
         let (m, path) = r.method_path();
-        if r.operation.is_empty() && (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"].contains(&m.as_str()) || !path.starts_with('/')) {
+        if !(r.route.is_empty() && !r.operation.is_empty()) && (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"].contains(&m.as_str()) || !path.starts_with('/')) {
             err(format!("route “{}”: METHOD /path", r.route), &r.route);
         }
         if !seen.insert(format!("{m} {path}")) {
-            err(format!("“{}” is there twice", if r.operation.is_empty() { &r.route } else { &r.operation }), if r.operation.is_empty() { &r.route } else { &r.operation });
+            err(format!("“{}” is there twice", if !r.route.is_empty() { &r.route } else { &r.operation }), if !r.route.is_empty() { &r.route } else { &r.operation });
         }
         for (k, e) in &r.lets {
             if let Err(x) = expr::parse(e) {
@@ -664,6 +740,12 @@ pub fn validate(p: &Plugin, t: &str) -> Vec<Value> {
                 }
             }
         }
+        if !r.receive.invalid.is_empty() && !names.contains(&r.receive.invalid.as_str()) {
+            err(format!("receive.invalid → “{}”: no such answer", r.receive.invalid), "invalid:");
+        }
+        if !r.receive.schema.is_empty() && !p.spec.as_ref().map(|s| s.schemas.contains_key(&r.receive.schema)).unwrap_or(false) {
+            err(format!("receive.schema “{}”: no such schema in spec.schemas", r.receive.schema), "schema:");
+        }
         if !r.receive.auth.is_empty() && !["none", "bearer", "basic", "session"].contains(&r.receive.auth.as_str()) {
             err("receive.auth: none | bearer | basic | session".into(), "auth:");
         }
@@ -710,6 +792,14 @@ pub fn validate(p: &Plugin, t: &str) -> Vec<Value> {
     for a in &p.answers {
         if let Err(x) = expr::check_template(&a.body).and_then(|_| expr::check_template(&a.sentence)).and_then(|_| expr::check_template(&a.fault.as_ref().map(|f| f.reason.clone()).unwrap_or_default())) {
             err(format!("answer {}: {x}", a.name), &format!("name: {}", a.name));
+        }
+    }
+    if let Some(rc) = &p.record {
+        if !rc.upstream.starts_with("http://") && !rc.upstream.starts_with("https://") {
+            err("record.upstream: the provider's URL, https://…".into(), "upstream:");
+        }
+        if !["every", "unknown"].contains(&rc.mode.as_str()) {
+            err("record.mode: every | unknown".into(), "mode:");
         }
     }
     if p.service.limits.fail_share < 0.0 || p.service.limits.fail_share > 1.0 {

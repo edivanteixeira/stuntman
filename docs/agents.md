@@ -118,19 +118,21 @@ The tools it will use:
 | Install | `install_plugin`, `install_collection`, `import_plugin` + `install_import` |
 | Providers with their own module | `set_provider` (identity), `create_account` (storage), `create_webhook_inbox`, and one set per line ([reference](reference/tools.md)) |
 | Write a plugin that does not exist | `get_plugin`, `put_plugin`, `validate_plugin` |
+| Stand in for a provider from its OpenAPI spec | `import_spec`, `reimport_spec`, `set_route`, `try_route` |
+| Record the real provider and make the plugin | `start_recording`, `recording_status`, `stop_recording`, `make_plugin` |
 | Stand in for a SOAP provider | `import_wsdl`, `list_operations`, `set_operation`, `try_operation`, `reimport_wsdl`, `send_callback` |
 | Prove nothing leaks | `real_provider_calls`, `list_unmatched` |
 
 ## Tools by intent
 
-A sample; the full list of 299 is in the [tool reference](reference/tools.md).
+A sample; the full list of 306 is in the [tool reference](reference/tools.md).
 
 | Intent | Tools |
 |---|---|
 | **Watch** | `list_sms`, `list_whatsapp_messages`, `list_api_calls`, `list_traces`, `list_deliveries`, `wait_for_object`, `wait_for_api_call`, `wait_for_delivery` |
 | **Provoke** | `create_rule`, `set_rule_enabled`, `force_answer`, `force_sms_failure`, `force_whatsapp_failure`, `expire_tokens`, `send_bad_webhook`, `provoke_sign_in`, `provoke_secret` |
 | **Play the people** | `reply_as_user`, `reply_sms_as_user`, `simulate_recipient` |
-| **Set up** | `list_plugins`, `install_plugin`, `install_collection`, `import_wsdl`, `put_plugin`, `set_provider`, `create_webhook_inbox`, `create_environment` |
+| **Set up** | `list_plugins`, `install_plugin`, `install_collection`, `import_spec`, `start_recording`, `import_wsdl`, `put_plugin`, `set_provider`, `create_webhook_inbox`, `create_environment` |
 | **Check** | `real_provider_calls`, `validate_plugin`, `list_forced`, `would_fail` |
 
 ## Tips for reliable runs

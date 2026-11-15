@@ -5,13 +5,13 @@ Every action in Stuntman is one tool. Each tool is an **MCP tool** (same name) a
 
 _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit by hand._
 
-**299 tools** in 11 areas.
+**306 tools** in 11 areas.
 
 - [Environments and timeline](#environments-and-timeline) · 12 tools
 - [Email](#email) · 35 tools
 - [SMS](#sms) · 17 tools
 - [WhatsApp](#whatsapp) · 28 tools
-- [HTTP APIs (plugins)](#http-apis-plugins) · 52 tools
+- [HTTP APIs (plugins)](#http-apis-plugins) · 59 tools
 - [Storage (Azure Blob, S3)](#storage-azure-blob-s3) · 45 tools
 - [Messaging (Service Bus, RabbitMQ)](#messaging-service-bus-rabbitmq) · 19 tools
 - [Identity (OIDC / OAuth2)](#identity-oidc-oauth2) · 26 tools
@@ -187,6 +187,13 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `set_operation` | `PUT /api/plugins/{service}/operations` | service, operation | steps | Replaces an operation's steps (receive, let, keep, wait, decide, respond, send, fail, billable), like set_route for SOAP; its SOAPAction and types stay as the WSDL says. Validated before saving. |
 | `try_operation` | `POST /api/plugins/{service}/operations/try` | service | envelope, operation, body, action | Runs a SOAP service on an envelope (or an operation and its body XML): the operation it picks, the XSD and WS-Security checks, the steps and the envelope it answers. Nothing is kept, counted, billed or sent. |
 | `send_callback` | `POST /api/plugins/{service}/callback` | service, url, operation, body | version | Calls the app's endpoint as the provider would: an envelope with this operation's SOAPAction and body (the payload XML). Returns the app's status and answer. |
+| `import_spec` | `POST /api/plugins/spec` | service | source, spec, title, real_host, validate | A service from the provider's spec: OpenAPI 3.x or Swagger 2.0 (JSON or YAML), or a WSDL (then it is a SOAP service, as import_wsdl). Routes with their success answer (the spec's example or one built from the schema), the other responses as named answers, bodies checked against the schemas, OAuth client credentials with a token route. The spec is served back. |
+| `reimport_spec` | `POST /api/plugins/{service}/spec` | service | source, spec | Reads the spec again (or a new one): new routes start with their success answer; existing ones keep their steps; answers, data and service settings stay. Lists what was added and removed. Works for WSDLs too. |
+| `start_recording` | `POST /api/plugins/{service}/recording` | service, upstream | mode, stop_after, max, mask, title | Records the real provider: each call to the service goes to upstream (its sandbox) and back; the app gets the real answer and Stuntman keeps the pair with secrets, card numbers, CPFs and e-mails masked. mode=unknown on an existing service: its routes answer and only unknown calls go. Creates the service if it does not exist. Use a sandbox key, never a production one. |
+| `recording_status` | `GET /api/plugins/{service}/recording` | service | review | A recording: recording \| paused \| time is up \| limit reached \| stopped, calls kept, time left; once it stops (or review=true), the routes and answers it found and the rules it suggests. |
+| `pause_recording` | `POST /api/plugins/{service}/recording/pause` | service | resume | Pauses a recording (calls get 404 “no route”, or the routes' answers) or, with resume=true, goes on. |
+| `stop_recording` | `DELETE /api/plugins/{service}/recording` | service | — | Stops a recording and returns the review: calls grouped into routes, the answers each gave, ids and dates made templates, and the rules that tell the answers apart. make_plugin writes it. |
+| `make_plugin` | `POST /api/plugins/{service}/recording/plugin` | service | routes, rules | Writes the plugin from a recording: the routes it found (routes= only these, “METHOD /path”), their answers (binary ones as files) and the suggested rules (rules=false: each route gives its usual answer). Routes the service has stay as they are. The recording ends; the provider is no longer needed. |
 
 ## Storage (Azure Blob, S3)
 

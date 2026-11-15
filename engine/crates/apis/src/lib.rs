@@ -6,6 +6,8 @@ pub mod ca;
 pub mod catalog;
 pub mod engine;
 pub mod expr;
+pub mod openapi;
+pub mod record;
 pub mod pades;
 pub mod people;
 pub mod restpki;

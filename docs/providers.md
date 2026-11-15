@@ -17,12 +17,15 @@ Addresses below assume the default ports on `localhost`. In another environment,
 ![The route editor: receive, keep, decide, respond, send, with the plugin YAML beside it](images/screen-route-editor.png)
 
 Any REST or SOAP API, described once as a **plugin**: a YAML file with routes (or SOAP operations), state,
-answers, callbacks and the sentence each call leaves on the timeline. A SOAP plugin is made from the provider's
-WSDL; see [SOAP services](soap.md).
+answers, callbacks and the sentence each call leaves on the timeline. You can write it, make it from the
+provider's [OpenAPI spec](openapi.md) or [WSDL](soap.md), or [record the real provider](recording.md) and let
+Stuntman write it.
 
 | | |
 |---|---|
 | **Point your app at** | `http://localhost:8028/<service>`; HTTPS on `:8443` (any host name, Test CA); or the provider's real host name resolved to Stuntman |
+| **OpenAPI** | OpenAPI 3.x and Swagger 2.0: routes, answers from the examples or the schemas, bodies checked against the schemas, the OAuth token route, the spec served back |
+| **Recording** | calls go to the provider's sandbox and back, secrets masked; the review groups them into routes, answers and rules, and writes the plugin |
 | **SOAP** | SOAP 1.1 and 1.2 from a WSDL: operations by SOAPAction, bodies checked against the XSD, faults, WS-Security UsernameToken, callbacks, `?wsdl` served back |
 | **Auth it understands** | OAuth2 client credentials (a token route), Basic, session cookies (a login route), mTLS client certificates, browser steps (authorize pages, push approvals) |
 | **It keeps** | state collections per route, data tables (people, documents…), every call with its answer and sentence |

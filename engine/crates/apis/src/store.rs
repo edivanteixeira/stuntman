@@ -112,6 +112,23 @@ pub async fn get(ctx: &Ctx, id: &str, raw: bool) -> Result<Value, ApiError> {
         .ok_or_else(|| ApiError::not_found(format!("No API call {id}")))
 }
 
+/// The calls a recording kept (A9), oldest first, with request and response.
+pub async fn recorded(ctx: &Ctx, service: &str, since: i64, until: i64) -> Result<Vec<Value>, ApiError> {
+    let s2 = service.to_string();
+    ctx.db
+        .call(move |cn| {
+            let mut s = cn.prepare(&format!("SELECT {COLS} FROM api_calls WHERE service=?1 AND answer='recorded' AND at>=?2 AND at<=?3 ORDER BY seq LIMIT 5000"))?;
+            let v = s.query_map(params![s2, since, until], |r| call_json(r, true))?.collect::<Result<Vec<_>, _>>();
+            v
+        })
+        .await
+}
+
+pub async fn count_recorded(ctx: &Ctx, service: &str, since: i64) -> Result<i64, ApiError> {
+    let s2 = service.to_string();
+    ctx.db.call(move |cn| cn.query_row("SELECT count(*) FROM api_calls WHERE service=?1 AND answer='recorded' AND at>=?2", params![s2, since], |r| r.get(0))).await
+}
+
 /// (calls, billable) per service since a time, and calls per route today.
 pub async fn counts(ctx: &Ctx, since: i64) -> Result<std::collections::BTreeMap<String, (i64, i64)>, ApiError> {
     ctx.db

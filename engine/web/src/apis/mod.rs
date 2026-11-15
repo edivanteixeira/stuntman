@@ -7,6 +7,7 @@ pub mod auth;
 pub mod calls;
 pub mod operations;
 pub mod pages;
+pub mod review;
 pub mod routes;
 pub mod settings;
 pub mod unmatched;
@@ -43,14 +44,14 @@ pub fn PluginHead(service: String, active: &'static str, #[prop(into)] right: Vi
     let list = services();
     let sv = service.clone();
     let cur = Memo::new(move |_| list.get().into_iter().find(|x| s(x, "name") == sv).unwrap_or(Value::Null));
-    let tabs: [(&'static str, &'static str, &'static str); 6] = [("calls", "Calls", "/calls"), ("routes", "Routes", "/routes"), ("answers", "Answers", "/answers"), ("pages", "Pages", "/pages"), ("auth", "Auth & limits", "/auth"), ("settings", "Settings", "/settings")];
+    let tabs: [(&'static str, &'static str, &'static str); 7] = [("review", "Review", "/review"), ("calls", "Calls", "/calls"), ("routes", "Routes", "/routes"), ("answers", "Answers", "/answers"), ("pages", "Pages", "/pages"), ("auth", "Auth & limits", "/auth"), ("settings", "Settings", "/settings")];
     // No service in this environment yet: no tabs of a service that does not exist.
     let none = service.is_empty();
     view! {
         <div class="head">
             <div class="top">
                 <div class="titled">
-                    <div class="kind">{move || { let c = cur.get(); let mut o = origin_line(&c); if !c["soap"].is_null() { o = format!("SOAP {}  ·  {o}", s(&c["soap"], "version")); } if o.is_empty() { "HTTP API".to_string() } else { format!("HTTP API  ·  {o}") } }}</div>
+                    <div class="kind">{move || { let c = cur.get(); let mut o = origin_line(&c); if !c["soap"].is_null() { o = format!("SOAP {}  ·  {o}", s(&c["soap"], "version")); } else if !c["spec"].is_null() { o = format!("{} {}  ·  {o}", if s(&c["spec"], "version").starts_with('2') { "Swagger" } else { "OpenAPI" }, s(&c["spec"], "version")); } else if !c["record"].is_null() { o = format!("recording  ·  {}", s(&c["record"], "upstream").split("://").nth(1).unwrap_or("")); } if o.is_empty() { "HTTP API".to_string() } else { format!("HTTP API  ·  {o}") } }}</div>
                     <h1>{move || { let c = cur.get(); if none { "No services yet".to_string() } else if c.is_null() { service.clone() } else { s(&c, "title") } }}</h1>
                 </div>
                 <span class="grow"></span>
@@ -61,12 +62,13 @@ pub fn PluginHead(service: String, active: &'static str, #[prop(into)] right: Vi
                     let nav = nav.clone();
                     let sv = cur;
                     view! {
-                        <div class="tab" class:on=active == key class:hidden=move || key == "pages" && api::n(&sv.get(), "pages") == 0 on:click=move |_| nav(&format!("/apis/{}{tail}", enc(&s(&sv.get_untracked(), "name"))), Default::default())>
-                            {move || if key == "routes" && !sv.get()["soap"].is_null() { "Operations" } else { label }}<span class="n">{move || match key { "calls" => api::thousands(api::n(&sv.get(), "callsToday")), "routes" if !sv.get()["soap"].is_null() => api::n(&sv.get(), "operations").to_string(), "routes" => api::n(&sv.get(), "routes").to_string(), "answers" => api::n(&sv.get(), "answers").to_string(), "pages" => api::n(&sv.get(), "pages").to_string(), _ => String::new() }}</span></div>
+                        <div class="tab" class:on=active == key class:hidden=move || (key == "pages" && api::n(&sv.get(), "pages") == 0) || (key == "review" && sv.get()["record"].is_null()) on:click=move |_| nav(&format!("/apis/{}{tail}", enc(&s(&sv.get_untracked(), "name"))), Default::default())>
+                            {move || if key == "routes" && !sv.get()["soap"].is_null() { "Operations" } else { label }}<span class="n">{move || match key { "calls" => api::thousands(api::n(&sv.get(), "callsToday")), "routes" if !sv.get()["soap"].is_null() => api::n(&sv.get(), "operations").to_string(), "routes" => api::n(&sv.get(), "routes").to_string(), "answers" => api::n(&sv.get(), "answers").to_string(), "pages" => api::n(&sv.get(), "pages").to_string(), "review" => api::n(&sv.get(), "recorded").to_string(), _ => String::new() }}</span></div>
                     }
                 }).collect_view()}
             </div>
         </div>
+        <RecordingStrip cur=cur/>
     }
 }
 
@@ -123,5 +125,42 @@ pub fn answer_class(status: i64, answer: &str) -> &'static str {
         "ok"
     } else {
         "attn"
+    }
+}
+
+/// A9: while a service records the real provider, every tab says so, with Pause and Stop.
+#[component]
+fn RecordingStrip(cur: Memo<Value>) -> impl IntoView {
+    let nav = use_navigate();
+    let act = move |method: &'static str, tail: &'static str, body: serde_json::Value, then: Option<&'static str>| {
+        let svc = s(&cur.get_untracked(), "name");
+        let nav = nav.clone();
+        leptos::task::spawn_local(async move {
+            match api::send(method, &format!("/plugins/{}/recording{tail}", enc(&svc)), body).await {
+                Ok(_) => if let Some(t) = then { nav(&format!("/apis/{}{t}", enc(&svc)), Default::default()); },
+                Err(e) => crate::ui::toast_err(e),
+            }
+        });
+    };
+    let (a1, a2) = (act.clone(), act);
+    move || {
+        let c = cur.get();
+        let r = c["record"].clone();
+        if r.is_null() {
+            return None;
+        }
+        let host = s(&r, "upstream").split("://").nth(1).unwrap_or("").trim_end_matches('/').to_string();
+        let n = api::n(&c, "recorded");
+        let (a1, a2) = (a1.clone(), a2.clone());
+        Some(if r["stopped"].as_i64().unwrap_or(0) > 0 || r["live"] != true && r["paused"] != true {
+            view! { <div class="strip"><span class="grow">{format!("Recording stopped: {n} calls to {host}. Review them and make the plugin.")}</span>
+                <a class="link" href=format!("/apis/{}/review", enc(&s(&c, "name")))>"Review ›"</a></div> }.into_any()
+        } else {
+            let paused = r["paused"] == true;
+            let left = (r["until"].as_i64().unwrap_or(0) - js_sys::Date::now() as i64).max(0) / 60_000;
+            view! { <div class="strip rec"><span class="dot rec"></span><span class="grow">{if paused { format!("Recording paused  ·  {n} calls kept") } else { format!("Recording  ·  {} goes to {host}  ·  {n} kept  ·  {left} min left", if r["mode"] == "unknown" { "every unknown call" } else { "every call" }) }}</span>
+                <button class="link" on:click=move |_| a1("POST", "/pause", serde_json::json!({"resume": paused}), None)>{if paused { "Resume" } else { "Pause" }}</button>
+                <button class="btn small primary" on:click=move |_| a2("DELETE", "", serde_json::json!({}), Some("/review"))>"Stop and review"</button></div> }.into_any()
+        })
     }
 }

@@ -7,8 +7,9 @@ once; everyone else installs it.
 <p align="center"><img src="images/plugin-anatomy.png" alt="Anatomy of a plugin: service, routes, keep, decide, answers" width="100%"></p>
 
 Plugins power the **HTTP APIs** line. SMS, WhatsApp, email, storage, messaging, identity, secrets, webhooks and
-telemetry are built into the engine. A SOAP provider is a plugin too, made from its WSDL: see
-[SOAP services](soap.md).
+telemetry are built into the engine. You do not have to write a plugin by hand: one can be made from the
+provider's [OpenAPI spec](openapi.md), from its [WSDL](soap.md) (SOAP), or by
+[recording the real provider](recording.md).
 
 ## A complete example
 
@@ -77,6 +78,8 @@ Each route reads top to bottom: **receive → let → keep → wait → decide �
 | `route` | `METHOD /path`; `{name}` segments are path parameters |
 | `receive.auth` | `none`, `bearer` (a token from this service's token route), `basic`, `session` |
 | `receive.body` | required body fields (dotted paths); a missing one answers 400, or the answer named by `missing` |
+| `receive.schema`, `receive.invalid` | the body is checked against this schema of `spec.schemas`; a body that breaks it gets the answer named by `invalid`, or 400 naming the field (see [OpenAPI](openapi.md)) |
+| `operation` | the spec's `operationId`, kept for reference |
 | `lets` | named values computed first, e.g. `person: lookup('people', 'id', body.document_id)` |
 | `keep` | `state` (a collection) and `key` (an expression): what the provider remembers between calls |
 | `wait` | "answer `processing` 3 times, then `done`": counts calls per key |
@@ -95,8 +98,15 @@ Each route reads top to bottom: **receive → let → keep → wait → decide �
 | `status` | default 200 |
 | `headers`, `body` | the body is a template, JSON unless the headers say otherwise |
 | `raw` | send exactly as typed, not checked against the schema (malformed on purpose) |
+| `file` | a file in `apis/<service>.files/` sent as the body, as is (a PDF, an image); recordings write these |
 | `sentence` | the timeline sentence, a template |
 | `note` | what this answer means, shown under its name |
+
+### `spec` and `record`
+
+`spec` is set on a service made from an OpenAPI spec: the kept file, where it came from, `validate` and the
+`schemas` the routes check bodies against ([OpenAPI](openapi.md)). `record` is set while the service records the
+real provider: `upstream`, `mode`, its time and call limits and extra fields to `mask` ([Recording](recording.md)).
 
 ### `data` and `pages`
 
@@ -112,7 +122,7 @@ Conditions and templates use a small, side-effect-free language (a CEL-like subs
 | **Read** | `body.x`, `query.x`, `path.x`, `headers.x`, `state.<collection>`, `person.x` |
 | **Operators** | `==`, `!=`, `<`, `>`, `&&`, `\|\|`, `!`, `in` |
 | **Methods** | `.startsWith()`, `.endsWith()`, `.contains()`, `.matches()`, `.size()`, `.upper()`, `.lower()`, `.digits()`, `.mask()` |
-| **Functions** | `size`, `exists`, `default`, `string`, `int`, `double`, `uuid`, `now`, `now_ms`, `matches`, `json`, `lookup` |
+| **Functions** | `size`, `exists`, `default`, `string`, `int`, `double`, `uuid`, `random_id`, `now`, `now_ms`, `matches`, `json`, `lookup` |
 | **Template filters** | `{{ value \| default('x') }}`, `mask`, `json`, `round`, `tz` |
 
 Templates use `{{ }}` inside answer bodies, sentences and callback URLs.

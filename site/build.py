@@ -283,12 +283,12 @@ def agents():
     groups = [("Watch", "list_sms · list_whatsapp_messages · list_api_calls · list_traces · wait_for_object · wait_for_api_call"),
               ("Provoke", "create_rule · set_rule_enabled · force_answer · force_sms_failure · force_whatsapp_failure · expire_tokens · send_bad_webhook · provoke_sign_in"),
               ("Play the people", "reply_as_user · reply_sms_as_user · simulate_recipient"),
-              ("Set up", "list_plugins · install_plugin · install_collection · put_plugin · set_provider · create_environment"),
+              ("Set up", "list_plugins · install_plugin · import_spec · start_recording · make_plugin · set_provider · create_environment"),
               ("Check", "real_provider_calls · validate_plugin · list_forced · would_fail")]
     return doc(p, f"""
 {hero(p, "Built for agents that test their own work.",
       "Claude Code, Codex, Gemini CLI, OpenCode, Cursor and GitHub Copilot connect over MCP. Anything else uses plain HTTP. "
-      "Both reach the same 299 tools, and the timeline records who acted.")}
+      "Both reach the same 306 tools, and the timeline records who acted.")}
 {agents_strip(p)}
 <section class="wrap section">
   {head(2, "The loop it runs on its own.")}
@@ -335,6 +335,14 @@ def providers():
           "Operations from the WSDL with the same steps as routes; bodies checked against its XSD; the WSDL served back.",
           "Any fault the WSDL declares, the provider's validation fault, refused credentials, slow or failed calls.", "soap",
           f"Create it with <code>import_wsdl</code> or <b>+ New service</b>, then point your app at <code>http://localhost:8028/&lt;service&gt;&lt;endpoint&gt;</code>. <a href='{DOCS}/soap.md'>SOAP guide</a>."),
+         ("blue", "OpenAPI specs", "OpenAPI 3.0 and 3.1 · Swagger 2.0 · JSON or YAML",
+          "Routes from the paths; answers from the examples, or built from the schemas and echoing what the app sent; the spec served back.",
+          "Any response the spec declares, the provider's 400 or 422 for a body that breaks the schema, expired tokens, slow or failed calls.", "openapi",
+          f"Create it with <code>import_spec</code> or <b>+ New service</b>, then point your app at <code>http://localhost:8028/&lt;service&gt;</code>. <a href='{DOCS}/openapi.md'>OpenAPI guide</a>."),
+         ("blue", "Recording", "Your provider's sandbox · any HTTP API with no spec",
+          "Each call goes to the sandbox and back, with secrets, cards, CPFs and e-mails masked; the review groups calls into routes, answers and rules.",
+          "Once the plugin is written: every answer the sandbox gave, plus anything a plugin can provoke. The sandbox is no longer called.", "recording",
+          f"Start it with <code>start_recording</code> or <b>+ New service</b>, stop, review, <code>make_plugin</code>. <a href='{DOCS}/recording.md'>Recording guide</a>."),
          ("red", "SMS", "Zenvia API v2", "Messages, delivery steps per recipient, opt-outs.", "500, 400, reset, empty reply, timeout; the person texts back, STOP and START.", None,
           "Point your app at <code>http://localhost:8025/zenvia/v2/channels/{0}/messages</code>."),
          ("green", "WhatsApp", "Meta WhatsApp Cloud API (Graph)", "Conversations, templates, the 24-hour window and the recipients.",

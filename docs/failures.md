@@ -47,6 +47,7 @@ named answers and `force_answer` instead.
 |---|---|---|
 | HTTP APIs | `force_answer` | any named answer of the plugin, or `reset`, `empty`, `timeout`, `500`, `503`, `html`; `count=N` or `for=10m`; one route or all |
 | HTTP APIs (SOAP) | `force_answer`, a `fault:` answer | any fault the WSDL declares or one you add; `500` goes out as a `Receiver` fault; a body that breaks the XSD gets the validation fault; see [SOAP services](soap.md) |
+| HTTP APIs (OpenAPI) | `force_answer`, a body that breaks the schema | any response the spec declares; a wrong body gets the spec's 400 or 422 answer; see [OpenAPI specs](openapi.md) |
 | HTTP APIs | `expire_tokens` | every token and session cookie becomes invalid; the next call gets 401 |
 | SMS | `force_sms_failure` | `500`, `400`, `reset`, `empty`, `timeout`; `normal` stops it |
 | SMS | `reply_sms_as_user` | the person texts back; STOP-like words opt out, START opts back in |

@@ -11,7 +11,7 @@ AREAS = [  # (crate, title, file globs)
     ("email", "Email", ["crates/email/src/tools.rs"]),
     ("sms", "SMS", ["crates/sms/src/tools.rs"]),
     ("whatsapp", "WhatsApp", ["crates/whatsapp/src/tools.rs"]),
-    ("apis", "HTTP APIs (plugins)", ["crates/apis/src/tools.rs", "crates/apis/src/restpki.rs", "crates/apis/src/soap.rs"]),
+    ("apis", "HTTP APIs (plugins)", ["crates/apis/src/tools.rs", "crates/apis/src/restpki.rs", "crates/apis/src/soap.rs", "crates/apis/src/openapi.rs", "crates/apis/src/record.rs"]),
     ("storage", "Storage (Azure Blob, S3)", ["crates/storage/src/tools.rs"]),
     ("messaging", "Messaging (Service Bus, RabbitMQ)", ["crates/messaging/src/tools.rs"]),
     ("identity", "Identity (OIDC / OAuth2)", ["crates/identity/src/tools.rs"]),

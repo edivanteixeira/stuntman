@@ -242,6 +242,8 @@ mark { background: var(--attention-fill); color: var(--ink); }
 
 .strip { display: flex; align-items: center; gap: 12px; padding: 10px 24px; background: var(--attention-fill); color: var(--attention); font-size: 12px; border-bottom: 1px solid var(--rule); }
 .strip.dark { background: var(--ink); color: #fff; }
+.strip.rec { background: var(--danger-fill); color: var(--danger); }
+.dot.rec { background: var(--danger); }
 .strip.dark .btn { color: var(--ink); }
 
 /* ---------- environments (N1–N3) ---------- */
@@ -519,3 +521,7 @@ iframe.preview { width: 340px; height: 470px; border: 1px solid var(--rule); bor
 .selbar { gap: 14px; padding: 12px 20px; border-bottom: 1px solid var(--rule); }
 .selchip { background: #eaf0fa; color: var(--line-blue); border-radius: 12px; padding: 3px 4px 3px 12px; font-size: 12px; font-weight: 500; display: inline-flex; gap: 8px; align-items: center; }
 .selchip button { border: 0; background: none; color: var(--line-blue); cursor: pointer; font-size: 15px; line-height: 1; }
+table.tbl { border-collapse: collapse; width: 100%; }
+table.tbl th { text-align: left; font: 500 11px var(--sans); color: var(--caption); text-transform: uppercase; letter-spacing: .06em; padding: 6px 8px; border-bottom: 1px solid var(--rule); }
+table.tbl td { padding: 9px 8px; border-bottom: 1px solid var(--rule); vertical-align: middle; }
+table.tbl tr.on td { background: var(--subtle); }

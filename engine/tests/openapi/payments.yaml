@@ -1,0 +1,119 @@
+# A synthetic payments provider, for the OpenAPI import (A8). Not a real API.
+openapi: 3.1.0
+info:
+  title: Example Payments API
+  version: "1.8"
+  description: Charges, refunds and customers of Example Payments (synthetic).
+servers:
+  - url: https://api.payments.example.com
+security:
+  - clientCredentials: []
+components:
+  securitySchemes:
+    clientCredentials:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://api.payments.example.com/oauth/token
+          scopes: {}
+  schemas:
+    ChargeRequest:
+      type: object
+      required: [amount, currency, card]
+      additionalProperties: false
+      properties:
+        amount: {type: integer, minimum: 1}
+        currency: {type: string, enum: [usd, eur, brl]}
+        description: {type: string}
+        receipt_email: {type: string, format: email}
+        card:
+          type: object
+          required: [number]
+          properties:
+            number: {type: string}
+            exp: {type: string}
+    Charge:
+      type: object
+      properties:
+        id: {type: string, example: ch_3Nf0}
+        amount: {type: integer}
+        currency: {type: string}
+        status: {type: string, enum: [succeeded, pending]}
+        created: {type: string, format: date-time}
+    Customer:
+      type: object
+      properties:
+        id: {type: string}
+        email: {type: string, format: email}
+        name: {type: string}
+paths:
+  /v1/charges:
+    post:
+      operationId: createCharge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ChargeRequest"}
+      responses:
+        "201":
+          description: The charge.
+          headers:
+            Request-Id: {schema: {type: string, example: req_8Kq2}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Charge"}
+        "402":
+          description: The card was declined.
+          content:
+            application/json:
+              example: {error: {type: card_error, code: card_declined, message: The card was declined.}}
+        "422":
+          description: The body is invalid.
+          content:
+            application/json:
+              schema: {$ref: "common/errors.yaml#/Error"}
+  /v1/charges/{id}:
+    get:
+      operationId: getCharge
+      responses:
+        "200":
+          description: The charge.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Charge"}
+        "404":
+          description: No such charge.
+          content:
+            application/json:
+              schema: {$ref: "common/errors.yaml#/Error"}
+  /v1/charges/{id}/refund:
+    post:
+      operationId: refundCharge
+      responses:
+        "200": {description: Refunded., content: {application/json: {example: {id: re_1, status: refunded}}}}
+        "409": {description: Already refunded., content: {application/json: {example: {error: {code: already_refunded}}}}}
+  /v1/customers:
+    get:
+      operationId: listCustomers
+      responses:
+        "200":
+          description: Customers.
+          content:
+            application/json:
+              schema: {type: object, properties: {data: {type: array, items: {$ref: "#/components/schemas/Customer"}}}}
+  /oauth/token:
+    post:
+      operationId: getToken
+      security: []
+      responses:
+        "200": {description: A token.}
+webhooks:
+  charge.succeeded:
+    post:
+      requestBody:
+        content:
+          application/json:
+            example: {type: charge.succeeded, data: {id: ch_3Nf0}}
+      responses:
+        "200": {description: ok}

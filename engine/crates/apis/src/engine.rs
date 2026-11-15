@@ -458,6 +458,22 @@ pub async fn run(ctx: &Ctx, p: &Plugin, r: &Route, params: Map<String, Value>, r
                 }
             }
         }
+        // The body against the spec's schema (A8).
+        if refuse.is_none() && chosen.is_none() && !r.receive.schema.is_empty() {
+            if let Some(schema) = p.spec.as_ref().filter(|sp| sp.validate).and_then(|sp| sp.schemas.get(&r.receive.schema)) {
+                let ct = req.headers.get("content-type").cloned().unwrap_or_default();
+                let lenient = ct.contains("form");
+                if let Err(e) = crate::openapi::check(schema, &req.body, "", lenient) {
+                    sc.insert("invalid".into(), json!(e));
+                    if !r.receive.invalid.is_empty() {
+                        chosen = Some(r.receive.invalid.clone());
+                        steps.push(json!({"step": "receive", "text": format!("Body breaks {}: {e} → {}", r.receive.schema, r.receive.invalid), "ok": false}));
+                    } else {
+                        refuse = Some((400, json!({"message": e}), format!("body breaks {}: {e}", r.receive.schema), vec![]));
+                    }
+                }
+            }
+        }
         if let Some((st, b, why, h)) = refuse {
             steps.push(json!({"step": "receive", "text": format!("Refused: {why}"), "ok": false}));
             let (s, mut hh, body) = status_answer(st, b);
@@ -471,9 +487,10 @@ pub async fn run(ctx: &Ctx, p: &Plugin, r: &Route, params: Map<String, Value>, r
             return o;
         }
         if chosen.is_none() {
-            steps.push(json!({"step": "receive", "text": format!("{} from {}{}{}", if auth == "bearer" { "Bearer token" } else if auth == "basic" { "Basic auth" } else if auth == "session" { "Session cookie" } else { "Request" }, req.caller,
+            steps.push(json!({"step": "receive", "text": format!("{} from {}{}{}{}", if auth == "bearer" { "Bearer token" } else if auth == "basic" { "Basic auth" } else if auth == "session" { "Session cookie" } else { "Request" }, req.caller,
                 req.client_cert.as_ref().map(|c| format!(" (client certificate {c})")).unwrap_or_default(),
-                if r.receive.body.is_empty() { String::new() } else { format!(" · body: {}", r.receive.body.join(", ")) }), "ok": true}));
+                if r.receive.body.is_empty() { String::new() } else { format!(" · body: {}", r.receive.body.join(", ")) },
+                if r.receive.schema.is_empty() || !p.spec.as_ref().map(|x| x.validate).unwrap_or(false) { String::new() } else { format!(" · body matches {}", r.receive.schema) }), "ok": true}));
         }
     }
 
@@ -557,7 +574,10 @@ pub async fn run(ctx: &Ctx, p: &Plugin, r: &Route, params: Map<String, Value>, r
     o.latency_ms = if hi > lo { lo + rand::random::<u64>() % (hi - lo + 1) } else { lo };
     match p.answers.iter().find(|a| a.name == name) {
         Some(a) => {
-            let (status, headers, body, answered) = render_answer(a, &sc);
+            let (status, headers, mut body, answered) = render_answer(a, &sc);
+            if !a.file.is_empty() {
+                body = std::fs::read(crate::record::files_dir(ctx, &svc.name).join(&a.file)).unwrap_or_default();
+            }
             o.status = status;
             o.headers = headers;
             o.body = body;
@@ -730,6 +750,26 @@ pub async fn handle(State(envs): State<Envs>, mut req: Request) -> Response {
     if p.service.cors && method == "OPTIONS" {
         return (StatusCode::NO_CONTENT, [("access-control-allow-origin", "*"), ("access-control-allow-headers", "*"), ("access-control-allow-methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")]).into_response();
     }
+    // A9: recording the real provider; mode unknown only for calls nothing here answers.
+    if let Some(rc) = p.record.as_ref().filter(|rc| crate::record::live(rc)) {
+        let known = inner.starts_with("/__stuntman/")
+            || p.routes.iter().any(|r| { let (m, pat) = r.method_path(); (m == method || (m == "GET" && method == "HEAD")) && match_path_case(&pat, &inner, p.service.ignore_case).is_some() })
+            || ((method == "GET" || method == "HEAD") && p.pages.iter().any(|pg| match_path(&pg.method_path().1, &inner).is_some()))
+            || p.soap.as_ref().map(|sp| inner.trim_end_matches('/').eq_ignore_ascii_case(sp.endpoint.trim_end_matches('/'))).unwrap_or(false);
+        let full = rc.max > 0 && store::count_recorded(&ctx, &p.service.name, rc.started).await.unwrap_or(0) >= rc.max as i64;
+        if !full && (rc.mode == "every" && !inner.starts_with("/__stuntman/") || rc.mode == "unknown" && !known) {
+            return crate::record::forward(&ctx, p, rc, &method, &path, &inner, &query, &headers, &rq, t0, kill).await;
+        }
+    }
+    // A8: the spec a service was made from, served back.
+    if p.spec.is_some() && (method == "GET" || method == "HEAD") {
+        let taken = p.routes.iter().any(|r| { let (m, pat) = r.method_path(); m == "GET" && match_path_case(&pat, &inner, p.service.ignore_case).is_some() });
+        if !taken {
+            if let Some(r) = crate::openapi::serve_file(&ctx, p, &inner) {
+                return r;
+            }
+        }
+    }
     // Browser steps: the pages Stuntman draws, and what people do on them.
     if let Some(rest) = inner.strip_prefix("/__stuntman/") {
         let parts: Vec<&str> = rest.split('/').collect();
@@ -812,8 +852,22 @@ async fn finish(ctx: &Ctx, p: &Plugin, r: Option<&Route>, route: &str, method: &
         o.headers.push(("access-control-allow-origin".into(), "*".into()));
     }
     let id = util::id("call");
+    let billable = r.map(|r| r.billable).unwrap_or(false);
+    log_call(ctx, p, &id, billable, route, method, path, inner, query, headers, rq, &o, t0).await;
+    if let Some(r) = r {
+        if o.status > 0 && o.status < 500 {
+            send_webhooks(ctx, &id, r, o.scope.clone());
+        }
+    }
+    respond(o, kill).await
+}
+
+/// Keeps one call in the history and on the timeline.
+#[allow(clippy::too_many_arguments)]
+pub async fn log_call(ctx: &Ctx, p: &Plugin, id: &str, billable: bool, route: &str, method: &str, path: &str, inner: &str, query: &str, headers: &BTreeMap<String, String>, rq: &Req, o: &Outcome, t0: std::time::Instant) {
+    let id = id.to_string();
     let trace = headers.get("traceparent").and_then(|t| t.split('-').nth(1)).map(|s| s.to_lowercase());
-    let billable = r.map(|r| r.billable).unwrap_or(false) && p.service.billing.enabled && o.status > 0 && !o.answer.is_empty() && o.answer != "token";
+    let billable = billable && p.service.billing.enabled && o.status > 0 && !o.answer.is_empty() && o.answer != "token";
     let req_json = json!({"method": method, "path": path, "query": query, "headers": headers, "body": String::from_utf8_lossy(&rq.raw_body).chars().take(64 * 1024).collect::<String>(), "size": rq.raw_body.len(), "files": rq.files.iter().map(|f| json!({"field": f["field"], "filename": f["filename"], "size": f["size"], "contentType": f["contentType"]})).collect::<Vec<_>>()});
     let resp_json = json!({"status": o.status, "headers": o.headers.iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>(), "body": String::from_utf8_lossy(&o.body).chars().take(64 * 1024).collect::<String>(), "size": o.body.len()});
     let _ = store::record(ctx, store::Call {
@@ -824,15 +878,9 @@ async fn finish(ctx: &Ctx, p: &Plugin, r: Option<&Route>, route: &str, method: &
     let _ = stuntman_core::trips::record(ctx, stuntman_core::trips::Trip { id: &id, module: "apis", label: &o.sentence, status: &o.answer, trace_id: trace.as_deref(), link: &format!("/apis?call={id}"), host: &p.service.name,
         actor: &rq.caller, outcome: if o.provoked.is_some() { "provoked" } else if o.status >= 400 || o.status == 0 { "failed" } else { "ok" },
         detail: &format!("{}{}  ·  {}  ·  {} ms", o.provoked.as_ref().map(|x| format!("{x}  ·  ")).unwrap_or_default(), p.service.name, if o.status == 0 { "no answer".to_string() } else { o.status.to_string() }, t0.elapsed().as_millis()) }).await;
-    if let Some(r) = r {
-        if o.status > 0 && o.status < 500 {
-            send_webhooks(ctx, &id, r, o.scope.clone());
-        }
-    }
-    respond(o, kill).await
 }
 
-async fn respond(o: Outcome, kill: Option<Kill>) -> Response {
+pub async fn respond(o: Outcome, kill: Option<Kill>) -> Response {
     match o.network.as_deref() {
         Some("timeout") => {
             tokio::time::sleep(Duration::from_secs(600)).await;

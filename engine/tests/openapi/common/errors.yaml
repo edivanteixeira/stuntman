@@ -1,0 +1,9 @@
+# Shared error schema of Example Payments (synthetic).
+Error:
+  type: object
+  properties:
+    error:
+      type: object
+      properties:
+        code: {type: string, example: invalid_request}
+        message: {type: string, example: The request is invalid.}

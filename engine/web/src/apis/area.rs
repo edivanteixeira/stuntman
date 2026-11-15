@@ -64,7 +64,7 @@ pub fn Area(children: Children) -> impl IntoView {
                                 <div class="krow" class:on=move || !creating() && cur.get() == n1
                                     on:click=move |_| nav(&format!("/apis/{}/{}", enc(&n2), tab()), Default::default())>
                                     <div class="row"><span class="grow">{s(&x, "title")}</span><span class="mono small cap">{api::thousands(api::n(&x, "callsToday"))}</span></div>
-                                    <div class="small" class:attn=x["billable"] == true class:cap=x["billable"] != true>{origin_line(&x)}</div>
+                                    <div class="small" class:attn=x["billable"] == true class:cap=x["billable"] != true>{{ let mut o = origin_line(&x); if !x["record"].is_null() { o = format!("recording  ·  {o}"); } else if !x["spec"].is_null() { o = format!("{} {}  ·  {o}", if s(&x["spec"], "version").starts_with('2') { "Swagger" } else { "OpenAPI" }, s(&x["spec"], "version")); } else if !x["soap"].is_null() { o = format!("SOAP {}  ·  {o}", s(&x["soap"], "version")); } o }}</div>
                                 </div>
                             }
                         }).collect_view()
@@ -86,7 +86,8 @@ pub fn NewService() -> impl IntoView {
     let empty_name = RwSignal::new(String::new());
     let another = RwSignal::new(String::new());
     let another_name = RwSignal::new(String::new());
-    // A7: a SOAP service from the provider's WSDL (a URL, a path on Stuntman's machine, or a file).
+    // A8 (and A7): a service from the provider's spec, OpenAPI or WSDL (a URL, a path on
+    // Stuntman's machine, or a file); Stuntman tells which one it is.
     let w_src = RwSignal::new(String::new());
     let w_text = RwSignal::new(None::<String>);
     let w_name = RwSignal::new(String::new());
@@ -99,12 +100,12 @@ pub fn NewService() -> impl IntoView {
         w_busy.set(true);
         leptos::task::spawn_local(async move {
             let mut body = json!({"service": svc, "source": src});
-            if let Some(t) = text { body["wsdl"] = json!(t); }
-            match api::send("POST", "/plugins/wsdl", body).await {
+            if let Some(t) = text { body["spec"] = json!(t); }
+            match api::send("POST", "/plugins/spec", body).await {
                 Ok(v) => {
-                    let ops = v["operations"].as_array().map(|a| a.len()).unwrap_or(0);
                     let warn = v["warnings"].as_array().cloned().unwrap_or_default();
-                    ui::toast(format!("{ops} operation(s) from the WSDL{}", if warn.is_empty() { String::new() } else { format!("; {}", warn.iter().map(|w| w.as_str().unwrap_or("").to_string()).collect::<Vec<_>>().join("; ")) }));
+                    let what = if v["kind"] == "wsdl" { format!("{} operation(s) from the WSDL", v["operations"].as_array().map(|a| a.len()).unwrap_or(0)) } else { format!("{} route(s) and {} answers from the spec", v["routes"].as_array().map(|a| a.len()).unwrap_or(0), v["answers"].as_array().map(|a| a.len()).unwrap_or(0)) };
+                    ui::toast(format!("{what}{}", if warn.is_empty() { String::new() } else { format!("; {}", warn.iter().map(|w| w.as_str().unwrap_or("").to_string()).collect::<Vec<_>>().join("; ")) }));
                     nav(&format!("/apis/{}/routes", enc(&s(&v, "service"))), Default::default());
                 }
                 Err(e) => w_err.set(e),
@@ -121,8 +122,25 @@ pub fn NewService() -> impl IntoView {
                 w_text.set(t.as_string());
                 w_src.set(name.clone());
                 if w_name.get_untracked().is_empty() {
-                    w_name.set(name.trim_end_matches(".wsdl").trim_end_matches(".xml").to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect());
+                    w_name.set(name.rsplit_once('.').map(|x| x.0).unwrap_or(&name).to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect());
                 }
+            }
+        });
+    };
+    // A9: record the real provider (its sandbox) and make the plugin from what it answers.
+    let r_up = RwSignal::new(String::new());
+    let r_name = RwSignal::new(String::new());
+    let r_mode = RwSignal::new("every".to_string());
+    let r_for = RwSignal::new("30m".to_string());
+    let r_err = RwSignal::new(String::new());
+    let nav_r = nav.clone();
+    let start_rec = move |_| {
+        let (svc, up, mode, dur) = (r_name.get_untracked(), r_up.get_untracked(), r_mode.get_untracked(), r_for.get_untracked());
+        let nav = nav_r.clone();
+        leptos::task::spawn_local(async move {
+            match api::send("POST", &format!("/plugins/{}/recording", enc(&svc)), json!({"service": svc, "upstream": up, "mode": mode, "stop_after": dur})).await {
+                Ok(_) => { ui::toast("Recording: point the app at this service and use it as usual"); nav(&format!("/apis/{}/calls", enc(&svc)), Default::default()); }
+                Err(e) => r_err.set(e),
             }
         });
     };
@@ -144,15 +162,28 @@ pub fn NewService() -> impl IntoView {
                 <div class="tabs"><span class="t2" style="align-self:center">"A service is one provider your app calls. Start from a plugin someone already wrote, or empty."</span></div>
             </div>
             <div class="body"><div class="pane pad">
-                <div class="caps" style="margin-bottom:12px">"From the provider's WSDL (SOAP)"</div>
-                <div class="callout" style="max-width:900px"><div class="t2">"Operations, types and faults come from the WSDL; each operation answers a default envelope until you add rules. The WSDL is served back on ?wsdl."</div>
+                <div class="caps" style="margin-bottom:12px">"From the provider's spec (OpenAPI or WSDL)"</div>
+                <div class="callout" style="max-width:900px"><div class="t2">"OpenAPI 3.x or Swagger 2.0 (JSON or YAML), or a WSDL; Stuntman tells which one it is. Routes, answers and the schemas that check bodies come from it; every route gives its success answer until you add rules. The spec is served back."</div>
                     <div class="row wrap" style="margin-top:10px">
-                        <input class="input mono" style="width:380px" placeholder="https://provider.example.com/Service?wsdl" prop:value=move || w_src.get() on:input=move |e| { w_text.set(None); w_src.set(event_target_value(&e)); }/>
-                        <label class="btn">"Choose a file"<input type="file" accept=".wsdl,.xml" style="display:none" on:change=pick_file/></label>
+                        <input class="input mono" style="width:380px" placeholder="https://api.provider.example/openapi.yaml" prop:value=move || w_src.get() on:input=move |e| { w_text.set(None); w_src.set(event_target_value(&e)); }/>
+                        <label class="btn">"Choose a file"<input type="file" accept=".yaml,.yml,.json,.wsdl,.xml" style="display:none" on:change=pick_file/></label>
                         <span class="small cap">"Name"</span>
-                        <input class="input mono" style="width:180px" placeholder="example-insurance" prop:value=move || w_name.get() on:input=move |e| w_name.set(event_target_value(&e).trim().to_lowercase())/>
+                        <input class="input mono" style="width:180px" placeholder="example-payments" prop:value=move || w_name.get() on:input=move |e| w_name.set(event_target_value(&e).trim().to_lowercase())/>
                         <button class="btn primary" disabled=move || w_busy.get() || w_name.get().is_empty() || w_src.get().is_empty() on:click=import_wsdl>{move || if w_busy.get() { "Reading…" } else { "Create service" }}</button></div>
                     {move || (!w_err.get().is_empty()).then(|| view! { <div class="small danger" style="margin-top:8px">{w_err.get()}</div> })}</div>
+                <div class="caps" style="margin:28px 0 12px">"Record the real provider"</div>
+                <div class="callout" style="max-width:900px"><div class="t2">"Each call goes to the provider's sandbox and back: the app gets the real answer and Stuntman keeps the pair, with secrets, card numbers, CPFs and e-mails masked. Stop, review, and the calls become a plugin that no longer needs the sandbox."</div>
+                    <div class="row wrap" style="margin-top:10px">
+                        <input class="input mono" style="width:380px" placeholder="https://sandbox.provider.example" prop:value=move || r_up.get() on:input=move |e| r_up.set(event_target_value(&e).trim().to_string())/>
+                        <span class="small cap">"Name"</span>
+                        <input class="input mono" style="width:180px" placeholder="globex-shipping" prop:value=move || r_name.get() on:input=move |e| r_name.set(event_target_value(&e).trim().to_lowercase())/></div>
+                    <div class="row wrap" style="margin-top:10px">
+                        <ui::Seg options=vec![("every", "Every call"), ("unknown", "Only unknown calls")] value=Signal::derive(move || r_mode.get()) set=Callback::new(move |v| r_mode.set(v))/>
+                        <span class="small cap">"Stop after"</span>
+                        <ui::Seg options=vec![("10m", "10 min"), ("30m", "30 min"), ("1h", "1 hour"), ("4h", "4 hours")] value=Signal::derive(move || r_for.get()) set=Callback::new(move |v| r_for.set(v))/>
+                        <button class="btn primary" disabled=move || r_name.get().is_empty() || !r_up.get().starts_with("http") on:click=start_rec>"Start recording"</button></div>
+                    <div class="small attn" style="margin-top:8px">"Use a sandbox key, never a production one: it goes to the provider exactly as the app sent it."</div>
+                    {move || (!r_err.get().is_empty()).then(|| view! { <div class="small danger" style="margin-top:8px">{r_err.get()}</div> })}</div>
                 <div class="row" style="margin:28px 0 12px"><span class="caps grow">"From a plugin"</span>
                     <input class="input" style="width:240px" placeholder="Search plugins…" prop:value=move || q.get() on:input=move |e| q.set(event_target_value(&e))/></div>
                 <div class="pgrid">

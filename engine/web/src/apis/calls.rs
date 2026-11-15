@@ -174,8 +174,13 @@ fn detail(c: Value, svc: Value, raw: RwSignal<bool>) -> impl IntoView {
         })}
         <div class="caps" style="margin:18px 0 8px">"The app sent"</div>
         <table class="kv2">{kv_rows(&c["sent"])}{c["sent"].as_object().map(|o| o.is_empty()).unwrap_or(true).then(|| view! { <tr><td class="cap">"(no declared fields)"</td><td></td></tr> })}</table>
-        <div class="caps" style="margin:18px 0 8px">"Stuntman answered"</div>
-        <table class="kv2">{kv_rows(&c["answered"])}<tr><td>"answer"</td><td class="mono">{format!("{}{}", s(&c, "answer"), if s(&c, "provoked").is_empty() { "  ·  by the data".to_string() } else { format!("  ·  {}", s(&c, "provoked")) })}</td></tr></table>
+        {(s(&c, "answer") == "recorded").then(|| view! {
+            <div class="caps" style="margin:18px 0 8px">"Recorded"</div>
+            <div class="small" class:danger=c["steps"][0]["failed"] == true>{s(&c["steps"][0], "text")}</div>
+            <div class="small cap" style="margin-top:4px">"The app got the provider's real answer; what is kept here has secrets, card numbers, CPFs and e-mails masked. Raw HTTP shows it."</div>
+        })}
+        <div class="caps" style="margin:18px 0 8px" class:hidden=s(&c, "answer") == "recorded">"Stuntman answered"</div>
+        <table class="kv2" class:hidden=s(&c, "answer") == "recorded">{kv_rows(&c["answered"])}<tr><td>"answer"</td><td class="mono">{format!("{}{}", s(&c, "answer"), if s(&c, "provoked").is_empty() { "  ·  by the data".to_string() } else { format!("  ·  {}", s(&c, "provoked")) })}</td></tr></table>
         <div class="small cap" style="margin-top:6px">{c["steps"].as_array().cloned().unwrap_or_default().iter().filter(|x| x["step"] == "decide").map(|x| format!("Decided: {}", s(x, "text"))).collect::<Vec<_>>().join(" · ")}</div>
         {(!c["sends"].as_array().map(|a| a.is_empty()).unwrap_or(true)).then(|| view! {
             <div class="caps" style="margin:18px 0 8px">"Webhooks sent after"</div>

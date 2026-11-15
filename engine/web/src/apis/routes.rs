@@ -20,8 +20,27 @@ fn parse_list(t: &str) -> Value {
     json!(t.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect::<Vec<_>>())
 }
 
-/// A sample body for Try it, from the fields the route receives and the plugin's data.
+/// A value that fits a JSON Schema: its example, enum, format or type (A8 routes).
+fn from_schema(sc: &Value, depth: usize) -> Value {
+    if let Some(e) = sc.get("example").or(sc.get("default")).or(sc["enum"].get(0)) { return e.clone(); }
+    if let Some(x) = sc["allOf"].as_array() { let mut o = json!({}); for p in x { if let Value::Object(m) = from_schema(p, depth) { for (k, v) in m { o[k] = v; } } } return o; }
+    if let Some(x) = sc["oneOf"].get(0).or(sc["anyOf"].get(0)) { return from_schema(x, depth); }
+    let ty = sc["type"].as_str().unwrap_or(if sc.get("properties").is_some() { "object" } else { "string" });
+    match ty {
+        "object" if depth < 5 => Value::Object(sc["properties"].as_object().cloned().unwrap_or_default().into_iter().map(|(k, v)| (k, from_schema(&v, depth + 1))).collect()),
+        "array" if depth < 5 => json!([from_schema(&sc["items"], depth + 1)]),
+        "integer" => sc.get("minimum").cloned().unwrap_or(json!(1)),
+        "number" => json!(1.5),
+        "boolean" => json!(true),
+        _ => json!(match s(sc, "format").as_str() { "email" => "user@example.com", "date" => "2026-01-01", "date-time" => "2026-01-01T12:00:00Z", _ => "sample" }),
+    }
+}
+
+/// A sample body for Try it, from the route's schema, or the fields it receives and the plugin's data.
 fn sample(route: &Value, plugin: &Value) -> String {
+    if let Some(sc) = plugin["spec"]["schemas"].get(s(&route["receive"], "schema")) {
+        return serde_json::to_string_pretty(&from_schema(sc, 0)).unwrap_or_default();
+    }
     let cpf = plugin["data"]["people"][0]["cpf"].as_str().unwrap_or("123.456.789-09").to_string();
     let selfie = plugin["data"]["selfies"][0]["base64"].as_str().unwrap_or("c2VsZmll").to_string();
     let mut body = json!({});
@@ -47,6 +66,9 @@ pub fn Routes() -> impl IntoView {
     let live = expect_context::<api::Live>();
     let service = Memo::new(move |_| p.get().get("service").unwrap_or_default());
     let plugin = RwSignal::new(Value::Null);
+    let spec_busy = RwSignal::new(false);
+    let svc_list = super::services();
+    let svc_urls = Memo::new(move |_| svc_list.get().into_iter().find(|x| s(x, "name") == service.get()).map(|x| x["urls"].clone()).unwrap_or(Value::Null));
     let sel = RwSignal::new(String::new());
     let saved = RwSignal::new(Value::Null);
     let draft = RwSignal::new(Value::Null);
@@ -184,7 +206,7 @@ pub fn Routes() -> impl IntoView {
             })}
             <div class="body">
                 <div class="list narrow tree">
-                    <div class="caps section" style="padding:18px 24px 8px">"Routes"</div>
+                    <div class="caps section" style="padding:18px 24px 8px">{move || if plugin.get()["plugin"]["spec"].is_null() { "Routes" } else { "Routes · from the spec" }}</div>
                     {move || plugin.get()["plugin"]["routes"].as_array().cloned().unwrap_or_default().into_iter().map(|r| {
                         let key = s(&r, "route");
                         let (k1, k2) = (key.clone(), key.clone());
@@ -198,7 +220,27 @@ pub fn Routes() -> impl IntoView {
                             <div class="grow"><div class="mono small">{path}</div>{(n > 0 || r["token"] == true).then(|| view! { <div class="small cap">{if r["token"] == true { "token (client credentials)".to_string() } else { format!("{n} calls today") }}</div> })}</div></div> }
                     }).collect_view()}
                     <button class="link add" on:click=new_route>"+ Add route"</button>
-                    <div class="small cap" style="padding:8px 24px">"A route is what the plugin does with one kind of request."</div>
+                    {move || { let sp = plugin.get()["plugin"]["spec"].clone(); (!sp.is_null()).then(|| {
+                        let sv = service.get();
+                        let file = s(&sp, "openapi");
+                        let url = format!("{}/{}", s(&svc_urls.get(), "local"), file);
+                        view! { <div style="padding:16px 24px;border-top:1px solid var(--rule);margin-top:8px">
+                            <div class="s12" style="font-weight:500">{format!("{file}  ·  {} {}", if s(&sp, "version").starts_with('2') { "Swagger" } else { "OpenAPI" }, s(&sp, "version"))}</div>
+                            <div class="small cap" style="margin:2px 0 10px">{format!("{}{} schema{}{}", if s(&sp, "api_version").is_empty() { String::new() } else { format!("v{}  ·  ", s(&sp, "api_version")) }, sp["schemas"].as_object().map(|x| x.len()).unwrap_or(0), if sp["schemas"].as_object().map(|x| x.len()).unwrap_or(0) == 1 { "" } else { "s" }, if sp["validate"] == false { "  ·  bodies not checked" } else { "  ·  bodies checked" })}</div>
+                            <button class="link" style="display:block;font-size:13px" disabled=move || spec_busy.get() on:click=move |_| {
+                                let sv = sv.clone();
+                                spec_busy.set(true);
+                                leptos::task::spawn_local(async move {
+                                    match api::send("POST", &format!("/plugins/{}/spec", enc(&sv)), json!({})).await {
+                                        Ok(v) => { let (a, r) = (v["added"].as_array().map(|x| x.len()).unwrap_or(0), v["removed"].as_array().map(|x| x.len()).unwrap_or(0)); ui::toast(if a + r == 0 { "The spec has the same routes".to_string() } else { format!("{a} route(s) added, {r} no longer in the spec") }); load(None); }
+                                        Err(e) => ui::toast_err(e),
+                                    }
+                                    spec_busy.set(false);
+                                });
+                            }>"Re-import the spec"</button>
+                            <a class="link" style="display:block;font-size:13px;margin-top:6px" target="_blank" href=url>"Open the served spec ›"</a></div> }
+                    }) }}
+                    <div class="small cap" style="padding:8px 24px">{move || if plugin.get()["plugin"]["spec"].is_null() { "A route is what the plugin does with one kind of request." } else { "Routes made from a spec are normal routes: the spec gave the path, the schema and the answers." }}</div>
                 </div>
                 <div class="pane pad form">
                     {move || {
@@ -225,7 +267,7 @@ pub fn Routes() -> impl IntoView {
                         let rcv = d["receive"].clone();
                         let auth = s(&rcv, "auth");
                         let rcv_sum = if token { "OAuth2 client credentials: issues a token (Auth and limits sets the lifetime)".to_string() } else {
-                            format!("{}{}", match auth.as_str() { "bearer" => "Bearer token from the token route", "basic" => "HTTP Basic", _ => "No auth" }, if rcv["body"].as_array().map(|a| a.is_empty()).unwrap_or(true) { String::new() } else { format!("  ·  body: {}", list_text(&rcv["body"])) }) };
+                            format!("{}{}", match auth.as_str() { "bearer" => "Bearer token from the token route", "basic" => "HTTP Basic", _ => "No auth" }, if !s(&rcv, "schema").is_empty() { format!("  ·  body checked against {}{}", s(&rcv, "schema"), if s(&rcv, "invalid").is_empty() { String::new() } else { format!(", else “{}”", s(&rcv, "invalid")) }) } else if rcv["body"].as_array().map(|a| a.is_empty()).unwrap_or(true) { String::new() } else { format!("  ·  body: {}", list_text(&rcv["body"])) }) };
                         let lets = d["let"].as_object().cloned().unwrap_or_default();
                         let keep = d["keep"].clone();
                         let wait = d["wait"].clone();

@@ -48,7 +48,7 @@ async fn sub_view(ctx: &Ctx, s: &Sub) -> Result<Value, ApiError> {
 }
 
 fn udf_names(t: &[v1::MessageTransform]) -> Vec<String> {
-    crate::udf::udfs(t).into_iter().map(|u| u.1).collect()
+    crate::udf::steps(t).iter().map(|u| u.name()).collect()
 }
 
 fn topic_view(t: &v1::Topic) -> Value {
@@ -119,8 +119,10 @@ pub fn all() -> Vec<Tool> {
             let schemas: Vec<Value> = store::schemas(&ctx, "").await?.into_iter().map(|r| json!({"name": r.name, "type": if r.kind == schema::AVRO { "AVRO" } else { "PROTOCOL_BUFFER" },
                 "revision": r.revision, "definition": r.definition, "createdAt": r.created})).collect();
             let c = config::load(&ctx);
-            let tables: Vec<Value> = store::bq_tables(&ctx).await?.into_iter().map(|(t, s)| json!({"table": t, "schema": s})).collect();
-            Ok(json!({"topics": out, "detachedSubscriptions": detached, "snapshots": snapshots, "schemas": schemas, "bigqueryTables": tables, "connect": host_hint(&ctx), "project": c.project,
+            let (bt, bq): (Vec<_>, Vec<_>) = store::bq_tables(&ctx).await?.into_iter().partition(|(t, _)| t.starts_with("bigtable:"));
+            let tables: Vec<Value> = bq.into_iter().map(|(t, s)| json!({"table": t, "schema": s})).collect();
+            let bt_tables: Vec<Value> = bt.into_iter().map(|(t, s)| json!({"table": t.trim_start_matches("bigtable:"), "rowKeySchema": s})).collect();
+            Ok(json!({"topics": out, "detachedSubscriptions": detached, "snapshots": snapshots, "schemas": schemas, "bigqueryTables": tables, "bigtableTables": bt_tables, "connect": host_hint(&ctx), "project": c.project,
                 "provoke": (!c.provoke.is_empty()).then(|| json!({"kind": c.provoke, "remaining": if c.times == 0 { Value::Null } else { json!(c.times) }, "topic": c.topic, "delayMs": c.delay_ms})),
                 "provocations": config::PROVOKE.iter().map(|p| json!({"kind": p.0, "label": p.1})).collect::<Vec<_>>()}))
         })
@@ -246,6 +248,16 @@ pub fn all() -> Vec<Tool> {
         })
         .param("table", "projects/acme-stg/instances/ops/tables/shipments").param("subscription", "shipments-bt").param("limit", "50")
         .route("GET", "/pubsub/bigtable"),
+        Tool::new("set_pubsub_bigtable_table", "Defines a Bigtable table's row key schema for Bigtable subscriptions with row_key_schema: fields [{name, type STRING | INT64 | BYTES}] taken from the message's JSON, encoding singleton, delimited_bytes (delimiter, default #) or ordered_code_bytes.", |ctx, a| async move {
+            let t = a.need("table")?;
+            let sc = a.get("row_key_schema").cloned().ok_or_else(|| ApiError::bad("row_key_schema: {fields, encoding, delimiter}"))?;
+            if sc["fields"].as_array().is_none_or(|f| f.is_empty() || f.iter().any(|x| x["name"].as_str().is_none())) { return Err(ApiError::bad("row_key_schema.fields: [{name, type}]")) }
+            if !["singleton", "delimited_bytes", "ordered_code_bytes"].contains(&sc["encoding"].as_str().unwrap_or("delimited_bytes")) { return Err(ApiError::bad("encoding: singleton | delimited_bytes | ordered_code_bytes")) }
+            store::set_bq_table(&ctx, &format!("bigtable:{t}"), &sc).await?;
+            Ok(json!({"table": t, "rowKeySchema": sc}))
+        })
+        .req("table", "projects/acme-stg/instances/ops/tables/orders").req("row_key_schema", "{\"fields\": [{\"name\": \"region\", \"type\": \"STRING\"}], \"encoding\": \"delimited_bytes\", \"delimiter\": \"#\"}")
+        .route("PUT", "/pubsub/bigtable/tables/{table}"),
         Tool::new("set_pubsub_bigquery_table", "Defines a BigQuery table's schema for BigQuery subscriptions: columns [{name, type, mode}] (STRING, BYTES, INTEGER, FLOAT, NUMERIC, BOOLEAN, TIMESTAMP, DATE, JSON, RECORD; NULLABLE, REQUIRED, REPEATED). With it, use_table_schema maps the message's JSON fields to columns, drop_unknown_fields drops extras, and a row that does not fit is not written (retried, then dead-lettered).", |ctx, a| async move {
             let t = a.need("table")?;
             let cols = a.get("schema").and_then(|v| v.as_array()).cloned().ok_or_else(|| ApiError::bad("schema: [{name, type, mode}]"))?;

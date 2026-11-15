@@ -202,16 +202,19 @@ pub async fn accept(ctx: &Ctx, t: &Topic, msgs: Vec<PubsubMessage>, by: &str) ->
     if let Some(m) = msgs.iter().find(|m| m.data.is_empty() && m.attributes.is_empty()) {
         return Err(Status::invalid_argument(format!("Some messages contain neither data nor attributes (message_id={}).", m.message_id)));
     }
-    let udfs = crate::udf::udfs(&t.message_transforms);
+    let steps = crate::udf::steps(&t.message_transforms);
     let now = crate::deliver::rfc3339(util::now_ms());
     // Some(kept) or None (filtered), in request order.
     let mut out: Vec<Option<(Vec<u8>, Labels, String)>> = vec![];
     for m in msgs {
         let a: Labels = m.attributes.into_iter().collect();
-        let (d, mut a) = if udfs.is_empty() { (m.data, a) } else {
-            let (u, k, at) = (udfs.clone(), m.ordering_key.clone(), now.clone());
-            let r = tokio::task::spawn_blocking(move || crate::udf::chain(&u, m.data, a, &crate::udf::Meta { message_id: "", publish_time: &at, ordering_key: &k })).await.map_err(|e| Status::internal(e.to_string()))?;
-            match r.map_err(|e| Status::invalid_argument(format!("Message transformation failed: {e}")))? {
+        let (d, mut a) = if steps.is_empty() { (m.data, a) } else {
+            let r = crate::udf::apply(ctx, &steps, m.data, a, (String::new(), now.clone(), m.ordering_key.clone())).await;
+            match r.map_err(|e| match crate::udf::http_of(&e) {
+                429 => Status::resource_exhausted(e),
+                500..=599 => Status::unavailable(e),
+                _ => Status::invalid_argument(format!("Message transformation failed: {e}")),
+            })? {
                 crate::udf::Out::Keep(d, a) => (d, a),
                 crate::udf::Out::Drop => { out.push(None); continue }
             }
@@ -268,7 +271,8 @@ pub async fn sub_settings(ctx: &Ctx, mut pb: Subscription, new: bool) -> Result<
             match &m.key_definition {
                 Some(KeyDefinition::DelimitedKey(k)) if !k.key_fields.is_empty() => {}
                 Some(KeyDefinition::DelimitedKey(_)) => return Err(Status::invalid_argument("delimited_key needs key_fields.")),
-                _ => return Err(Status::invalid_argument("Stuntman's Bigtable tables have no row key schema: use delimited_key.")),
+                Some(KeyDefinition::RowKeySchema(_)) => {}
+                None => return Err(Status::invalid_argument("column_family_mapping needs a key definition.")),
             }
         }
     }
@@ -355,9 +359,17 @@ async fn apply_acks(ctx: &Ctx, s: &Sub, acks: Vec<String>, modacks: Vec<(String,
     Ok(Acked { bad_acks: a, bad_modacks: m, transient: false })
 }
 
-fn ack_error(s: &Sub, bad: &[String], transient: bool) -> Result<(), Status> {
+/// The answer to an exactly-once ack or modack with failed ids. When only some failed, the code is
+/// ABORTED: the clients complete the failed ids from the ErrorInfo and send the others again (an
+/// already-acked id then succeeds), instead of failing the good ones.
+fn ack_error(s: &Sub, bad: &[String], total: usize, transient: bool) -> Result<(), Status> {
     if s.exactly_once() && !bad.is_empty() {
-        return Err(ack_failure(bad, if transient { "TRANSIENT_FAILURE_UNORDERED_ACK_ID" } else { "PERMANENT_FAILURE_INVALID_ACK_ID" }));
+        let st = ack_failure(bad, if transient { "TRANSIENT_FAILURE_UNORDERED_ACK_ID" } else { "PERMANENT_FAILURE_INVALID_ACK_ID" });
+        if bad.len() < total {
+            let d = RpcStatus::decode(st.details()).map(|mut r| { r.code = tonic::Code::Aborted as i32; r.encode_to_vec() }).unwrap_or_default();
+            return Err(Status::with_details(tonic::Code::Aborted, st.message(), Bytes::from(d)));
+        }
+        return Err(st);
     }
     Ok(())
 }
@@ -546,8 +558,9 @@ impl Subscriber for Svc {
         let q = r.into_inner();
         let s = need_sub(&ctx, &q.subscription).await?;
         let secs = q.ack_deadline_seconds;
+        let total = q.ack_ids.len();
         let r = apply_acks(&ctx, &s, vec![], q.ack_ids.into_iter().map(|a| (a, secs)).collect()).await?;
-        ack_error(&s, &r.bad_modacks, r.transient)?;
+        ack_error(&s, &r.bad_modacks, total, r.transient)?;
         Ok(Resp::new(()))
     }
 
@@ -555,8 +568,9 @@ impl Subscriber for Svc {
         let ctx = self.ctx(&r)?;
         let q = r.into_inner();
         let s = need_sub(&ctx, &q.subscription).await?;
+        let total = q.ack_ids.len();
         let r = apply_acks(&ctx, &s, q.ack_ids, vec![]).await?;
-        ack_error(&s, &r.bad_acks, r.transient)?;
+        ack_error(&s, &r.bad_acks, total, r.transient)?;
         Ok(Resp::new(()))
     }
 

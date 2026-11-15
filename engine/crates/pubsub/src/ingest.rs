@@ -1,7 +1,8 @@
 //! Import topics: a topic with ingestion settings (Amazon Kinesis, Cloud Storage, Azure Event Hubs,
 //! Amazon MSK, Confluent Cloud) gets messages from its source. Where Stuntman has the source, it
 //! reads it for real: Cloud Storage from a storage account holding a container of the bucket's name
-//! (text split at the delimiter, Avro and Pub/Sub Avro object container files), MSK and Confluent
+//! (text split at the delimiter, gzip too; Avro and Pub/Sub Avro object container files, codecs null,
+//! deflate and snappy), MSK and Confluent
 //! Cloud from the Kafka topic of that name in Streams, from the earliest offset. Every source can be
 //! fed with the pubsub_ingest tool. Ingested messages go through the topic's transforms and schema.
 //!
@@ -106,7 +107,50 @@ fn chunk<'a>(b: &'a [u8], p: &mut usize) -> Result<&'a [u8], String> {
     Ok(s)
 }
 
-/// The records of an Avro object container file (codec null).
+/// Raw Snappy (the Avro snappy codec's blocks): the uncompressed length, then literals and copies.
+pub fn unsnappy(b: &[u8]) -> Result<Vec<u8>, String> {
+    let (mut n, mut shift, mut p) = (0usize, 0, 0);
+    loop {
+        let x = *b.get(p).ok_or("truncated snappy block")?;
+        p += 1;
+        n |= ((x & 0x7f) as usize) << shift;
+        if x & 0x80 == 0 { break }
+        shift += 7;
+    }
+    let mut out = Vec::with_capacity(n);
+    let get = |p: usize, k: usize| -> Result<usize, String> { Ok(b.get(p..p + k).ok_or("truncated snappy block")?.iter().enumerate().map(|(i, x)| (*x as usize) << (8 * i)).sum()) };
+    while p < b.len() {
+        let tag = b[p];
+        p += 1;
+        let (len, off) = match tag & 3 {
+            0 => {
+                let mut len = (tag >> 2) as usize;
+                if len >= 60 { let k = len - 59; len = get(p, k)?; p += k; }
+                let lit = b.get(p..p + len + 1).ok_or("truncated snappy literal")?;
+                out.extend(lit);
+                p += len + 1;
+                continue;
+            }
+            1 => { let off = (((tag >> 5) as usize) << 8) | get(p, 1)?; p += 1; (4 + ((tag >> 2) & 7) as usize, off) }
+            2 => { let off = get(p, 2)?; p += 2; (1 + (tag >> 2) as usize, off) }
+            _ => { let off = get(p, 4)?; p += 4; (1 + (tag >> 2) as usize, off) }
+        };
+        if off == 0 || off > out.len() { return Err("bad snappy copy offset".into()) }
+        for _ in 0..len { out.push(out[out.len() - off]); }
+    }
+    if out.len() != n { return Err("snappy length mismatch".into()) }
+    Ok(out)
+}
+
+fn inflate(b: &[u8], gzip: bool) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut out = vec![];
+    if gzip { flate2::read::MultiGzDecoder::new(b).read_to_end(&mut out) } else { flate2::read::DeflateDecoder::new(b).read_to_end(&mut out) }.map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
+/// The records of an Avro object container file: codec null, deflate or snappy (zstd, bzip2 and
+/// xz have no decoder in Stuntman).
 pub fn avro_records(b: &[u8]) -> Result<Vec<Value>, String> {
     if !b.starts_with(b"Obj\x01") { return Err("not an Avro object container file".into()) }
     let mut p = 4;
@@ -122,14 +166,24 @@ pub fn avro_records(b: &[u8]) -> Result<Vec<Value>, String> {
             if k == "avro.codec" { codec = String::from_utf8_lossy(v).to_string() }
         }
     }
-    if codec != "null" { return Err(format!("Avro codec {codec} is not read (only null)")) }
+    if !["null", "deflate", "snappy"].contains(&codec.as_str()) { return Err(format!("Avro codec {codec} is not read (null, deflate and snappy are)")) }
     let schema = schema.ok_or("the Avro file has no schema")?;
     p += 16;
     let mut out = vec![];
     while p < b.len() {
         let n = zz(b, &mut p)? as usize;
-        let block = chunk(b, &mut p)?;
-        out.extend(stuntman_streams::avro::decode_seq(&schema, block, n)?.0);
+        let raw = chunk(b, &mut p)?;
+        let block = match codec.as_str() {
+            "deflate" => inflate(raw, false)?,
+            "snappy" => {
+                let (body, crc) = raw.split_at(raw.len().checked_sub(4).ok_or("snappy block without its CRC")?);
+                let d = unsnappy(body)?;
+                if crc32fast::hash(&d).to_be_bytes() != crc { return Err("snappy block CRC mismatch".into()) }
+                d
+            }
+            _ => raw.to_vec(),
+        };
+        out.extend(stuntman_streams::avro::decode_seq(&schema, &block, n)?.0);
         p += 16;
     }
     Ok(out)
@@ -137,6 +191,9 @@ pub fn avro_records(b: &[u8]) -> Result<Vec<Value>, String> {
 
 /// The records of one Cloud Storage object, by the topic's input format.
 pub fn object_records(format: Option<&InputFormat>, data: &[u8]) -> Result<Vec<Rec>, String> {
+    // A gzip object (Content-Encoding gzip, or a .gz) is read decompressed.
+    let unzipped;
+    let data = if data.starts_with(&[0x1f, 0x8b]) { unzipped = inflate(data, true)?; unzipped.as_slice() } else { data };
     match format {
         Some(InputFormat::AvroFormat(_)) => Ok(avro_records(data)?.into_iter().map(|v| Rec { data: v.to_string().into_bytes(), ..Default::default() }).collect()),
         Some(InputFormat::PubsubAvroFormat(_)) => Ok(avro_records(data)?.into_iter().map(|v| {
@@ -209,5 +266,12 @@ mod t {
         let f = crate::deliver::avro_file(&s, &[g], true, None);
         let r = object_records(Some(&InputFormat::PubsubAvroFormat(Default::default())), &f).unwrap();
         assert_eq!((r[0].data.clone(), r[0].attrs.get("region").cloned()), (b"SHP-4 delivered".to_vec(), Some("us-east".to_string())));
+        // gzip text.
+        use std::io::Write;
+        let mut gz = flate2::write::GzEncoder::new(vec![], flate2::Compression::default());
+        gz.write_all(b"ORD-1\nORD-2\n").unwrap();
+        assert_eq!(object_records(None, &gz.finish().unwrap()).unwrap().len(), 2);
+        // Snappy: a literal "abcd" then a copy of 4 at offset 4 → "abcdabcd".
+        assert_eq!(unsnappy(&[8, 0x0c, b'a', b'b', b'c', b'd', 0x01, 4]).unwrap(), b"abcdabcd");
     }
 }

@@ -92,7 +92,7 @@ pub fn PubSub() -> impl IntoView {
                         (!ing.is_null() || !tr.is_empty()).then(|| view! { <div class="small">
                             {(!ing.is_null()).then(|| view! { <span class="caps">"Ingestion  "</span><span class="mono">{format!("{} · {}", ingestion_label(&s(&ing, "kind")), s(&ing, "from"))}</span>
                                 <span class=if s(&ing, "state") == "ACTIVE" { "ok" } else { "attn" }>{format!("  {}", s(&ing, "state"))}</span><span class="cap">"    "</span> })}
-                            {(!tr.is_empty()).then(|| view! { <span class="caps">"Transforms  "</span><span class="mono">{format!("{} (JavaScript)", tr.join(", "))}</span> })}</div> }) }}
+                            {(!tr.is_empty()).then(|| view! { <span class="caps">"Transforms  "</span><span class="mono">{tr.join(", ")}</span> })}</div> }) }}
                     {move || if tab.get() == "subscriptions" {
                         view! {
                             <table class="tbl"><tr><th>"Subscription"</th><th>"Type"</th><th>"Filter"</th><th>"Ack deadline"</th><th>"Ordering"</th><th>"Dead-letter"</th><th>"Pending"</th><th>"Outstanding"</th><th>"Acked"</th><th>"Dead"</th></tr>

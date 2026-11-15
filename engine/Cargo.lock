@@ -5162,6 +5162,8 @@ version = "0.5.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "crc32fast",
+ "flate2",
  "futures",
  "prost",
  "prost-types",
@@ -5172,6 +5174,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "stuntman-ai",
  "stuntman-core",
  "stuntman-identity",
  "stuntman-storage",

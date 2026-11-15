@@ -62,24 +62,29 @@ pub async fn tick(ctx: &Ctx) -> Result<(), ApiError> {
 /// acked without delivery; an error: nacked, back after the backoff). Marks the subscription active.
 pub async fn take(ctx: &Ctx, s: &Sub, max: usize, secs: i32, max_bytes: i64) -> Result<Vec<Got>, ApiError> {
     let got = store::pull_bytes(ctx, s, max, secs, max_bytes).await?;
-    let udfs = crate::udf::udfs(&s.pb.message_transforms);
-    if udfs.is_empty() || got.is_empty() { return Ok(got) }
+    let steps = crate::udf::steps(&s.pb.message_transforms);
+    if steps.is_empty() || got.is_empty() { return Ok(got) }
     let mut out = vec![];
     for mut g in got {
-        let (u, d, a, id, at, key) = (udfs.clone(), g.msg.data.clone(), g.msg.attributes.clone(), g.msg.id.to_string(), rfc3339(g.msg.published), g.msg.ordering_key.clone());
-        let r = tokio::task::spawn_blocking(move || crate::udf::chain(&u, d, a, &crate::udf::Meta { message_id: &id, publish_time: &at, ordering_key: &key }))
-            .await.map_err(|e| ApiError::internal(e.to_string()))?;
-        match r {
+        let meta = (g.msg.id.to_string(), rfc3339(g.msg.published), g.msg.ordering_key.clone());
+        match crate::udf::apply(ctx, &steps, g.msg.data.clone(), g.msg.attributes.clone(), meta).await {
             Ok(crate::udf::Out::Keep(d, a)) => { g.msg.data = d; g.msg.attributes = a; out.push(g) }
             Ok(crate::udf::Out::Drop) => { store::ack(ctx, &s.name, vec![g.ack_id], false, false).await?; }
             Err(e) => {
-                store::set_error(ctx, &s.name, &format!("message transform failed on {}: {e}", g.msg.id)).await?;
-                store::retry_after(ctx, &s.name, &g.ack_id, backoff_ms(s, g.attempt).max(1000)).await?;
+                // Retried by the retry policy; past max delivery attempts the original message goes to the
+                // dead-letter topic with CloudPubSubDeadLetterSourceSMTErrorMessage.
+                store::set_error(ctx, &s.name, &format!("{SMT_ERROR}{}: {e}", g.msg.id)).await?;
+                // A pull subscription's retry policy delays it from the deadline on (store::pull_bytes).
+                let wait = if s.kind() == "pull" && s.pb.retry_policy.is_some() { 0 } else { backoff_ms(s, g.attempt).max(100) };
+                store::retry_after(ctx, &s.name, &g.ack_id, wait).await?;
             }
         }
     }
     Ok(out)
 }
+
+/// How a subscription transform's failure reads in lastError (and what dead-lettering looks for).
+pub const SMT_ERROR: &str = "message transform failed on ";
 
 async fn failed(ctx: &Ctx, s: &Sub, g: &Got, e: &str) -> Result<(), ApiError> {
     store::set_error(ctx, &s.name, e).await?;
@@ -310,7 +315,15 @@ async fn bigtable(ctx: &Ctx, s: &Sub) -> Result<(), ApiError> {
                         None => { failed(ctx, s, &g, &format!("row key fields {:?} are not all in message {id}", k.key_fields)).await?; continue }
                     }
                 }
-                _ => format!("{}#{:02x}#{id}", s.name, salt(&id)),
+                Some(KeyDefinition::RowKeySchema(_)) => {
+                    let schema = store::bq_table(ctx, &format!("bigtable:{}", bt.table)).await?;
+                    let v: Value = serde_json::from_slice(&g.msg.data).unwrap_or(Value::Null);
+                    match schema.ok_or_else(|| format!("table {} has no row key schema (set_pubsub_bigtable_table)", bt.table)).and_then(|sc| row_key(&sc, &v)) {
+                        Ok(k) => show_key(&k),
+                        Err(e) => { failed(ctx, s, &g, &format!("row key of message {id}: {e}")).await?; continue }
+                    }
+                }
+                None => format!("{}#{:02x}#{id}", s.name, salt(&id)),
             },
             None => format!("{}#{:02x}#{id}", s.name, salt(&id)),
         };
@@ -323,6 +336,46 @@ async fn bigtable(ctx: &Ctx, s: &Sub) -> Result<(), ApiError> {
         written(ctx, s, vec![g.ack_id]).await?;
     }
     Ok(())
+}
+
+/// A row key by the table's row key schema: {fields: [{name, type: STRING|INT64|BYTES}], encoding:
+/// singleton | delimited_bytes (delimiter) | ordered_code_bytes}. STRING is UTF-8, BYTES base64 (or
+/// the text), INT64 8 bytes big-endian (sign bit flipped under ordered code, so keys sort).
+pub fn row_key(schema: &Value, msg: &Value) -> Result<Vec<u8>, String> {
+    let fields = schema["fields"].as_array().ok_or("the row key schema has no fields")?;
+    let enc = schema["encoding"].as_str().unwrap_or("delimited_bytes");
+    let ordered = enc == "ordered_code_bytes";
+    let mut parts = vec![];
+    for f in fields {
+        let n = f["name"].as_str().unwrap_or("");
+        let v = msg.get(n).filter(|v| !v.is_null()).ok_or_else(|| format!("the message has no field {n}"))?;
+        let b = match f["type"].as_str().unwrap_or("STRING").to_uppercase().as_str() {
+            "INT64" => {
+                let i = v.as_i64().or_else(|| v.as_str().and_then(|x| x.parse().ok())).ok_or_else(|| format!("{n} is INT64: {v} is not"))?;
+                (if ordered { (i as u64) ^ (1 << 63) } else { i as u64 }).to_be_bytes().to_vec()
+            }
+            "BYTES" => { let t = v.as_str().ok_or_else(|| format!("{n} is BYTES: {v} is not a string"))?; B64.decode(t).unwrap_or_else(|_| t.as_bytes().to_vec()) }
+            _ => v.as_str().map(|t| t.as_bytes().to_vec()).unwrap_or_else(|| v.to_string().into_bytes()),
+        };
+        parts.push(b);
+    }
+    Ok(match enc {
+        "singleton" => { if parts.len() != 1 { return Err("a singleton row key has one field".into()) } parts.remove(0) }
+        "ordered_code_bytes" => {
+            let mut out = vec![];
+            for (i, p) in parts.iter().enumerate() {
+                if i > 0 { out.extend([0x00, 0x01]); }
+                for b in p { match b { 0x00 => out.extend([0x00, 0xff]), x => out.push(*x) } }
+            }
+            out
+        }
+        _ => parts.join(schema["delimiter"].as_str().unwrap_or("#").as_bytes()),
+    })
+}
+
+/// A row key as text: printable bytes as they are, the rest \xNN.
+fn show_key(k: &[u8]) -> String {
+    k.iter().map(|b| if (0x20..0x7f).contains(b) && *b != b'\\' { (*b as char).to_string() } else { format!("\\x{b:02x}") }).collect()
 }
 
 fn salt(id: &str) -> u8 {
@@ -462,6 +515,19 @@ async fn typed_records(ctx: &Ctx, s: &Sub, got: &mut Vec<Got>) -> Result<Option<
 #[cfg(test)]
 mod t {
     use super::*;
+
+    #[test]
+    fn row_key_schemas() {
+        let m = json!({"region": "us-east", "seq": 5, "order": "ORD-1"});
+        let sc = json!({"fields": [{"name": "region", "type": "STRING"}, {"name": "seq", "type": "INT64"}], "encoding": "delimited_bytes", "delimiter": "#"});
+        assert_eq!(show_key(&row_key(&sc, &m).unwrap()), "us-east#\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x05");
+        let oc = json!({"fields": [{"name": "region"}, {"name": "order"}], "encoding": "ordered_code_bytes"});
+        assert_eq!(row_key(&oc, &m).unwrap(), b"us-east\x00\x01ORD-1".to_vec());
+        assert_eq!(row_key(&json!({"fields": [{"name": "order"}], "encoding": "singleton"}), &m).unwrap(), b"ORD-1");
+        assert!(row_key(&sc, &json!({"region": "x"})).unwrap_err().contains("seq"));
+        let neg = json!({"fields": [{"name": "n", "type": "INT64"}], "encoding": "ordered_code_bytes"});
+        assert!(row_key(&neg, &json!({"n": -1})).unwrap() < row_key(&neg, &json!({"n": 1})).unwrap(), "ordered code sorts");
+    }
 
     #[test]
     fn times_and_backoff() {

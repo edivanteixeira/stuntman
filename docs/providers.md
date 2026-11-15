@@ -290,7 +290,9 @@ while one of its messages is out. With a dead-letter policy, `delivery_attempt` 
 expired ack id fails with INVALID_ARGUMENT and a `google.rpc.ErrorInfo` (`EXACTLY_ONCE_ACKID_FAILURE`, each id mapped to
 `PERMANENT_FAILURE_INVALID_ACK_ID`), and StreamingPull confirms acks and modacks; the clients' `ack_with_response`
 reads both; `set_pubsub` `ack_transient` makes them fail with `TRANSIENT_FAILURE_UNORDERED_ACK_ID` (listed in
-`temporary_failed_ack_ids` on the stream) until `times` runs out. StreamingPull honours `max_outstanding_messages`
+`temporary_failed_ack_ids` on the stream) until `times` runs out. An ack of an id already acked succeeds; when only
+some ids of a request fail, the answer is ABORTED with the failed ids in the ErrorInfo, so the clients fail just
+those and send the others again. StreamingPull honours `max_outstanding_messages`
 and `max_outstanding_bytes` (one message may go when none is out). A retry policy delays a nacked or expired pull
 message by its backoff (minimum doubling per attempt, up to maximum); without one it comes back at once. An expiration
 policy deletes a subscription idle (no pull, ack or successful delivery) longer than its ttl on the environment
@@ -325,7 +327,10 @@ not fit (unknown field, missing REQUIRED column, wrong type) is not written: the
 backoff and, with a dead-letter policy, moves to the dead-letter topic; `lastError` says why. Bigtable subscriptions
 write a row per message into a table Stuntman keeps: row key `<subscription>#<salt>#<message id>` (the salt is two hex
 digits of the id's hash) or, with `column_family_mapping.delimited_key`, the message's JSON key fields joined by the
-delimiter; the data in family `data` with the empty qualifier; with `write_metadata`, family `pubsub_metadata`
+delimiter, or with `row_key_schema` the table's row key schema (set with `set_pubsub_bigtable_table`: fields of type
+STRING, INT64 or BYTES taken from the message's JSON, encoding `singleton`, `delimited_bytes` or `ordered_code_bytes`;
+INT64 is 8 bytes big-endian, sign bit flipped under ordered code; a row key shows non-printable bytes as `\xNN`); a
+message without a key field waits in the backlog with `lastError`; the data in family `data` with the empty qualifier; with `write_metadata`, family `pubsub_metadata`
 (`subscription_name`, `message_id`, `publish_time`, `attributes`, `ordering_key`).
 
 JavaScript UDF transforms (`message_transforms` on a topic or subscription) run in QuickJS with Pub/Sub's signature,
@@ -336,10 +341,23 @@ INVALID_ARGUMENT. On a subscription `null` acks without delivering and an error 
 `lastError` on the subscription). Each call has 500 ms and 32 MB. On a topic, `metadata.message_id` is empty (the id
 is given after the transform).
 
+AI inference transforms (`ai_inference` with an endpoint `projects/<p>/locations/<l>/publishers/<publisher>/models/<model>`
+or `…/endpoints/<id>`) are answered by Stuntman's AI models simulator, in process, with its rules, forced failures and
+call log (AI models › Calls). The message data must be a JSON request; the `unstructured_inference.parameters` are
+merged under it (the message wins) and the endpoint's model fills `model`. A body with `contents` goes to Gemini
+`generateContent`, an `anthropic` publisher to Messages, anything else to Chat Completions (`openai` in the simulator,
+as Vertex takes Gemini MaaS requests). The data becomes `{"original_message": …, "model_output": …}`. On a topic a
+failure fails the publish: a 429 answers RESOURCE_EXHAUSTED and a 5xx UNAVAILABLE (the clients retry both), anything
+else INVALID_ARGUMENT. On a subscription the message is retried by the retry policy and, past
+`max_delivery_attempts`, the original goes to the dead-letter topic with `CloudPubSubDeadLetterSourceSMTErrorMessage`.
+`force_ai_failure` (provider `openai`, `gemini` or `anthropic`) provokes it. Compression transforms run with zlib
+(compress or decompress the data); zstd is refused (no zstd codec in Stuntman).
+
 Import topics: a topic with `ingestion_data_source_settings` keeps them and shows the source's state. Cloud Storage
 reads the objects of the Stuntman storage container named like the bucket (`match_glob`, `minimum_object_create_time`;
-text split at the delimiter, Avro records as their JSON, Pub/Sub Avro records as data and attributes with
-`original_message_ordering_key`), each object version once; with no such container the state is `BUCKET_NOT_FOUND`.
+text split at the delimiter, gzip objects read decompressed, Avro records as their JSON, Pub/Sub Avro records as
+data and attributes with `original_message_ordering_key`; Avro codecs null, deflate and snappy), each object version
+once; with no such container the state is `BUCKET_NOT_FOUND`.
 Amazon MSK and Confluent Cloud read the Streams (Kafka) topic of that name from the earliest offset, then follow it;
 with no such topic the state is `TOPIC_NOT_FOUND`. Every source can be fed with `pubsub_ingest`. Ingested messages go
 through the topic's transforms and schema. Google documents no attribute mapping for Kafka, Kinesis or Event Hubs;
@@ -359,15 +377,16 @@ set_pubsub                 {"provoke": "unavailable", "times": 2}
 Tools: `list_pubsub_topics` (topics with ingestion and transforms, subscriptions with type, filter, last error and
 expiry, snapshots, schemas, BigQuery tables), `list_pubsub_messages`, `pubsub_publish`, `create_pubsub_subscription`,
 `set_pubsub_topic` (ingestion source, UDF), `pubsub_ingest`, `set_pubsub_schema`, `set_pubsub_bigquery_table`,
+`set_pubsub_bigtable_table`,
 `list_pubsub_bigquery_rows`, `list_pubsub_bigtable_rows`, `list_pubsub_storage_files`, `wait_for_pubsub_message`,
 `set_pubsub`. Short names (`shipments`) find the topic of that
 name, else use the `project` of `set_pubsub` (`acme-stg`).
 
-Limits: AI inference transforms are refused (only JavaScript UDFs run). Kinesis and Event Hubs have no Stuntman
-backend, so those import topics only get what `pubsub_ingest` feeds; Cloud Storage ingestion reads Avro files with the
-null codec only. Bigtable tables have no row key schema (`row_key_schema` is refused; use `delimited_key`), and
-`column_family_mapping` only builds the row key. The KMS key and message storage policy have no effect. The minimums
-Pub/Sub sets on Cloud Storage `max_messages` and `max_duration` are not enforced, so tests can use small batches.
+Limits: Kinesis and Event Hubs have no Stuntman backend, so those import topics only get what `pubsub_ingest` feeds;
+Cloud Storage ingestion reads Avro with the null, deflate and snappy codecs (zstd, bzip2 and xz have no decoder in
+Stuntman). Compression transforms take zlib only. AI inference has no 60-second timeout to hit: the simulator answers
+in process (force `slow` for a slow model). The KMS key and message storage policy have no effect. The minimums Pub/Sub
+sets on Cloud Storage `max_messages` and `max_duration` are not enforced, so tests can use small batches.
 
 ## Identity
 

@@ -34,6 +34,18 @@ pub fn routes() -> Router<Ctx> {
     r
 }
 
+/// A call from inside Stuntman (Pub/Sub's AI inference transform): the same answer, rules, forced
+/// failures and call log as an app's call to /<provider>/<rest>. Answers (status, JSON body).
+pub async fn call(ctx: &Ctx, provider: &'static str, rest: &str, caller: &str, body: &Value) -> (u16, Value) {
+    let mut h = HeaderMap::new();
+    h.insert("authorization", "Bearer stuntman-internal".parse().unwrap());
+    if let Ok(v) = format!("{caller}/1").parse() { h.insert("user-agent", v); }
+    let r = handle(ctx.clone(), provider, rest.to_string(), Method::POST, h, String::new(), Bytes::from(body.to_string())).await;
+    let st = r.status().as_u16();
+    let b = axum::body::to_bytes(r.into_body(), 16 << 20).await.unwrap_or_default();
+    (st, serde_json::from_slice(&b).unwrap_or_else(|_| json!({"raw": String::from_utf8_lossy(&b)})))
+}
+
 /// What the app asked, whatever the API.
 #[derive(Default, Debug)]
 pub struct Prompt {

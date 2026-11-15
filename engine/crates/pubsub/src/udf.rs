@@ -2,7 +2,9 @@
 //! `function f(message, metadata)`: message {data: string, attributes: {k: string}}, metadata
 //! {message_id, publish_time, ordering_key}; the function returns the message (changed or not), or
 //! null to filter it out. A thrown error is the transform failing. Each call gets a fresh runtime
-//! with a memory limit and a 500 ms budget.
+//! with a memory limit and a 500 ms budget. AI inference transforms send the message (a JSON
+//! request, merged under the configured parameters) to Stuntman's AI models simulator and replace the
+//! data with {"original_message": …, "model_output": …}, as Pub/Sub's AI Inference SMT does.
 
 use std::time::{Duration, Instant};
 
@@ -71,9 +73,108 @@ pub fn run(code: &str, func: &str, data: &[u8], attrs: &Labels, meta: &Meta) -> 
     })
 }
 
-/// The JavaScript UDFs of a topic or subscription that are on.
-pub fn udfs(t: &[MessageTransform]) -> Vec<(String, String)> {
-    t.iter().filter(|x| !x.disabled).filter_map(|x| match &x.transform { Some(Transform::JavascriptUdf(u)) => Some((u.code.clone(), u.function_name.clone())), _ => None }).collect()
+/// One transform that is on: JavaScript (code, function) or AI inference (endpoint, parameters).
+#[derive(Clone, Debug)]
+pub enum Step {
+    Js(String, String),
+    Ai(String, serde_json::Value),
+    /// Compression transform with zlib: true compresses the data, false decompresses it.
+    Zlib(bool),
+}
+
+impl Step {
+    pub fn name(&self) -> String {
+        match self { Step::Js(_, f) => format!("{f} (JavaScript)"), Step::Ai(e, _) => format!("{} (AI inference)", e.rsplit('/').next().unwrap_or(e)),
+            Step::Zlib(c) => format!("zlib {}", if *c { "compress" } else { "decompress" }) }
+    }
+}
+
+fn pb_value(v: &prost_types::Value) -> serde_json::Value {
+    use prost_types::value::Kind;
+    match &v.kind {
+        Some(Kind::NumberValue(n)) => serde_json::json!(n),
+        Some(Kind::StringValue(s)) => serde_json::json!(s),
+        Some(Kind::BoolValue(b)) => serde_json::json!(b),
+        Some(Kind::StructValue(s)) => pb_struct(s),
+        Some(Kind::ListValue(l)) => serde_json::Value::Array(l.values.iter().map(pb_value).collect()),
+        _ => serde_json::Value::Null,
+    }
+}
+
+fn pb_struct(s: &prost_types::Struct) -> serde_json::Value {
+    serde_json::Value::Object(s.fields.iter().map(|(k, v)| (k.clone(), pb_value(v))).collect())
+}
+
+/// The transforms of a topic or subscription that are on, in order.
+pub fn steps(t: &[MessageTransform]) -> Vec<Step> {
+    t.iter().filter(|x| !x.disabled).filter_map(|x| match &x.transform {
+        Some(Transform::JavascriptUdf(u)) => Some(Step::Js(u.code.clone(), u.function_name.clone())),
+        Some(Transform::AiInference(a)) => Some(Step::Ai(a.endpoint.clone(), match &a.inference_mode {
+            Some(crate::v1::ai_inference::InferenceMode::UnstructuredInference(u)) => u.parameters.as_ref().map(pb_struct).unwrap_or(serde_json::json!({})),
+            None => serde_json::json!({}),
+        })),
+        Some(Transform::Compression(c)) => Some(Step::Zlib(c.compression_mode != 2)),
+        None => None,
+    }).collect()
+}
+
+/// The HTTP status in an AI inference error ("AI inference failed: HTTP 429 …"), 0 for others.
+pub fn http_of(e: &str) -> u16 {
+    e.split("HTTP ").nth(1).and_then(|x| x.get(..3)).and_then(|x| x.parse().ok()).unwrap_or(0)
+}
+
+/// Sends the message to the AI models simulator: the request is the data (a JSON object) with the
+/// parameters under it (the message wins). The endpoint's model picks the API: a body with
+/// "contents" goes to Gemini generateContent, an Anthropic publisher to Messages, the rest to Chat
+/// Completions (OpenAI-compatible, as Gemini on Vertex takes it).
+pub async fn infer(ctx: &stuntman_core::Ctx, endpoint: &str, params: &serde_json::Value, data: &[u8]) -> Result<Vec<u8>, String> {
+    let req: serde_json::Value = serde_json::from_slice(data).map_err(|_| "AI inference failed: the message data is not a JSON request".to_string())?;
+    let mut merged = params.as_object().cloned().unwrap_or_default();
+    for (k, v) in req.as_object().cloned().unwrap_or_default() { merged.insert(k, v); }
+    let model = endpoint.split("/models/").nth(1).or_else(|| endpoint.split("/endpoints/").nth(1)).unwrap_or("model").to_string();
+    let (provider, rest): (&'static str, String) = if merged.contains_key("contents") {
+        ("gemini", format!("v1beta/models/{model}:generateContent"))
+    } else if endpoint.contains("/publishers/anthropic/") {
+        merged.entry("model").or_insert(serde_json::json!(model));
+        ("anthropic", "v1/messages".into())
+    } else {
+        merged.entry("model").or_insert(serde_json::json!(model));
+        ("openai", "v1/chat/completions".into())
+    };
+    let (st, out) = stuntman_ai::model::call(ctx, provider, &rest, "pubsub-ai-inference", &serde_json::Value::Object(merged)).await;
+    if !(200..300).contains(&st) {
+        let why = out["error"]["message"].as_str().map(String::from).unwrap_or(out.to_string());
+        return Err(format!("AI inference failed: HTTP {st} from {endpoint}: {why}"));
+    }
+    Ok(serde_json::json!({"original_message": req, "model_output": out}).to_string().into_bytes())
+}
+
+/// Runs a topic's or subscription's transforms in order; the first null filters.
+pub async fn apply(ctx: &stuntman_core::Ctx, steps: &[Step], data: Vec<u8>, attrs: Labels, meta: (String, String, String)) -> Result<Out, String> {
+    let (mut d, mut a) = (data, attrs);
+    for st in steps {
+        match st {
+            Step::Js(code, f) => {
+                let (code, f, d0, a0, m) = (code.clone(), f.clone(), d.clone(), a.clone(), meta.clone());
+                let r = tokio::task::spawn_blocking(move || run(&code, &f, &d0, &a0, &Meta { message_id: &m.0, publish_time: &m.1, ordering_key: &m.2 })).await.map_err(|e| e.to_string())??;
+                match r { Out::Keep(nd, na) => { d = nd; a = na; } Out::Drop => return Ok(Out::Drop) }
+            }
+            Step::Ai(endpoint, params) => d = infer(ctx, endpoint, params, &d).await?,
+            Step::Zlib(compress) => {
+                use std::io::{Read, Write};
+                d = if *compress {
+                    let mut e = flate2::write::ZlibEncoder::new(vec![], flate2::Compression::default());
+                    e.write_all(&d).map_err(|e| e.to_string())?;
+                    e.finish().map_err(|e| e.to_string())?
+                } else {
+                    let mut out = vec![];
+                    flate2::read::ZlibDecoder::new(d.as_slice()).read_to_end(&mut out).map_err(|e| format!("zlib decompress: {e}"))?;
+                    out
+                };
+            }
+        }
+    }
+    Ok(Out::Keep(d, a))
 }
 
 /// Checks transforms when a topic or subscription is made: JavaScript that compiles and defines the
@@ -91,24 +192,21 @@ pub fn check(t: &[MessageTransform]) -> Result<(), String> {
                     Ok(())
                 })?;
             }
-            Some(_) => return Err("Stuntman runs JavaScript UDF transforms only; AI inference transforms are not offered.".into()),
+            Some(Transform::Compression(c)) => {
+                if c.compression_algorithm != 1 { return Err("compression: Stuntman has zlib only (no zstd codec in the tree)".into()) }
+            }
+            Some(Transform::AiInference(a)) => {
+                let p: Vec<&str> = a.endpoint.split('/').collect();
+                let ok = p.len() >= 6 && p[0] == "projects" && p[2] == "locations" && (p[4] == "endpoints" || (p[4] == "publishers" && p.get(6) == Some(&"models") && p.len() == 8));
+                if !ok { return Err(format!("ai_inference.endpoint: projects/<p>/locations/<l>/endpoints/<e> or …/publishers/<publisher>/models/<model>, got \"{}\"", a.endpoint)) }
+            }
             None => return Err("a message transform needs a javascript_udf".into()),
         }
     }
     Ok(())
 }
 
-/// Runs a chain of UDFs in order; the first null filters.
-pub fn chain(udfs: &[(String, String)], data: Vec<u8>, attrs: Labels, meta: &Meta) -> Result<Out, String> {
-    let (mut d, mut a) = (data, attrs);
-    for (code, f) in udfs {
-        match run(code, f, &d, &a, meta)? {
-            Out::Keep(nd, na) => { d = nd; a = na; }
-            Out::Drop => return Ok(Out::Drop),
-        }
-    }
-    Ok(Out::Keep(d, a))
-}
+
 
 #[cfg(test)]
 mod t {

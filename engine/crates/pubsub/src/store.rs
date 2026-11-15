@@ -349,12 +349,20 @@ pub async fn pull_bytes(ctx: &Ctx, sub: &Sub, max: usize, secs: i32, max_bytes: 
             tx.execute("UPDATE pubsub_deliveries SET state='outstanding', attempts=?3, deadline=?4, ack_id=?5 WHERE sub=?1 AND msg=?2", params![s.name, g.msg.id, g.attempt, now + secs as i64 * 1000, g.ack_id])?;
         }
         let dl_exists = !s.dead_letter.is_empty() && tx.query_row("SELECT 1 FROM pubsub_topics WHERE name=?1", [&s.dead_letter], |_| Ok(())).optional()?.is_some();
+        // A message a subscription transform kept failing carries the error to the dead-letter topic.
+        let smt_err: Option<String> = if dead.is_empty() { None } else {
+            tx.query_row("SELECT error FROM pubsub_sub_errors WHERE name=?1", [&s.name], |r| r.get::<_, String>(0)).optional()?
+                .filter(|e| e.starts_with(crate::deliver::SMT_ERROR))
+        };
         for m in &dead {
             tx.execute("UPDATE pubsub_deliveries SET state='dead', ack_id='' WHERE sub=?1 AND msg=?2", params![s.name, m.id])?;
             if dl_exists {
                 let mut a = m.attributes.clone();
                 a.insert("CloudPubSubDeadLetterSourceSubscription".into(), s.name.rsplit('/').next().unwrap_or("").into());
                 a.insert("CloudPubSubDeadLetterSourceDeliveryCount".into(), s.max_attempts.to_string());
+                if let Some(e) = smt_err.as_ref().filter(|e| e.starts_with(&format!("{}{}:", crate::deliver::SMT_ERROR, m.id))) {
+                    a.insert("CloudPubSubDeadLetterSourceSMTErrorMessage".into(), e.split_once(": ").map(|x| x.1).unwrap_or(e).to_string());
+                }
                 insert(&tx, &s.dead_letter, &m.data, &a, &m.ordering_key, "dead-letter")?;
             }
         }
@@ -395,10 +403,11 @@ pub async fn ack(ctx: &Ctx, sub: &str, ids: Vec<String>, duplicate: bool, strict
             let k = if duplicate {
                 tx.execute("UPDATE pubsub_deliveries SET state=CASE WHEN attempts<=1 THEN 'pending' ELSE 'acked' END, acked=CASE WHEN attempts<=1 THEN NULL ELSE ?3 END, ack_id='' WHERE sub=?1 AND ack_id=?2 AND state='outstanding' AND deadline>=?4", params![s, id, now, floor])?
             } else {
-                tx.execute("UPDATE pubsub_deliveries SET state='acked', acked=?3, ack_id='' WHERE sub=?1 AND ack_id=?2 AND state='outstanding' AND deadline>=?4", params![s, id, now, floor])?
+                tx.execute("UPDATE pubsub_deliveries SET state='acked', acked=?3 WHERE sub=?1 AND ack_id=?2 AND state='outstanding' AND deadline>=?4", params![s, id, now, floor])?
             };
             n += k;
-            if k == 0 { bad.push(id.clone()) }
+            // Acking an ack id that was already acked succeeds (a client retrying a batch).
+            if k == 0 && tx.query_row("SELECT 1 FROM pubsub_deliveries WHERE sub=?1 AND ack_id=?2 AND state='acked'", params![s, id], |_| Ok(())).optional()?.is_none() { bad.push(id.clone()) }
         }
         tx.commit()?;
         Ok((n, bad))

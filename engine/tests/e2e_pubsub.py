@@ -11,7 +11,9 @@ Bigtable subscriptions; import topics (Amazon MSK read from Streams' Kafka, Clou
 a storage container, Kinesis fed by pubsub_ingest); JavaScript UDF transforms on topics and
 subscriptions; expiration on the environment clock; BigQuery table schemas with a dead-letter;
 typed Avro files; proto2 groups; retry-policy backoff on nacks; transient exactly-once ack failures
-the client retries; max_outstanding_bytes. The .NET client (Google.Cloud.PubSub.V1) publishes too
+the client retries; max_outstanding_bytes. Last: AI inference transforms answered by Stuntman's AI
+models simulator (forced failures retried, dead-lettered), deflate/snappy Avro and gzip text
+ingestion, Bigtable row key schemas. The .NET client (Google.Cloud.PubSub.V1) publishes too
 when dotnet is installed.
 
     pip install google-cloud-pubsub fastavro cryptography
@@ -145,6 +147,7 @@ def main():
 
         rest_of_the_api(s, pub, sub)
         the_remaining_items(s, pub, sub)
+        the_last_items(s, pub, sub)
 
         # .NET: PublisherClientBuilder with EmulatorDetection.EmulatorOrProduction.
         if shutil.which("dotnet"):
@@ -594,8 +597,8 @@ def the_remaining_items(s, pub, sub):
     err = wait(lambda: subs_view()[udf_s]["lastError"], "the subscription transform's error")
     assert "cannot read" in err["error"], err
     try:
-        pub.create_topic(request={"name": f"{P}/topics/ai", "message_transforms": [{"ai_inference": {"endpoint": "projects/acme-stg/locations/us-central1/endpoints/1"}}]})
-        raise AssertionError("AI inference is refused")
+        pub.create_topic(request={"name": f"{P}/topics/ai", "message_transforms": [{"ai_inference": {"endpoint": "gemini-3-flash"}}]})
+        raise AssertionError("an AI inference endpoint that is not a resource name is refused")
     except gx.InvalidArgument:
         pass
     print("ok   transforms: topic UDF redacts and filters (id kept), subscription UDF stamps; a throwing UDF nacks with lastError")
@@ -721,6 +724,98 @@ def the_remaining_items(s, pub, sub):
     q.put(None)
     stream.cancel()
     print("ok   StreamingPull max_outstanding_bytes: one 60-byte message at a time under 100 bytes")
+
+
+GEMINI = "projects/acme-stg/locations/us-central1/publishers/google/models/gemini-3-flash"
+
+
+def the_last_items(s, pub, sub):
+    from google.api_core import exceptions as gx
+    from google.protobuf import duration_pb2
+    import fastavro, gzip
+
+    plain = pubsub_v1_publisher()
+
+    def pull_ack(name, n=10):
+        got = sub.pull(request={"subscription": name, "max_messages": n, "return_immediately": True}, timeout=10).received_messages
+        if got:
+            sub.acknowledge(request={"subscription": name, "ack_ids": [m.ack_id for m in got]})
+        return got
+
+    ai = {"ai_inference": {"endpoint": GEMINI, "unstructured_inference": {"parameters": {"temperature": 0.2, "max_tokens": 64}}}}
+    ask = json.dumps({"messages": [{"role": "user", "content": "Summarize: shipment SHP-4100 is delayed at the Springfield hub"}]}).encode()
+
+    # ---- AI inference on a topic: the model output wraps the message; a failure the client retries.
+    t = f"{P}/topics/tickets-enriched"
+    pub.create_topic(request={"name": t, "message_transforms": [ai]})
+    sub.create_subscription(request={"name": f"{P}/subscriptions/tickets-enriched-app", "topic": t})
+    calls0 = len(s.call("GET", "/ai/calls")["calls"])
+    plain.publish(t, ask).result(15)
+    v = json.loads(pull_ack(f"{P}/subscriptions/tickets-enriched-app")[0].message.data)
+    assert v["original_message"]["messages"][0]["content"].startswith("Summarize") and v["model_output"]["choices"][0]["message"]["content"], v
+    calls = s.call("GET", "/ai/calls")["calls"]
+    assert len(calls) == calls0 + 1 and calls[0]["model"] == "gemini-3-flash", calls[0]
+    s.call("POST", "/ai/force", {"kind": "500", "provider": "openai", "count": 1})
+    assert plain.publish(t, ask).result(30), "the client retries the UNAVAILABLE a 500 gives"
+    assert len(s.call("GET", "/ai/calls")["calls"]) == calls0 + 3
+    try:
+        plain.publish(t, b"not a request").result(15)
+        raise AssertionError("a message that is not a JSON request fails the publish")
+    except gx.InvalidArgument:
+        pass
+    print("ok   AI inference on a topic: {original_message, model_output} from the simulator; a forced 500 retried; bad input refused")
+
+    # ---- AI inference on a subscription: forced failures retried, then the original message dead-lettered.
+    src, dlq = f"{P}/topics/tickets", f"{P}/topics/tickets-dlq"
+    for n in (src, dlq):
+        pub.create_topic(request={"name": n})
+    sm = f"{P}/subscriptions/tickets-ai"
+    sub.create_subscription(request={"name": sm, "topic": src, "message_transforms": [ai], "dead_letter_policy": {"dead_letter_topic": dlq, "max_delivery_attempts": 5},
+                                     "retry_policy": {"minimum_backoff": duration_pb2.Duration(nanos=100_000_000), "maximum_backoff": duration_pb2.Duration(nanos=200_000_000)}})
+    s.call("POST", "/ai/force", {"kind": "429", "provider": "openai", "count": 50})
+    try:
+        plain.publish(src, ask).result(10)
+        # Nobody pulls: the delivery loop is the subscriber here, so pull to drive the attempts.
+        dead = wait(lambda: pull_ack(sm, 1) and False or s.call("GET", "/pubsub/messages?topic=tickets-dlq")["messages"], "the dead-lettered original", 30)
+    finally:
+        s.call("POST", "/ai/force", {"kind": "none", "provider": "openai"})
+    d = dead[0]
+    assert d["data"]["value"]["messages"][0]["content"].startswith("Summarize") and "HTTP 429" in d["attributes"]["CloudPubSubDeadLetterSourceSMTErrorMessage"], d
+    plain.publish(src, ask).result(10)
+    got = wait(lambda: pull_ack(sm), "an enriched message once the model answers", 15)
+    assert "model_output" in json.loads(got[0].message.data)
+    print("ok   AI inference on a subscription: 429s retried, the original dead-lettered with CloudPubSubDeadLetterSourceSMTErrorMessage; then enriched")
+
+    # ---- Compressed ingestion: deflate and snappy Avro, gzip text.
+    s.call("POST", "/services/s3/accounts", {"account": "acme-stg-drops", "containers": ["acme-stg-drops"]})
+    av = f"{P}/topics/orders-from-avro"
+    pub.create_topic(request={"name": av, "ingestion_data_source_settings": {"cloud_storage": {"bucket": "acme-stg-drops", "avro_format": {}, "match_glob": "**.avro"}}})
+    tx = f"{P}/topics/orders-from-gzip"
+    pub.create_topic(request={"name": tx, "ingestion_data_source_settings": {"cloud_storage": {"bucket": "acme-stg-drops", "text_format": {}, "match_glob": "**.txt.gz"}}})
+    for n in (av, tx):
+        sub.create_subscription(request={"name": n.replace("/topics/", "/subscriptions/") + "-app", "topic": n})
+    sch = fastavro.parse_schema({"type": "record", "name": "Order", "fields": [{"name": "order", "type": "string"}, {"name": "total", "type": "double"}]})
+    for codec in ("deflate", "snappy"):
+        buf = io.BytesIO()
+        fastavro.writer(buf, sch, [{"order": f"ORD-{codec}-{i}", "total": 10.0 + i} for i in range(3)], codec=codec)
+        s.call("PUT", f"/storage/acme-stg-drops/acme-stg-drops/objects/in/{codec}.avro", {"content_base64": base64.b64encode(buf.getvalue()).decode()})
+    s.call("PUT", "/storage/acme-stg-drops/acme-stg-drops/objects/in/daily.txt.gz", {"content_base64": base64.b64encode(gzip.compress(b"ORD-1 placed\nORD-2 placed\n")).decode()})
+    got = []
+    wait(lambda: got.extend(pull_ack(av.replace("/topics/", "/subscriptions/") + "-app", 20)) or len(got) >= 6, "6 Avro records (deflate and snappy)")
+    assert sorted(json.loads(m.message.data)["order"] for m in got) == sorted(f"ORD-{c}-{i}" for c in ("deflate", "snappy") for i in range(3)), got
+    lines = wait(lambda: pull_ack(tx.replace("/topics/", "/subscriptions/") + "-app"), "gzip text lines")
+    assert sorted(m.message.data for m in lines) == [b"ORD-1 placed", b"ORD-2 placed"], lines
+    print("ok   Cloud Storage ingestion: deflate and snappy Avro (written by fastavro), gzip text")
+
+    # ---- Bigtable row key schema.
+    table = "projects/acme-stg/instances/ops/tables/orders-by-region"
+    import urllib.parse
+    s.call("PUT", "/pubsub/bigtable/tables/" + urllib.parse.quote(table, safe=""), { "row_key_schema": {"fields": [{"name": "region", "type": "STRING"}, {"name": "order", "type": "STRING"}], "encoding": "delimited_bytes", "delimiter": "#"}})
+    sub.create_subscription(request={"name": f"{P}/subscriptions/orders-by-region", "topic": f"{P}/topics/orders", "bigtable_config": {"table": table, "column_family_mapping": {"row_key_schema": {}}}})
+    plain.publish(f"{P}/topics/orders", b'{"region": "us-east", "order": "ORD-5400"}').result(10)
+    rows = wait(lambda: s.call("GET", f"/pubsub/bigtable?table={table}")["rows"], "a row keyed by the schema")
+    assert rows[0]["rowKey"] == "us-east#ORD-5400", rows
+    print("ok   Bigtable row_key_schema: region#order from the table's schema")
 
 
 def urllib_get(url):

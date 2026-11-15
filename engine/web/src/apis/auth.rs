@@ -3,6 +3,7 @@
 //! the service block of the plugin file, shown beside it.
 
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
 use leptos_router::hooks::use_params_map;
 use serde_json::{json, Value};
 
@@ -123,6 +124,7 @@ pub fn Auth() -> impl IntoView {
                                 <button class="link" style="margin-left:42px" on:click=move |_| { leptos::task::spawn_local(async move {
                                     match api::send("POST", "/apis/client-certificates", json!({"name": "acme-api"})).await { Ok(v) => ui::copy(&format!("{}{}", s(&v, "certificate"), s(&v, "key")), "Client certificate and key for acme-api"), Err(e) => ui::toast_err(e) } }); }>"Issue a client certificate for the app"</button>
                             </div>
+                            <IcpSignature service=service.get() view=d.clone()/>
                             {(!d["session"].is_null()).then(|| { let ss = d["session"].clone(); view! {
                                 <div class="block">
                                     <div class="caps" style="margin-bottom:12px">"Session login"</div>
@@ -167,6 +169,63 @@ pub fn Auth() -> impl IntoView {
                     <div class="small cap">"The service block is shaded; changed lines are marked."</div>
                 </div>
             </div>
+        </div>
+    }
+}
+
+/// A18 · an ICP-Brasil style certificate on mTLS, the XML signatures of a SOAP service, and the
+/// test certificates the app can use.
+#[component]
+fn IcpSignature(service: String, view: Value) -> impl IntoView {
+    let live = expect_context::<api::Live>();
+    let certs = RwSignal::new(Vec::<Value>::new());
+    let (holder, cnpj) = (RwSignal::new("Acme Transportes Ltda".to_string()), RwSignal::new("11.222.333/0001-81".to_string()));
+    Effect::new(move |_| {
+        live.tick.track();
+        leptos::task::spawn_local(async move { if let Ok(v) = api::get("/apis/test-certificates").await { certs.set(v["certificates"].as_array().cloned().unwrap_or_default()) } });
+    });
+    let sv = service.clone();
+    let set = move |body: Value| { let sv = sv.clone(); leptos::task::spawn_local(async move { match api::send("PUT", &format!("/plugins/{}/service", enc(&sv)), body).await { Ok(_) => ui::toast("Saved"), Err(e) => ui::toast_err(e) } }) };
+    let make = move |expired: bool| {
+        let body = json!({"holder": holder.get_untracked(), "cnpj": cnpj.get_untracked(), "expired": expired});
+        leptos::task::spawn_local(async move {
+            match api::send("POST", "/apis/test-certificates", body).await {
+                Ok(v) => {
+                    // The .pfx downloads; its password is shown once.
+                    let href = format!("data:application/x-pkcs12;base64,{}", s(&v, "pfx"));
+                    if let Some(d) = web_sys::window().and_then(|w| w.document()) {
+                        if let Ok(a) = d.create_element("a") { let _ = a.set_attribute("href", &href); let _ = a.set_attribute("download", &format!("{}.pfx", s(&v, "holder").replace(' ', "-"))); if let Some(h) = a.dyn_ref::<web_sys::HtmlElement>() { h.click() } }
+                    }
+                    ui::toast(format!(".pfx password (shown once): {}", s(&v, "password")));
+                }
+                Err(e) => ui::toast_err(e),
+            }
+        });
+    };
+    let soap = !view["soap"].is_null();
+    let sg = view["signature"].clone();
+    let icp = view["icp"] == true;
+    let (s1, s2, s3) = (set.clone(), set.clone(), set.clone());
+    view! {
+        <div class="block">
+            <div class="caps" style="margin-bottom:10px">"ICP-Brasil certificate"</div>
+            <label class="check"><input type="checkbox" prop:checked=icp on:change=move |e| s1(json!({"client_certificate_icp": event_target_checked(&e)}))/>
+                "The app's certificate must carry a CNPJ (OID 2.16.76.1.3.3), as SEFAZ asks. Missing or expired: the TLS handshake fails."</label>
+            {soap.then(|| view! {
+                <div class="caps" style="margin:16px 0 8px">"XML signature (XMLDSig)"</div>
+                <label class="check"><input type="checkbox" prop:checked=sg["check"] == true on:change=move |e| s2(json!({"xml_signature_check": event_target_checked(&e)}))/>"Check the signature of each request (enveloped, C14N, RSA-SHA1 or RSA-SHA256)"</label>
+                <div class="row" style="gap:8px;margin-top:6px"><span class="small cap">"Sign the answers' element"</span>
+                    <input class="input mono" style="width:160px" placeholder="infProt" prop:value=s(&sg, "sign") on:change=move |e| s3(json!({"xml_signature_sign": event_target_value(&e)}))/>
+                    <span class="small cap">"a bad signature answers"</span><span class="mono small">{if s(&sg, "invalid").is_empty() { "a fault".to_string() } else { s(&sg, "invalid") }}</span></div>
+            })}
+            <div class="caps" style="margin:16px 0 8px">"Test certificates for the app"</div>
+            <table class="tbl"><tr><th>"Holder"</th><th>"CNPJ / CPF"</th><th>"Type"</th><th>"State"</th></tr>
+                {move || certs.get().into_iter().map(|c| view! { <tr><td>{s(&c, "holder")}</td><td class="mono">{if s(&c, "cnpj").is_empty() { s(&c, "cpf") } else { s(&c, "cnpj") }}</td><td>{s(&c, "type")}</td>
+                    <td class={if s(&c, "state") == "valid" { "ok" } else { "danger" }}>{s(&c, "state")}</td></tr> }).collect_view()}</table>
+            <div class="row" style="gap:8px;margin-top:8px"><input class="input" style="width:220px" prop:value=move || holder.get() on:input=move |e| holder.set(event_target_value(&e))/>
+                <input class="input mono" style="width:170px" prop:value=move || cnpj.get() on:input=move |e| cnpj.set(event_target_value(&e))/>
+                <button class="btn small" on:click=move |_| make(false)>"New certificate (.pfx)"</button><button class="btn small" on:click=move |_| make(true)>"An expired one"</button></div>
+            <div class="small cap" style="margin-top:6px">"Synthetic holders only. Valid only where the Stuntman Test CA is trusted."</div>
         </div>
     }
 }

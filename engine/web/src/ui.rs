@@ -107,3 +107,24 @@ fn esc_closes(open: RwSignal<bool>) {
     let h = window_event_listener(leptos::ev::keydown, move |e| if e.key() == "Escape" && open.get_untracked() { open.set(false) });
     on_cleanup(move || h.remove());
 }
+
+/// The head of an area (A10–A18): kind line, title, tabs (key, label, path, count), right-hand controls.
+#[component]
+pub fn AreaHead(#[prop(into)] kind: Signal<String>, #[prop(into)] title: Signal<String>, tabs: Vec<(&'static str, &'static str, String)>, #[prop(into)] counts: Signal<Vec<(&'static str, String)>>,
+    active: &'static str, #[prop(optional, into)] right: Option<ViewFn>) -> impl IntoView {
+    let nav = leptos_router::hooks::use_navigate();
+    view! {
+        <div class="head">
+            <div class="top">
+                <div class="titled"><div class="kind">{move || kind.get()}</div><h1>{move || title.get()}</h1></div>
+                <span class="grow"></span>
+                {right.map(|r| r.run())}
+            </div>
+            <div class="tabs">
+                {tabs.into_iter().map(|(key, label, path)| { let nav = nav.clone(); view! {
+                    <div class="tab" class:on=active == key on:click=move |_| nav(&path, Default::default())>{label}
+                        <span class="n">{move || counts.get().into_iter().find(|c| c.0 == key).map(|c| c.1).unwrap_or_default()}</span></div> } }).collect_view()}
+            </div>
+        </div>
+    }
+}

@@ -171,6 +171,7 @@ pub fn NewService() -> impl IntoView {
                         <input class="input mono" style="width:180px" placeholder="example-payments" prop:value=move || w_name.get() on:input=move |e| w_name.set(event_target_value(&e).trim().to_lowercase())/>
                         <button class="btn primary" disabled=move || w_busy.get() || w_name.get().is_empty() || w_src.get().is_empty() on:click=import_wsdl>{move || if w_busy.get() { "Reading…" } else { "Create service" }}</button></div>
                     {move || (!w_err.get().is_empty()).then(|| view! { <div class="small danger" style="margin-top:8px">{w_err.get()}</div> })}</div>
+                <ImportMocks/>
                 <div class="caps" style="margin:28px 0 12px">"Record the real provider"</div>
                 <div class="callout" style="max-width:900px"><div class="t2">"Each call goes to the provider's sandbox and back: the app gets the real answer and Stuntman keeps the pair, with secrets, card numbers, CPFs and e-mails masked. Stop, review, and the calls become a plugin that no longer needs the sandbox."</div>
                     <div class="row wrap" style="margin-top:10px">
@@ -226,6 +227,42 @@ pub fn NewService() -> impl IntoView {
                         <input class="input mono" style="width:240px" placeholder="payments-partner" prop:value=move || empty_name.get() on:input=move |e| empty_name.set(event_target_value(&e).trim().to_lowercase())/>
                         <button class="btn primary" disabled=move || empty_name.get().is_empty() on:click=move |_| i2("empty".into(), empty_name.get_untracked())>"Create"</button></div></div>
             </div></div>
+        </div>
+    }
+}
+
+/// A11 · services from mocks you already have: a WireMock folder or a folder of WSDLs.
+#[component]
+fn ImportMocks() -> impl IntoView {
+    let src = RwSignal::new(String::new());
+    let group = RwSignal::new("folder".to_string());
+    let result = RwSignal::new(Value::Null);
+    let busy = RwSignal::new(false);
+    let run = move |dry: bool| {
+        let body = json!({"source": src.get_untracked(), "group_by": group.get_untracked(), "dry": dry});
+        busy.set(true);
+        leptos::task::spawn_local(async move {
+            match api::send("POST", "/plugins/import", body).await {
+                Ok(v) => { result.set(v); if !dry { ui::toast("Imported") } }
+                Err(e) => ui::toast_err(e),
+            }
+            busy.set(false);
+        });
+    };
+    view! {
+        <div class="caps" style="margin:28px 0 12px">"From mocks you already have (WireMock, a folder of WSDLs)"</div>
+        <div class="callout" style="max-width:900px"><div class="t2">"A WireMock folder (mappings/ and __files/) becomes services: request patterns become routes (regexes kept), matchers rules, responses answers, delays latency, faults reset or empty, scenarios a switch. WireMock templates keep working. A folder of WSDLs becomes one SOAP service per file."</div>
+            <div class="row wrap" style="margin-top:10px">
+                <input class="input mono" style="width:380px" placeholder="~/acme/mocks/wiremock (on the machine that runs Stuntman)" prop:value=move || src.get() on:input=move |e| src.set(event_target_value(&e))/>
+                <ui::Seg options=vec![("folder", "One service per folder"), ("host", "Per host"), ("one", "Everything in one")] value=Signal::derive(move || group.get()) set=Callback::new(move |v| group.set(v))/>
+                <button class="btn" disabled=move || busy.get() || src.get().is_empty() on:click=move |_| run(true)>"Look first"</button>
+                <button class="btn primary" disabled=move || busy.get() || src.get().is_empty() on:click=move |_| run(false)>"Import"</button></div>
+            {move || { let r = result.get(); (!r.is_null()).then(|| view! {
+                <div class="small t2" style="margin-top:10px">{format!("{} · {} mappings · {} routes · {} services{}", s(&r, "kind"), api::n(&r, "mappings"), api::n(&r, "routes"), r["services"].as_array().map(|a| a.len()).unwrap_or(0), if r["dry"] == true { " (nothing made yet)" } else { "" })}</div>
+                <table class="tbl" style="margin-top:6px"><tr><th>"Service"</th><th>"Routes"</th><th>"Faults"</th><th>"Scenarios"</th><th>"Notes"</th></tr>
+                    {r["services"].as_array().cloned().unwrap_or_default().into_iter().map(|x| view! { <tr><td class="mono">{s(&x, "service")}</td><td class="mono">{api::n(&x, "routes").to_string()}</td>
+                        <td class="mono">{api::n(&x, "faults").to_string()}</td><td class="small">{x["scenarios"].as_array().map(|a| a.iter().map(|v| v.as_str().unwrap_or("").to_string()).collect::<Vec<_>>().join(", ")).unwrap_or_default()}</td>
+                        <td class="small att">{format!("{}{}{}", s(&x, "skipped"), s(&x, "error"), x["gaps"].as_array().map(|g| if g.is_empty() { String::new() } else { format!("{} matcher(s) to write by hand", g.len()) }).unwrap_or_default())}</td></tr> }).collect_view()}</table> }) }}
         </div>
     }
 }

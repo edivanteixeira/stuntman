@@ -61,13 +61,14 @@ pub fn Answers() -> impl IntoView {
     });
     let dirty = Memo::new(move |_| {
         let (a, b) = (saved.get(), draft.get());
-        if b.is_null() { 0 } else if a.is_null() { 1 } else { ["/name", "/status", "/body", "/headers", "/raw", "/sentence", "/fault"].iter().filter(|p| a.pointer(p) != b.pointer(p)).count() }
+        if b.is_null() { 0 } else if a.is_null() { 1 } else { ["/name", "/status", "/body", "/headers", "/raw", "/sentence", "/fault", "/stream", "/stream_format"].iter().filter(|p| a.pointer(p) != b.pointer(p)).count() }
     });
     let save = move |_| {
         let (sv, d, o) = (service.get_untracked(), draft.get_untracked(), saved.get_untracked());
         let name = s(&d, "name");
         let old = if o.is_null() { name.clone() } else { s(&o, "name") };
-        let body = json!({"old_name": old, "status": d["status"], "body": s(&d, "body"), "headers": d["headers"].clone().as_object().cloned().unwrap_or_default(), "raw": d["raw"] == true, "sentence": s(&d, "sentence"), "fault": d["fault"].clone()});
+        let body = json!({"old_name": old, "status": d["status"], "body": s(&d, "body"), "headers": d["headers"].clone().as_object().cloned().unwrap_or_default(), "raw": d["raw"] == true, "sentence": s(&d, "sentence"), "fault": d["fault"].clone(),
+            "stream": d.get("stream").cloned().unwrap_or(Value::Null), "stream_format": s(&d, "stream_format")});
         leptos::task::spawn_local(async move {
             match api::send("PUT", &format!("/plugins/{}/answers/{}", enc(&sv), enc(&name)), body).await {
                 Ok(v) => { err.set(String::new()); saved.set(v["answer"].clone()); draft.set(v["answer"].clone()); sel.set(name); ui::toast("Saved"); load(); }
@@ -137,7 +138,26 @@ pub fn Answers() -> impl IntoView {
                                         <input class="input" placeholder="Coverage exceeded: cargo value {{ body.cargoValue }}" prop:value=s(&d["fault"], "reason") on:change=move |e| draft.update(|x| x["fault"]["reason"] = json!(event_target_value(&e)))/></div>
                                 } })}
                             } })}
-                            <div class="field" style="margin-top:14px"><label>{move || if !soap.get() { "Body" } else if draft.get()["fault"].is_object() { "Detail (XML, from the WSDL's fault type)" } else { "Body (the element inside soap:Body)" }}</label>
+                            {move || (!soap.get()).then(|| { let d = draft.get(); let streamed = d["stream"].as_array().map(|x| !x.is_empty()).unwrap_or(false); view! {
+                                <div class="field" style="margin-top:14px"><label>"Body"</label>
+                                    <div class="row" style="gap:6px">
+                                        <button class="btn small" class:primary=!streamed on:click=move |_| draft.update(|x| x["stream"] = json!([]))>"Fixed · one body"</button>
+                                        <button class="btn small" class:primary=streamed on:click=move |_| draft.update(|x| if x["stream"].as_array().map(|a| a.is_empty()).unwrap_or(true) { x["stream"] = json!([{"event": "message", "data": "{\"part\": 1}"}, {"after": "400ms", "data": "[DONE]"}]) })>"Stream · server-sent events"</button></div></div>
+                                {streamed.then(|| view! {
+                                    <div class="caps small" style="margin-top:10px">"Parts · sent in this order"</div>
+                                    {d["stream"].as_array().cloned().unwrap_or_default().into_iter().enumerate().map(|(i, pt)| view! {
+                                        <div class="row" style="gap:6px;margin-top:6px">
+                                            <input class="input mono" style="width:90px" placeholder="+0 ms" prop:value=s(&pt, "after") on:change=move |e| draft.update(|x| x["stream"][i]["after"] = json!(event_target_value(&e)))/>
+                                            <input class="input mono" style="width:180px" placeholder="event" prop:value=s(&pt, "event") on:change=move |e| draft.update(|x| x["stream"][i]["event"] = json!(event_target_value(&e)))/>
+                                            <input class="input mono grow" placeholder="data (a template)" prop:value=s(&pt, "data") on:change=move |e| draft.update(|x| x["stream"][i]["data"] = json!(event_target_value(&e)))/>
+                                            <button class="link" on:click=move |_| draft.update(|x| { if let Some(a) = x["stream"].as_array_mut() { a.remove(i); } })>"Remove"</button></div> }).collect_view()}
+                                    <button class="link" style="margin-top:6px" on:click=move |_| draft.update(|x| { if let Some(a) = x["stream"].as_array_mut() { a.push(json!({"after": "300ms", "data": ""})) } })>"+ Add a part"</button>
+                                    <div class="row" style="gap:6px;margin-top:10px"><span class="small cap">"Format"</span>
+                                        {[("sse", "SSE · text/event-stream"), ("ndjson", "Lines · NDJSON"), ("chunks", "Chunks · plain")].into_iter().map(|(k, l)| { let cur = s(&d, "stream_format"); view! {
+                                            <button class="btn small" class:primary=(cur == k) || (cur.is_empty() && k == "sse") on:click=move |_| draft.update(|x| x["stream_format"] = json!(k))>{l}</button> } }).collect_view()}</div>
+                                    <div class="small cap" style="margin-top:6px">"Each part is a template. Force “cut” to close the stream halfway, or “slow” to add 2 s between parts."</div> })}
+                            } })}
+                            <div class="field" style="margin-top:14px" class:hidden=move || draft.get()["stream"].as_array().map(|x| !x.is_empty()).unwrap_or(false)><label>{move || if !soap.get() { "Body" } else if draft.get()["fault"].is_object() { "Detail (XML, from the WSDL's fault type)" } else { "Body (the element inside soap:Body)" }}</label>
                                 <textarea class="yaml" style="min-height:220px" prop:value=s(&d, "body") on:input=move |e| draft.update(|x| x["body"] = json!(event_target_value(&e)))></textarea>
                                 <div class="small cap">"{{ … }} fills from the request, the lets and the data. Checked against the route's schema unless malformed on purpose."</div></div>
                             <div class="field" style="margin-top:12px"><label>"Headers"</label>

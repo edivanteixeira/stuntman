@@ -1,16 +1,20 @@
 //! Stuntman UI (Leptos, client-side). The shell is shared; each service brings its own folder of screens.
 
+mod ai;
 mod api;
 mod apis;
 mod catalog;
 mod email;
 mod environments;
+mod events;
+mod ftp;
 mod identity;
 mod keyvault;
 mod messaging;
 mod shell;
 mod sms;
 mod storage;
+mod streams;
 mod telemetry;
 mod timeline;
 mod ui;

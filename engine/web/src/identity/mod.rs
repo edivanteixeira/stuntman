@@ -2,6 +2,7 @@
 //! stand-in first). The provider comes from ?provider= (else the first one).
 
 pub mod apps;
+pub mod protocols;
 pub mod clients;
 pub mod signins;
 pub mod tenant;
@@ -40,7 +41,7 @@ pub fn sel() -> Memo<String> {
 }
 
 pub fn href(tab: &str, provider: &str, extra: &str) -> String {
-    let base = match tab { "users" => "/identity/users", "apps" => "/identity/apps", "tenant" => "/identity/tenant", _ => "/identity" };
+    let base = match tab { "users" => "/identity/users", "apps" => "/identity/apps", "tenant" => "/identity/tenant", "protocols" => "/identity/protocols", _ => "/identity" };
     format!("{base}?provider={}{}", enc(provider), extra)
 }
 
@@ -66,7 +67,7 @@ pub fn Head(active: &'static str, #[prop(into)] right: ViewFn) -> impl IntoView 
     let all = providers();
     let p = sel();
     let cur = Memo::new(move |_| current(&all.get(), Some(p.get())));
-    let tabs: [(&'static str, &'static str); 4] = [("signins", "Sign-ins"), ("users", "Users"), ("apps", "Apps"), ("tenant", "Tenant settings")];
+    let tabs: [(&'static str, &'static str); 5] = [("signins", "Sign-ins"), ("users", "Users"), ("apps", "Apps"), ("protocols", "Protocols"), ("tenant", "Tenant settings")];
     view! {
         <div class="head">
             <div class="top">

@@ -3,6 +3,7 @@
 pub mod area;
 pub mod extractors;
 pub mod inboxes;
+pub mod mailboxes;
 pub mod messages;
 pub mod service;
 

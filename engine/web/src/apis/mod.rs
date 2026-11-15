@@ -5,6 +5,7 @@ pub mod answers;
 pub mod area;
 pub mod auth;
 pub mod calls;
+pub mod mcp;
 pub mod operations;
 pub mod pages;
 pub mod review;
@@ -44,7 +45,7 @@ pub fn PluginHead(service: String, active: &'static str, #[prop(into)] right: Vi
     let list = services();
     let sv = service.clone();
     let cur = Memo::new(move |_| list.get().into_iter().find(|x| s(x, "name") == sv).unwrap_or(Value::Null));
-    let tabs: [(&'static str, &'static str, &'static str); 7] = [("review", "Review", "/review"), ("calls", "Calls", "/calls"), ("routes", "Routes", "/routes"), ("answers", "Answers", "/answers"), ("pages", "Pages", "/pages"), ("auth", "Auth & limits", "/auth"), ("settings", "Settings", "/settings")];
+    let tabs: [(&'static str, &'static str, &'static str); 8] = [("review", "Review", "/review"), ("calls", "Calls", "/calls"), ("routes", "Routes", "/routes"), ("tools", "Tools", "/tools"), ("answers", "Answers", "/answers"), ("pages", "Pages", "/pages"), ("auth", "Auth & limits", "/auth"), ("settings", "Settings", "/settings")];
     // No service in this environment yet: no tabs of a service that does not exist.
     let none = service.is_empty();
     view! {
@@ -62,7 +63,7 @@ pub fn PluginHead(service: String, active: &'static str, #[prop(into)] right: Vi
                     let nav = nav.clone();
                     let sv = cur;
                     view! {
-                        <div class="tab" class:on=active == key class:hidden=move || (key == "pages" && api::n(&sv.get(), "pages") == 0) || (key == "review" && sv.get()["record"].is_null()) on:click=move |_| nav(&format!("/apis/{}{tail}", enc(&s(&sv.get_untracked(), "name"))), Default::default())>
+                        <div class="tab" class:on=active == key class:hidden=move || (key == "pages" && api::n(&sv.get(), "pages") == 0) || (key == "review" && sv.get()["record"].is_null()) || (key == "tools" && sv.get()["mcp"].is_null()) on:click=move |_| nav(&format!("/apis/{}{tail}", enc(&s(&sv.get_untracked(), "name"))), Default::default())>
                             {move || if key == "routes" && !sv.get()["soap"].is_null() { "Operations" } else { label }}<span class="n">{move || match key { "calls" => api::thousands(api::n(&sv.get(), "callsToday")), "routes" if !sv.get()["soap"].is_null() => api::n(&sv.get(), "operations").to_string(), "routes" => api::n(&sv.get(), "routes").to_string(), "answers" => api::n(&sv.get(), "answers").to_string(), "pages" => api::n(&sv.get(), "pages").to_string(), "review" => api::n(&sv.get(), "recorded").to_string(), _ => String::new() }}</span></div>
                     }
                 }).collect_view()}

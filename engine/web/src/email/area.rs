@@ -38,6 +38,7 @@ fn href(tab: &str, n: &str) -> String {
     let n = enc(n);
     match tab {
         "inboxes" => format!("/inboxes?service={n}"),
+        "mailboxes" => "/mailboxes".to_string(),
         "extractors" => format!("/services/email/extractors?service={n}"),
         "settings" => format!("/services/email/s/{n}"),
         _ => format!("/notifications?service={n}"),
@@ -96,7 +97,7 @@ pub fn EmailHead(active: &'static str, #[prop(into)] right: ViewFn, #[prop(optio
     let env = expect_context::<RwSignal<Value>>();
     let list = services();
     let cur = Memo::new(move |_| s(&current(&list.get(), pm.get().get("name").filter(|_| loc.pathname.get().starts_with("/services/email/s/")), qm.get().get("service")), "name"));
-    let tabs: [(&'static str, &'static str); 4] = [("messages", "Messages"), ("inboxes", "Inboxes"), ("extractors", "Extractors"), ("settings", "Settings")];
+    let tabs: [(&'static str, &'static str); 5] = [("messages", "Messages"), ("mailboxes", "Mailboxes"), ("inboxes", "Inboxes"), ("extractors", "Extractors"), ("settings", "Settings")];
     view! {
         <div class="head">
             <div class="top">

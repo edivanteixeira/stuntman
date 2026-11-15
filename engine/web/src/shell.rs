@@ -9,7 +9,7 @@ use leptos_router::{
 };
 use serde_json::Value;
 
-use crate::{api, apis, catalog, email, sms, environments, identity, keyvault, messaging, storage, telemetry, timeline, ui, webhook, whatsapp};
+use crate::{ai, api, apis, catalog, email, events, ftp, sms, streams, environments, identity, keyvault, messaging, storage, telemetry, timeline, ui, webhook, whatsapp};
 
 #[component]
 pub fn App() -> impl IntoView {
@@ -72,6 +72,17 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/apis/:service/review") view=|| view! { <apis::area::Area><apis::review::Review/></apis::area::Area> }/>
                     <Route path=path!("/apis/:service/answers") view=|| view! { <apis::area::Area><apis::answers::Answers/></apis::area::Area> }/>
                     <Route path=path!("/apis/:service/pages") view=|| view! { <apis::area::Area><apis::pages::Pages/></apis::area::Area> }/>
+                    <Route path=path!("/apis/:service/tools") view=|| view! { <apis::area::Area><apis::mcp::Tools/></apis::area::Area> }/>
+                    <Route path=path!("/ai") view=ai::Calls/>
+                    <Route path=path!("/ai/rules") view=ai::Rules/>
+                    <Route path=path!("/ai/spend") view=ai::Spend/>
+                    <Route path=path!("/events") view=events::Events/>
+                    <Route path=path!("/events/plan") view=events::Plan/>
+                    <Route path=path!("/events/people") view=events::People/>
+                    <Route path=path!("/ftp") view=ftp::Files/>
+                    <Route path=path!("/streams") view=streams::Streams/>
+                    <Route path=path!("/mailboxes") view=email::mailboxes::Mailboxes/>
+                    <Route path=path!("/identity/protocols") view=identity::protocols::Protocols/>
                     <Route path=path!("/catalog") view=catalog::Store/>
                     <Route path=path!("/catalog/import") view=catalog::Import/>
                     <Route path=path!("/catalog/:plugin") view=catalog::PluginPage/>
@@ -125,7 +136,8 @@ pub fn App() -> impl IntoView {
 /// the page's own column, with + New on top), then environments and settings. "" = not in this build.
 // Scenarios (B5/B6) is designed but deferred (2026-11-13): it comes back here when built.
 const TOP: [(&str, &str); 2] = [("Timeline", "/timeline"), ("Unmatched", "/apis/unmatched")];
-const KINDS: [(&str, &str); 10] = [("E-mail", "/notifications"), ("WhatsApp", "/whatsapp"), ("SMS", "/sms"), ("Storage", "/files"), ("Queues", "/queues"), ("Key Vault", "/secrets"), ("Identity", "/identity"), ("HTTP APIs", "/apis"), ("Webhooks", "/inboxes/webhooks"), ("Telemetry", "/telemetry")];
+const KINDS: [(&str, &str); 14] = [("E-mail", "/notifications"), ("WhatsApp", "/whatsapp"), ("SMS", "/sms"), ("Storage", "/files"), ("Queues", "/queues"), ("Streams", "/streams"), ("Files", "/ftp"), ("Key Vault", "/secrets"), ("Identity", "/identity"),
+    ("HTTP APIs", "/apis"), ("AI models", "/ai"), ("Events", "/events"), ("Webhooks", "/inboxes/webhooks"), ("Telemetry", "/telemetry")];
 const BOTTOM: [(&str, &str); 3] = [("Environments", "/environments"), ("Catalog", "/catalog"), ("Settings", "")];
 
 /// Which rail entry a path belongs to.
@@ -134,7 +146,11 @@ fn rail_on(path: &str) -> &'static str {
     if path == "/apis/unmatched" { "Unmatched" }
     else if path == "/timeline" { "Timeline" }
     else if any(&["/inboxes/webhooks"]) { "Webhooks" }
-    else if any(&["/notifications", "/inboxes", "/services/email"]) { "E-mail" }
+    else if any(&["/notifications", "/inboxes", "/services/email", "/mailboxes"]) { "E-mail" }
+    else if any(&["/streams"]) { "Streams" }
+    else if any(&["/ftp"]) { "Files" }
+    else if any(&["/ai"]) { "AI models" }
+    else if any(&["/events"]) { "Events" }
     else if any(&["/files", "/services/azure-blob", "/services/s3"]) { "Storage" }
     else if any(&["/apis"]) { "HTTP APIs" }
     else if any(&["/queues"]) { "Queues" }

@@ -16,6 +16,12 @@
 //   groups       two consumers on queue://orders.grp, read in turns (run it with prefetch 1)
 //   produce      send arg as a text message to queue://orders.z (with nms.UseCompression=true, compressed)
 //   drain        consume a queue (arg) until null, printing what came in order
+//   nolocal      a noLocal subscriber on topic://alerts: what its own connection sends does not come
+//                back, what another connection sends does
+//   exclusive    two exclusive consumers on queue://orders.ex: the first takes everything; when it
+//                closes, the second takes over (failover)
+//   poison       a transacted consumer on queue://orders.poison that rolls back every time, until the
+//                client's redelivery policy (6) sends a poison ack
 using Apache.NMS;
 using Apache.NMS.Util;
 
@@ -197,6 +203,49 @@ try
             producer.DeliveryMode = MsgDeliveryMode.Persistent;
             producer.Send(session.CreateTextMessage(arg));
             Console.WriteLine("produced");
+            break;
+        }
+        case "nolocal":
+        {
+            using var session = connection.CreateSession(AcknowledgementMode.AutoAcknowledge);
+            var topic = SessionUtil.GetDestination(session, "topic://alerts");
+            using var sub = session.CreateConsumer(topic, null, true);
+            using (var own = session.CreateProducer(topic)) own.Send(session.CreateTextMessage("own-1"));
+            Check(sub.Receive(TimeSpan.FromSeconds(2)) == null, "noLocal: our own alert does not come back");
+            using (var other = factory.CreateConnection(user, password))
+            {
+                other.Start();
+                using var os = other.CreateSession();
+                using var op = os.CreateProducer(SessionUtil.GetDestination(os, "topic://alerts"));
+                op.Send(os.CreateTextMessage("other-1"));
+            }
+            var got = sub.Receive(TimeSpan.FromSeconds(3)) as ITextMessage;
+            Check(got?.Text == "other-1", "noLocal: another connection's alert comes (" + got?.Text + ")");
+            break;
+        }
+        case "exclusive":
+        {
+            using var s1 = connection.CreateSession(AcknowledgementMode.AutoAcknowledge);
+            using var s2 = connection.CreateSession(AcknowledgementMode.AutoAcknowledge);
+            var c1 = s1.CreateConsumer(SessionUtil.GetDestination(s1, "queue://orders.ex?consumer.exclusive=true"));
+            Thread.Sleep(300);
+            using var c2 = s2.CreateConsumer(SessionUtil.GetDestination(s2, "queue://orders.ex?consumer.exclusive=true"));
+            Check(c2.Receive(TimeSpan.FromSeconds(2)) == null, "exclusive: the second consumer gets nothing while the first is there");
+            int n1 = 0;
+            for (int i = 0; i < 2 && c1.Receive(TimeSpan.FromSeconds(3)) is IMessage m; i++) { n1++; Console.WriteLine("c1 got: " + Show(m)); }
+            c1.Close();
+            int n2 = 0;
+            while (c2.Receive(TimeSpan.FromSeconds(3)) is IMessage m) { n2++; Console.WriteLine("c2 got: " + Show(m)); }
+            Console.WriteLine($"exclusive: c1={n1} c2={n2}");
+            break;
+        }
+        case "poison":
+        {
+            using var txs = connection.CreateSession(AcknowledgementMode.Transactional);
+            using var consumer = txs.CreateConsumer(SessionUtil.GetDestination(txs, "queue://orders.poison"));
+            int n = 0;
+            while (consumer.Receive(TimeSpan.FromSeconds(3)) is IMessage m) { n++; txs.Rollback(); }
+            Console.WriteLine($"poison: received {n} times");
             break;
         }
         case "drain":

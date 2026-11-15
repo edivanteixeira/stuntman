@@ -7,6 +7,7 @@ pub mod amqp;
 pub mod amqp1;
 pub mod broker;
 pub mod config;
+pub mod cron;
 pub mod mgmt;
 pub mod openwire;
 pub mod rabbit;

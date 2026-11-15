@@ -3,7 +3,9 @@ tests/activemq_client): user and password, messages seeded by the partner (activ
 Receive(timeout) until null with auto and client acks, prefetch 0 (MessagePull), a wrong password, the
 provocations refuse_login, drop_after and fail_commits, local transactions (commit and rollback), a durable
 subscriber that disconnects and comes back, selectors (and an invalid one), message groups, JMSPriority order,
-scheduled delivery, expiration and a compressed body, all checked through the tools.
+scheduled delivery (delay, repeat, cron on the environment clock), expiration, a compressed body, noLocal and exclusive
+consumers, and dead letters (expired, past max_redeliveries, poisoned by the client, per-destination DLQ) consumed from
+the DLQ, all checked through the tools. XA, blob messages and the tight encoding are checked with the Java client.
 
     cargo build -p stuntman && python3 tests/e2e_activemq.py
 """
@@ -149,6 +151,53 @@ def main():
             check(code == 0 and z and z[0].get("text", "").startswith('{"order": "ORD-77"') and "compressed" not in z[0]["headers"], "a compressed TextMessage is kept as its plain text")
             code, out = client("acme", "s3cret", "drain", "queue://orders.z")
             check("consumed: 1" in out and "ORD-77" in out, "and dispatched plain to a consumer")
+
+            # noLocal and exclusive consumers (failover when the exclusive one leaves).
+            code, out = client("acme", "s3cret", "nolocal")
+            check(code == 0, "noLocal: the subscriber's own alert is skipped, another connection's comes")
+            check([m["state"] for m in msgs(destination="topic://alerts") if m["text"] == "own-1"] == ["discarded"], "the own alert had no taker: discarded")
+            for i in range(4):
+                s.call("POST", "/activemq/messages", dict(destination="queue://orders.ex", text=f"EX-{i}"))
+            code, out = client("acme", "s3cret", "exclusive", uri=uri + "?nms.PrefetchPolicy.QueuePrefetch=1")
+            check(code == 0 and "exclusive: c1=2 c2=2" in out, "exclusive: the first consumer took the queue, the second took over when it closed")
+
+            # Scheduler: a repeat every 500 ms, and a cron entry on the environment clock.
+            s.call("POST", "/activemq/messages", dict(destination="queue://orders.rep", text="tick", repeat=2, period="500ms"))
+            time.sleep(1.6)
+            check(sorted(m["state"] for m in msgs(destination="queue://orders.rep")) == ["pending"] * 3, "AMQ_SCHEDULED_REPEAT 2: three deliveries, 500 ms apart")
+            nightly = s.call("POST", "/activemq/messages", dict(destination="queue://orders.cron", text="nightly", cron="0 2 * * *"))["seqs"][0]
+            job = msgs(destination="queue://orders.cron")[0]
+            check(job["state"] == "scheduled" and job["schedule"]["cron"] == "0 2 * * *" and job["deliverAt"] % 86_400_000 == 2 * 3_600_000, f"AMQ_SCHEDULED_CRON: scheduled for 02:00 UTC ({job.get('deliverAt')})")
+            s.call("POST", "/clock/advance", {"by": "1d"})
+            cron = msgs(destination="queue://orders.cron")
+            check(sorted(m["state"] for m in cron) == ["pending", "scheduled"] and [m["deliverAt"] for m in cron if m["seq"] == nightly] == [job["deliverAt"] + 86_400_000],
+                  "a day later on the environment clock: one delivery, the next one tomorrow at 02:00")
+            s.call("POST", "/clock/advance", {"reset": True})
+            check(s.call("POST", "/activemq/scheduled/cancel", {"seq": nightly})["cancelled"] == 1, "cancel_activemq_scheduled stops the cron entry")
+
+            # Dead letters, ActiveMQ's way: expired (persistent) and poisoned messages move to ActiveMQ.DLQ.
+            stale = [m for m in msgs(destination="queue://orders.prio") if m["text"] == "stale"][0]
+            check(stale["movedTo"]["destination"] == "queue://ActiveMQ.DLQ", f"the expired message points at its copy in ActiveMQ.DLQ: {stale.get('movedTo')}")
+            s.call("PUT", "/activemq/settings", {"max_redeliveries": 1, "redeliver": 5})
+            s.call("POST", "/activemq/messages", dict(destination="queue://orders.dlq", text="poison-1"))
+            code, out = client("acme", "s3cret", "drain", "queue://orders.dlq")
+            s.call("PUT", "/activemq/settings", {"max_redeliveries": 6, "redeliver": 0})
+            p1 = msgs(destination="queue://orders.dlq")[0]
+            check("consumed: 2" in out and p1["state"] == "dead_letter" and p1["movedTo"]["destination"] == "queue://ActiveMQ.DLQ", f"max_redeliveries 1: after the second delivery it went to the DLQ ({p1['state']}, {p1.get('movedTo')})")
+            s.call("POST", "/activemq/messages", dict(destination="queue://orders.poison", text="bad-1"))
+            code, out = client("acme", "s3cret", "poison")
+            b1 = msgs(destination="queue://orders.poison")[0]
+            check("poison: received 7 times" in out and b1["state"] == "dead_letter" and "movedTo" in b1, f"the client's redelivery policy (6) sent a poison ack: to the DLQ ({out.strip().splitlines()[-1]})")
+            s.call("PUT", "/activemq/settings", {"individual_dlq": True})
+            s.call("POST", "/activemq/messages", dict(destination="queue://orders.ind", text="late", ttl="200ms"))
+            time.sleep(0.4)
+            check(msgs(destination="queue://orders.ind")[0]["movedTo"]["destination"] == "queue://ActiveMQ.DLQ.Queue.orders.ind", "individual_dlq: ActiveMQ.DLQ.Queue.orders.ind")
+            s.call("PUT", "/activemq/settings", {"individual_dlq": False})
+            dlq = msgs(destination="queue://ActiveMQ.DLQ")
+            check(sorted((m["text"], m["headers"]["originalDestination"]) for m in dlq) == [("bad-1", "queue://orders.poison"), ("poison-1", "queue://orders.dlq"), ("stale", "queue://orders.prio")]
+                  and all(m["properties"].get("dlqDeliveryFailureCause") for m in dlq), "ActiveMQ.DLQ holds the three, with their original destination and failure cause")
+            code, out = client("acme", "s3cret", "drain", "queue://ActiveMQ.DLQ")
+            check("consumed: 3" in out, "and the app consumes them from ActiveMQ.DLQ")
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print("ActiveMQ e2e: " + ("ok" if not failed else f"{failed} failed"))

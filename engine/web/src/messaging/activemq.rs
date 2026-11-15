@@ -63,9 +63,11 @@ pub fn ActiveMq() -> impl IntoView {
                         let txs = data.get()["transactions"].as_array().cloned().unwrap_or_default();
                         view! { <table class="tbl"><tr><th>"Consumer"</th><th>"User"</th><th>"Selector"</th><th>"Prefetch"</th><th>"From"</th><th>"Since"</th></tr>
                             {dest()["consumers"].as_array().cloned().unwrap_or_default().into_iter().map(|c| view! { <tr><td class="mono" title=s(&c, "id")>{format!("…{}", s(&c, "id").rsplit('-').next().unwrap_or_default())}
-                                {(!c["durable"].is_null()).then(|| view! { <span class="small cap">{format!("  durable {}", s(&c, "durable"))}</span> })}</td><td>{s(&c, "user")}</td>
+                                {(!c["durable"].is_null()).then(|| view! { <span class="small cap">{format!("  durable {}", s(&c, "durable"))}</span> })}
+                                {c["exclusive"].as_bool().unwrap_or(false).then(|| view! { <span class="small cap">"  exclusive"</span> })}
+                                {c["noLocal"].as_bool().unwrap_or(false).then(|| view! { <span class="small cap">"  noLocal"</span> })}</td><td>{s(&c, "user")}</td>
                                 <td class="mono small">{if s(&c, "selector").is_empty() { "—".to_string() } else { s(&c, "selector") }}</td>
-                                <td class="mono">{n(&c, "prefetch").to_string()}</td><td class="mono">{s(&c, "remote")}</td><td class="mono">{api::hms(n(&c, "since"))}</td></tr> }).collect_view()}</table>
+                                <td class="mono">{n(&c, "prefetch").to_string()}</td><td class="mono">{s(&c, "remote")}<span class="small cap">{format!("  {}", s(&c, "wire"))}</span></td><td class="mono">{api::hms(n(&c, "since"))}</td></tr> }).collect_view()}</table>
                             {dest()["consumers"].as_array().is_none_or(|a| a.is_empty()).then(|| view! { <div class="small cap">"No consumer on this destination now."</div> })}
                             {subs.map(|subs| view! {
                                 <div class="caps" style="margin-top:12px">"Durable subscriptions · kept while offline"</div>
@@ -88,6 +90,13 @@ pub fn ActiveMq() -> impl IntoView {
                                 {msgs.get().into_iter().map(|m| { let state = s(&m, "state"); let cl = match state.as_str() { "pending" => "attn", "acked" => "ok", "dead_letter" | "expired" => "danger", _ => "" };
                                     // A message inside an open transaction says so.
                                     let state = if m["transaction"].is_null() { state } else { format!("{state} · in tx") };
+                                    // Moved to a dead-letter queue: where; a repeating or cron schedule: which.
+                                    let state = match (m["movedTo"].is_null(), m["schedule"]["cron"].as_str().filter(|c| !c.is_empty())) {
+                                        (false, _) => format!("{state} → {} #{}", s(&m["movedTo"], "destination").trim_start_matches("queue://"), n(&m["movedTo"], "seq")),
+                                        (true, Some(c)) => format!("{state} · cron {c}"),
+                                        (true, None) if !m["schedule"].is_null() => format!("{state} · repeats {}", n(&m["schedule"], "left")),
+                                        _ => state,
+                                    };
                                     let body = if m["text"].is_null() { format!("{} bytes (base64)", s(&m, "bodyBase64").len() * 3 / 4) } else { s(&m, "text") };
                                     // A consumer id carries the client's host name: the app, with the id on hover.
                                     let (who, full) = if s(&m, "consumer").is_empty() { (s(&m, "sender"), String::new()) } else { ("app".to_string(), s(&m, "consumer")) };
@@ -118,6 +127,7 @@ pub fn ActiveMq() -> impl IntoView {
                         <button class="btn small" on:click=move |_| set(json!({"users": users.get_untracked().replace(' ', "")}), "Users saved")>"Save users"</button></div>
                     <div class="small cap">{move || if st()["anyUser"].as_bool().unwrap_or(true) { "Empty: any user name and password log in.".to_string() } else { "Only these users log in. Save an empty list to let anyone in.".to_string() }}</div>
                     <div class="mono small cap">{move || format!("brokerURL tcp://localhost:{0}   ·   OpenWire {1}   ·   failover:(tcp://localhost:{0}) works too", n(&data.get(), "port"), n(&data.get(), "openwireVersion"))}</div>
+                    <div class="mono small cap">{move || format!("dead letters → {}   ·   after {} redeliveries   ·   expired persistent messages too", s(&st(), "deadLetterQueue").replace("queue://", ""), n(&st(), "maxRedeliveries"))}</div>
                 </div>
             </div>
         </div>

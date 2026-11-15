@@ -35,6 +35,8 @@ use tokio::{
 };
 
 pub const VERSION: i32 = 10;
+/// The marshal cache size this broker offers (the client's own may be smaller: the lower wins).
+const CACHE_SIZE: i32 = 1024;
 const MAX_FRAME: usize = 64 << 20;
 
 // ================================================================ codec
@@ -45,13 +47,20 @@ pub trait Wire {
     fn reading(&self) -> bool;
     fn room(&self) -> usize;
     fn fail(&mut self);
+    /// A boolean field: a byte in the loose encoding, a bit of the BooleanStream in the tight one.
+    fn bit(&mut self, v: &mut bool);
     fn u8(&mut self, v: &mut u8);
     fn i16(&mut self, v: &mut i16);
     fn i32(&mut self, v: &mut i32);
+    /// A long field: 8 bytes loose; tight, two bits say 0, 2, 4 or 8 bytes (unsigned).
     fn i64(&mut self, v: &mut i64);
     fn raw(&mut self, v: &mut [u8]);
     fn str(&mut self, v: &mut Option<String>);
     fn nested(&mut self, v: &mut Obj);
+    /// A "cached" field (ids, destinations): with the marshal cache on, a new/known flag and a
+    /// cache index come first. This broker always writes the object (a valid choice: the
+    /// receiver stores it under the index), and reads both forms.
+    fn cached(&mut self, v: &mut Obj);
 }
 
 pub trait Field {
@@ -60,8 +69,33 @@ pub trait Field {
 
 pub type Obj = Option<Box<Ds>>;
 pub type Objs = Option<Vec<Obj>>;
+/// Fields the v10 marshallers write with looseMarshalCachedObject / tightMarshalCachedObject.
+pub type C = Obj;
 type S = Option<String>;
 type B = Option<Vec<u8>>;
+type Throwable = Option<BErr>;
+
+/// The negotiated wire format of a connection, and its marshal cache.
+#[derive(Debug, Default)]
+pub struct Fmt {
+    pub tight: bool,
+    pub cache: bool,
+    pub cache_size: u16,
+    next: u16,
+    seen: HashMap<i16, Obj>,
+}
+
+impl Fmt {
+    pub fn name(&self) -> String {
+        format!("{}{}", if self.tight { "tight" } else { "loose" }, if self.cache { "+cache" } else { "" })
+    }
+}
+
+/// Types whose nested form carries one more flag in the tight encoding (MarshallAware: messages
+/// and WireFormatInfo).
+fn marshal_aware(t: u8) -> bool {
+    t == 1 || (23..=29).contains(&t)
+}
 
 impl Field for u8 {
     fn io<W: Wire>(&mut self, w: &mut W) {
@@ -70,9 +104,7 @@ impl Field for u8 {
 }
 impl Field for bool {
     fn io<W: Wire>(&mut self, w: &mut W) {
-        let mut b = *self as u8;
-        w.u8(&mut b);
-        *self = b != 0;
+        w.bit(self)
     }
 }
 impl Field for i32 {
@@ -151,7 +183,7 @@ pub struct BErr {
     pub class: S,
     pub message: S,
 }
-impl Field for Option<BErr> {
+impl Field for Throwable {
     fn io<W: Wire>(&mut self, w: &mut W) {
         let mut some = self.is_some();
         some.io(w);
@@ -169,11 +201,17 @@ pub struct Reader<'a> {
     b: &'a [u8],
     p: usize,
     pub bad: bool,
+    bits: Vec<bool>,
+    bp: usize,
+    f: Option<&'a mut Fmt>,
 }
 
 impl<'a> Reader<'a> {
     pub fn new(b: &'a [u8]) -> Self {
-        Reader { b, p: 0, bad: false }
+        Reader { b, p: 0, bad: false, bits: vec![], bp: 0, f: None }
+    }
+    fn tight(&self) -> bool {
+        self.f.as_ref().is_some_and(|f| f.tight)
     }
     fn take(&mut self, n: usize) -> &'a [u8] {
         if self.bad || self.b.len() - self.p < n {
@@ -189,6 +227,26 @@ impl<'a> Reader<'a> {
         self.i16(&mut n);
         unmutf8(self.take(n as u16 as usize))
     }
+    /// The BooleanStream that starts a tight command: its size (one byte, or 0xC0 and a byte, or
+    /// 0x80 and a short), then the bytes, least significant bit first.
+    fn bool_stream(&mut self) {
+        let mut n = 0u8;
+        self.u8(&mut n);
+        let len = match n {
+            0xc0 => {
+                let mut m = 0u8;
+                self.u8(&mut m);
+                m as usize
+            }
+            0x80 => {
+                let mut m = 0i16;
+                self.i16(&mut m);
+                m as u16 as usize
+            }
+            n => n as usize,
+        };
+        self.bits = self.take(len).iter().flat_map(|b| (0..8).map(move |i| b >> i & 1 == 1)).collect();
+    }
 }
 
 impl Wire for Reader<'_> {
@@ -201,6 +259,19 @@ impl Wire for Reader<'_> {
     fn fail(&mut self) {
         self.bad = true
     }
+    fn bit(&mut self, v: &mut bool) {
+        if self.tight() {
+            match self.bits.get(self.bp) {
+                Some(b) => *v = *b,
+                None => self.bad = true,
+            }
+            self.bp += 1;
+        } else {
+            let mut b = 0u8;
+            self.u8(&mut b);
+            *v = b != 0;
+        }
+    }
     fn u8(&mut self, v: &mut u8) {
         *v = self.take(1).first().copied().unwrap_or(0)
     }
@@ -211,7 +282,19 @@ impl Wire for Reader<'_> {
         *v = self.take(4).try_into().map(i32::from_be_bytes).unwrap_or(0)
     }
     fn i64(&mut self, v: &mut i64) {
-        *v = self.take(8).try_into().map(i64::from_be_bytes).unwrap_or(0)
+        if !self.tight() {
+            *v = self.take(8).try_into().map(i64::from_be_bytes).unwrap_or(0);
+            return;
+        }
+        let (mut a, mut b) = (false, false);
+        self.bit(&mut a);
+        self.bit(&mut b);
+        *v = match (a, b) {
+            (false, false) => 0,
+            (false, true) => self.take(2).try_into().map(u16::from_be_bytes).unwrap_or(0) as i64,
+            (true, false) => self.take(4).try_into().map(u32::from_be_bytes).unwrap_or(0) as i64,
+            (true, true) => self.take(8).try_into().map(i64::from_be_bytes).unwrap_or(0),
+        };
     }
     fn raw(&mut self, v: &mut [u8]) {
         let s = self.take(v.len());
@@ -221,18 +304,31 @@ impl Wire for Reader<'_> {
     }
     fn str(&mut self, v: &mut Option<String>) {
         let mut some = false;
-        some.io(self);
+        self.bit(&mut some);
+        if some && self.tight() {
+            // The "only ASCII" flag: both forms are a short length and the bytes.
+            let mut ascii = false;
+            self.bit(&mut ascii);
+        }
         *v = if some { Some(self.utf()) } else { None };
     }
     fn nested(&mut self, v: &mut Obj) {
         let mut some = false;
-        some.io(self);
+        self.bit(&mut some);
         *v = None;
         if !some {
             return;
         }
         let mut t = 0u8;
         self.u8(&mut t);
+        if self.tight() && marshal_aware(t) {
+            // A cached marshalled form: Java never sends one.
+            let mut cached = false;
+            self.bit(&mut cached);
+            if cached {
+                return self.fail();
+            }
+        }
         match Ds::new(t) {
             Some(mut d) => {
                 d.io(self);
@@ -241,12 +337,36 @@ impl Wire for Reader<'_> {
             None => self.bad = true,
         }
     }
+    fn cached(&mut self, v: &mut Obj) {
+        if !self.f.as_ref().is_some_and(|f| f.cache) {
+            return self.nested(v);
+        }
+        let mut new = false;
+        self.bit(&mut new);
+        let mut i = 0i16;
+        self.i16(&mut i);
+        if new {
+            self.nested(v);
+            let o = v.clone();
+            if let Some(f) = self.f.as_mut() {
+                f.seen.insert(i, o);
+            }
+        } else {
+            match self.f.as_ref().and_then(|f| f.seen.get(&i)) {
+                Some(o) => *v = o.clone(),
+                None => self.bad = true,
+            }
+        }
+    }
 }
 
 #[derive(Default)]
-pub struct Writer(pub Vec<u8>);
+pub struct Writer<'a>(pub Vec<u8>, Vec<bool>, Option<&'a mut Fmt>);
 
-impl Writer {
+impl Writer<'_> {
+    fn tight(&self) -> bool {
+        self.2.as_ref().is_some_and(|f| f.tight)
+    }
     fn utf(&mut self, s: &str) {
         let b = mutf8(s);
         let n = b.len().min(u16::MAX as usize);
@@ -255,7 +375,19 @@ impl Writer {
     }
 }
 
-impl Wire for Writer {
+/// A BooleanStream: its byte count (see Reader::bool_stream), then the bits, LSB first.
+fn bool_stream(bits: &[bool]) -> Vec<u8> {
+    let n = bits.len().div_ceil(8);
+    let mut o = match n {
+        0..64 => vec![n as u8],
+        64..256 => vec![0xc0, n as u8],
+        _ => vec![0x80, (n >> 8) as u8, n as u8],
+    };
+    o.extend(bits.chunks(8).map(|c| c.iter().enumerate().fold(0u8, |a, (i, b)| a | ((*b as u8) << i))));
+    o
+}
+
+impl Wire for Writer<'_> {
     fn reading(&self) -> bool {
         false
     }
@@ -263,6 +395,13 @@ impl Wire for Writer {
         usize::MAX
     }
     fn fail(&mut self) {}
+    fn bit(&mut self, v: &mut bool) {
+        if self.tight() {
+            self.1.push(*v)
+        } else {
+            self.0.push(*v as u8)
+        }
+    }
     fn u8(&mut self, v: &mut u8) {
         self.0.push(*v)
     }
@@ -273,23 +412,51 @@ impl Wire for Writer {
         self.0.extend(v.to_be_bytes())
     }
     fn i64(&mut self, v: &mut i64) {
-        self.0.extend(v.to_be_bytes())
+        if !self.tight() {
+            return self.0.extend(v.to_be_bytes());
+        }
+        let x = *v as u64;
+        let (a, b) = if x == 0 { (false, false) } else if x >> 16 == 0 { (false, true) } else if x >> 32 == 0 { (true, false) } else { (true, true) };
+        self.1.extend([a, b]);
+        match (a, b) {
+            (false, false) => {}
+            (false, true) => self.0.extend((x as u16).to_be_bytes()),
+            (true, false) => self.0.extend((x as u32).to_be_bytes()),
+            (true, true) => self.0.extend(x.to_be_bytes()),
+        }
     }
     fn raw(&mut self, v: &mut [u8]) {
         self.0.extend_from_slice(v)
     }
     fn str(&mut self, v: &mut Option<String>) {
-        self.0.push(v.is_some() as u8);
+        let mut some = v.is_some();
+        self.bit(&mut some);
         if let Some(s) = v {
+            if self.tight() {
+                self.1.push(s.encode_utf16().all(|c| (1..=0x7f).contains(&c)));
+            }
             self.utf(s);
         }
     }
     fn nested(&mut self, v: &mut Obj) {
-        self.0.push(v.is_some() as u8);
+        let mut some = v.is_some();
+        self.bit(&mut some);
         if let Some(d) = v {
+            if self.tight() && marshal_aware(d.typ()) {
+                self.1.push(false);
+            }
             self.0.push(d.typ());
             d.io(self);
         }
+    }
+    fn cached(&mut self, v: &mut Obj) {
+        let Some(f) = self.2.as_mut().filter(|f| f.cache) else { return self.nested(v) };
+        let mut i = (f.next % f.cache_size.max(1)) as i16;
+        f.next = f.next.wrapping_add(1) % f.cache_size.max(1);
+        let mut new = true;
+        self.bit(&mut new);
+        self.i16(&mut i);
+        self.nested(v);
     }
 }
 
@@ -334,13 +501,22 @@ pub fn unmutf8(b: &[u8]) -> String {
     String::from_utf16_lossy(&u)
 }
 
+macro_rules! fio {
+    ($w:ident, $e:expr, C) => {
+        $w.cached(&mut $e)
+    };
+    ($w:ident, $e:expr, $t:tt) => {
+        $e.io($w)
+    };
+}
+
 macro_rules! fields {
-    ($($name:ident { $($f:ident : $t:ty),* $(,)? })*) => {$(
+    ($($name:ident { $($f:ident : $t:tt),* $(,)? })*) => {$(
         #[derive(Clone, Debug, Default, PartialEq)]
         pub struct $name { $(pub $f: $t),* }
         impl Field for $name {
             #[allow(unused_variables)]
-            fn io<W: Wire>(&mut self, w: &mut W) { $(self.$f.io(w);)* }
+            fn io<W: Wire>(&mut self, w: &mut W) { $(fio!(w, self.$f, $t);)* }
         }
     )*};
 }
@@ -364,34 +540,35 @@ fields! {
     Hdr { id: i32, resp: bool }
     Plain { h: Hdr }
     WireFormatInfo { magic: [u8; 8], version: i32, props: B }
-    BrokerInfo { h: Hdr, broker_id: Obj, url: S, peers: Objs, name: S, slave: bool, master: bool, fault_tolerant: bool, duplex: bool, network: bool, connection_id: i64, upload_url: S, network_props: S }
-    ConnectionInfo { h: Hdr, connection_id: Obj, client_id: S, password: S, user: S, broker_path: Objs, broker_master: bool, manageable: bool, client_master: bool, fault_tolerant: bool, failover_reconnect: bool, client_ip: S }
-    SessionInfo { h: Hdr, session_id: Obj }
-    ConsumerInfo { h: Hdr, consumer_id: Obj, browser: bool, destination: Obj, prefetch: i32, max_pending: i32, dispatch_async: bool, selector: S, client_id: S, subscription: S,
+    BrokerInfo { h: Hdr, broker_id: C, url: S, peers: Objs, name: S, slave: bool, master: bool, fault_tolerant: bool, duplex: bool, network: bool, connection_id: i64, upload_url: S, network_props: S }
+    ConnectionInfo { h: Hdr, connection_id: C, client_id: S, password: S, user: S, broker_path: Objs, broker_master: bool, manageable: bool, client_master: bool, fault_tolerant: bool, failover_reconnect: bool, client_ip: S }
+    SessionInfo { h: Hdr, session_id: C }
+    ConsumerInfo { h: Hdr, consumer_id: C, browser: bool, destination: C, prefetch: i32, max_pending: i32, dispatch_async: bool, selector: S, client_id: S, subscription: S,
         no_local: bool, exclusive: bool, retroactive: bool, priority: u8, broker_path: Objs, predicate: Obj, network_subscription: bool, optimized_ack: bool, no_range_acks: bool, network_consumer_path: Objs }
-    ProducerInfo { h: Hdr, producer_id: Obj, destination: Obj, broker_path: Objs, dispatch_async: bool, window: i32 }
-    TransactionInfo { h: Hdr, connection_id: Obj, tx: Obj, kind: u8 }
-    DestinationInfo { h: Hdr, connection_id: Obj, destination: Obj, op: u8, timeout: i64, broker_path: Objs }
-    RemoveSubscriptionInfo { h: Hdr, connection_id: Obj, subscription: S, client_id: S }
-    RemoveInfo { h: Hdr, object_id: Obj, last_delivered: i64 }
+    ProducerInfo { h: Hdr, producer_id: C, destination: C, broker_path: Objs, dispatch_async: bool, window: i32 }
+    TransactionInfo { h: Hdr, connection_id: C, tx: C, kind: u8 }
+    DestinationInfo { h: Hdr, connection_id: C, destination: C, op: u8, timeout: i64, broker_path: Objs }
+    RemoveSubscriptionInfo { h: Hdr, connection_id: C, subscription: S, client_id: S }
+    RemoveInfo { h: Hdr, object_id: C, last_delivered: i64 }
     ControlCommand { h: Hdr, command: S }
-    ConnectionError { h: Hdr, error: Option<BErr>, connection_id: Obj }
+    ConnectionError { h: Hdr, error: Throwable, connection_id: Obj }
     ConsumerControl { h: Hdr, destination: Obj, close: bool, consumer_id: Obj, prefetch: i32, flush: bool, start: bool, stop: bool }
     ConnectionControl { h: Hdr, close: bool, exit: bool, fault_tolerant: bool, resume: bool, suspend: bool, connected_brokers: S, reconnect_to: S, rebalance: bool, token: B }
     ProducerAck { h: Hdr, producer_id: Obj, size: i32 }
-    MessagePull { h: Hdr, consumer_id: Obj, destination: Obj, timeout: i64, correlation_id: S, message_id: Obj }
-    MessageDispatch { h: Hdr, consumer_id: Obj, destination: Obj, message: Obj, redelivery: i32 }
-    MessageAck { h: Hdr, destination: Obj, tx: Obj, consumer_id: Obj, ack_type: u8, first: Obj, last: Obj, count: i32, poison: Option<BErr> }
-    Msg { h: Hdr, producer_id: Obj, destination: Obj, tx: Obj, original_destination: Obj, message_id: Obj, original_tx: Obj, group_id: S, group_seq: i32, correlation_id: S,
-        persistent: bool, expiration: i64, priority: u8, reply_to: Obj, timestamp: i64, kind: S, content: B, props: B, data_structure: Obj, target_consumer: Obj, compressed: bool,
+    MessagePull { h: Hdr, consumer_id: C, destination: C, timeout: i64, correlation_id: S, message_id: Obj }
+    MessageDispatch { h: Hdr, consumer_id: C, destination: C, message: Obj, redelivery: i32 }
+    MessageAck { h: Hdr, destination: C, tx: C, consumer_id: C, ack_type: u8, first: Obj, last: Obj, count: i32, poison: Throwable }
+    Msg { h: Hdr, producer_id: C, destination: C, tx: C, original_destination: C, message_id: Obj, original_tx: C, group_id: S, group_seq: i32, correlation_id: S,
+        persistent: bool, expiration: i64, priority: u8, reply_to: Obj, timestamp: i64, kind: S, content: B, props: B, data_structure: Obj, target_consumer: C, compressed: bool,
         redelivery: i32, broker_path: Objs, arrival: i64, user_id: S, df_bridge: bool, droppable: bool, cluster: Objs, broker_in: i64, broker_out: i64, group_first: bool }
+    BlobMsg { m: Msg, url: S, mime: S, deleted: bool }
     Response { h: Hdr, correlation_id: i32 }
-    ExceptionResponse { h: Hdr, correlation_id: i32, error: Option<BErr> }
-    Dest { name: S }
+    ExceptionResponse { h: Hdr, correlation_id: i32, error: Throwable }
     IntegerResponse { h: Hdr, correlation_id: i32, result: i32 }
     DataArrayResponse { h: Hdr, correlation_id: i32, data: Objs }
-    MessageId { text: S, producer_id: Obj, producer_seq: i64, broker_seq: i64 }
-    LocalTxId { value: i64, connection_id: Obj }
+    Dest { name: S }
+    MessageId { text: S, producer_id: C, producer_seq: i64, broker_seq: i64 }
+    LocalTxId { value: i64, connection_id: C }
     XaTxId { format_id: i32, gtid: B, bq: B }
     StrId { value: S }
     SessionId { connection: S, value: i64 }
@@ -405,29 +582,60 @@ types! {
     KeepAliveInfo = 10: Plain, ShutdownInfo = 11: Plain, RemoveInfo = 12: RemoveInfo, ControlCommand = 14: ControlCommand, FlushCommand = 15: Plain,
     ConnectionError = 16: ConnectionError, ConsumerControl = 17: ConsumerControl, ConnectionControl = 18: ConnectionControl, ProducerAck = 19: ProducerAck,
     MessagePull = 20: MessagePull, MessageDispatch = 21: MessageDispatch, MessageAck = 22: MessageAck,
-    Message = 23: Msg, BytesMessage = 24: Msg, MapMessage = 25: Msg, ObjectMessage = 26: Msg, StreamMessage = 27: Msg, TextMessage = 28: Msg,
+    Message = 23: Msg, BytesMessage = 24: Msg, MapMessage = 25: Msg, ObjectMessage = 26: Msg, StreamMessage = 27: Msg, TextMessage = 28: Msg, BlobMessage = 29: BlobMsg,
     Response = 30: Response, ExceptionResponse = 31: ExceptionResponse, DataArrayResponse = 33: DataArrayResponse, IntegerResponse = 34: IntegerResponse,
     Queue = 100: Dest, Topic = 101: Dest, TempQueue = 102: Dest, TempTopic = 103: Dest,
     MessageId = 110: MessageId, LocalTxId = 111: LocalTxId, XaTxId = 112: XaTxId, ConnectionId = 120: StrId, SessionId = 121: SessionId, ConsumerId = 122: ConsumerId, ProducerId = 123: ProducerId, BrokerId = 124: StrId,
 }
 
-/// A frame: int size (of what follows), the type byte, the fields.
+/// A frame: int size (of what follows), the type byte, the fields (loose encoding).
 pub fn encode(d: &mut Ds) -> Vec<u8> {
-    let mut w = Writer(vec![0; 4]);
-    w.0.push(d.typ());
+    encode_with(d, None)
+}
+
+/// A frame in the connection's format: tight puts the BooleanStream between the type and the data.
+pub fn encode_with(d: &mut Ds, f: Option<&mut Fmt>) -> Vec<u8> {
+    let mut w = Writer(vec![], vec![], f);
     d.io(&mut w);
-    let n = (w.0.len() - 4) as u32;
-    w.0[..4].copy_from_slice(&n.to_be_bytes());
-    w.0
+    let mut o = vec![0, 0, 0, 0, d.typ()];
+    if w.tight() {
+        o.extend(bool_stream(&w.1));
+    }
+    o.extend(w.0);
+    let n = (o.len() - 4) as u32;
+    o[..4].copy_from_slice(&n.to_be_bytes());
+    o
 }
 
 /// A frame without its size prefix. Trailing bytes (fields of a later version) are ignored.
 pub fn decode(b: &[u8]) -> Option<Ds> {
+    decode_with(b, None)
+}
+
+pub fn decode_with(b: &[u8], f: Option<&mut Fmt>) -> Option<Ds> {
     let (&t, rest) = b.split_first()?;
     let mut d = Ds::new(t)?;
-    let mut r = Reader::new(rest);
+    let mut r = Reader { f, ..Reader::new(rest) };
+    if r.tight() {
+        r.bool_stream();
+    }
     d.io(&mut r);
     (!r.bad).then_some(d)
+}
+
+/// The command id and responseRequired of a frame this broker could not read, to answer it.
+fn peek(b: &[u8], tight: bool) -> (i32, bool) {
+    let mut r = Reader::new(b.get(1..).unwrap_or_default());
+    let (mut id, mut resp) = (0, false);
+    if tight {
+        r.bool_stream();
+        resp = r.bits.first().copied().unwrap_or(false);
+        r.i32(&mut id);
+    } else {
+        r.i32(&mut id);
+        r.bit(&mut resp);
+    }
+    (id, resp)
 }
 
 /// TextMessage content: int length, modified UTF-8 (-1: null).
@@ -450,7 +658,7 @@ pub fn content_text(c: &[u8]) -> String {
 
 /// Message properties and WireFormatInfo options: the "primitive map" of MarshallingSupport.
 pub fn map_encode(m: &Map<String, Value>) -> Vec<u8> {
-    let mut w = Writer::default();
+    let mut w = Writer(vec![], vec![], None);
     w.0.extend((m.len() as i32).to_be_bytes());
     for (k, v) in m {
         w.utf(k);
@@ -583,12 +791,13 @@ CREATE TABLE IF NOT EXISTS amq_messages(seq INTEGER PRIMARY KEY AUTOINCREMENT, d
   message_id TEXT NOT NULL DEFAULT '', body BLOB NOT NULL, props TEXT NOT NULL DEFAULT '{}', headers TEXT NOT NULL DEFAULT '{}', state TEXT NOT NULL,
   consumer TEXT NOT NULL DEFAULT '', redelivered INTEGER NOT NULL DEFAULT 0, enqueued_at INTEGER NOT NULL, delivered_at INTEGER, acked_at INTEGER,
   sender TEXT NOT NULL DEFAULT '', via TEXT NOT NULL DEFAULT '', tx TEXT NOT NULL DEFAULT '', priority INTEGER NOT NULL DEFAULT 4,
-  deliver_at INTEGER NOT NULL DEFAULT 0, expires_at INTEGER NOT NULL DEFAULT 0, grp TEXT NOT NULL DEFAULT '');
+  deliver_at INTEGER NOT NULL DEFAULT 0, expires_at INTEGER NOT NULL DEFAULT 0, grp TEXT NOT NULL DEFAULT '', origin TEXT NOT NULL DEFAULT '',
+  job TEXT NOT NULL DEFAULT '', moved_to INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS amq_pending ON amq_messages(dest, state, seq);
 CREATE TABLE IF NOT EXISTS amq_destinations(name TEXT PRIMARY KEY, created_at INTEGER NOT NULL, created_by TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS amq_settings(id INTEGER PRIMARY KEY, v TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS amq_durable(id TEXT PRIMARY KEY, client_id TEXT NOT NULL, name TEXT NOT NULL, dest TEXT NOT NULL, selector TEXT NOT NULL DEFAULT '',
-  created_at INTEGER NOT NULL, last_seen INTEGER NOT NULL);
+  created_at INTEGER NOT NULL, last_seen INTEGER NOT NULL, no_local TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS amq_tx(id TEXT PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL, xa_format INTEGER, xa_gtid BLOB, xa_bq BLOB,
   conn TEXT NOT NULL DEFAULT '', user TEXT NOT NULL DEFAULT '', sends INTEGER NOT NULL DEFAULT 0, acks INTEGER NOT NULL DEFAULT 0, started_at INTEGER NOT NULL, ended_at INTEGER);
 ";
@@ -596,13 +805,76 @@ CREATE TABLE IF NOT EXISTS amq_tx(id TEXT PRIMARY KEY, kind TEXT NOT NULL, state
 /// Columns added after 0.5.0: an environment created by 0.5.0 gets them here (on newer ones the
 /// ALTER fails and is ignored), then the indexes that use them.
 pub fn upgrade(db: &stuntman_core::store::Db) {
-    for col in ["tx TEXT NOT NULL DEFAULT ''", "priority INTEGER NOT NULL DEFAULT 4", "deliver_at INTEGER NOT NULL DEFAULT 0", "expires_at INTEGER NOT NULL DEFAULT 0", "grp TEXT NOT NULL DEFAULT ''"] {
+    for col in ["tx TEXT NOT NULL DEFAULT ''", "priority INTEGER NOT NULL DEFAULT 4", "deliver_at INTEGER NOT NULL DEFAULT 0", "expires_at INTEGER NOT NULL DEFAULT 0", "grp TEXT NOT NULL DEFAULT ''", "origin TEXT NOT NULL DEFAULT ''", "job TEXT NOT NULL DEFAULT ''", "moved_to INTEGER NOT NULL DEFAULT 0"] {
         let _ = db.migrate(&format!("ALTER TABLE amq_messages ADD COLUMN {col}"));
     }
+    let _ = db.migrate("ALTER TABLE amq_durable ADD COLUMN no_local TEXT NOT NULL DEFAULT ''");
     let _ = db.migrate("CREATE INDEX IF NOT EXISTS amq_ready ON amq_messages(dest, state, priority DESC, seq); CREATE INDEX IF NOT EXISTS amq_timed ON amq_messages(state, deliver_at); CREATE INDEX IF NOT EXISTS amq_txs ON amq_messages(tx)");
 }
 
 pub const STATES: [&str; 8] = ["scheduled", "pending", "delivered", "acked", "dead_letter", "expired", "rolled_back", "discarded"];
+
+/// The shared dead-letter queue, as ActiveMQ names it.
+pub const DLQ: &str = "queue://ActiveMQ.DLQ";
+
+fn dlq_for(dest: &str, individual: bool) -> String {
+    match dest.split_once("://") {
+        Some((scheme, name)) if individual => format!("queue://ActiveMQ.DLQ.{}.{name}", if scheme.contains("topic") { "Topic" } else { "Queue" }),
+        _ => DLQ.into(),
+    }
+}
+
+/// Settles one message as dead_letter or expired, ActiveMQ's way: a copy goes to the dead-letter
+/// queue (with dlqDeliveryFailureCause and its original destination) and the original points at
+/// it. An expired non-persistent message is only dropped; one already on a DLQ stays there.
+fn dead_letter(c: &rusqlite::Connection, seq: i64, state: &str, cause: &str, individual: bool, now: i64) -> rusqlite::Result<Option<String>> {
+    let Some((dest, headers, props)) = c.query_row("SELECT dest, headers, props FROM amq_messages WHERE seq=?1", [seq], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).optional()? else {
+        return Ok(None);
+    };
+    let mut hd: Map<String, Value> = serde_json::from_str(&headers).unwrap_or_default();
+    let persistent = hd.get("persistent").and_then(|v| v.as_bool()).unwrap_or(true);
+    if dest.contains("ActiveMQ.DLQ") || (state == "expired" && !persistent) {
+        c.execute("UPDATE amq_messages SET state=?2, acked_at=?3, tx='' WHERE seq=?1", params![seq, state, now])?;
+        return Ok(None);
+    }
+    let to = dlq_for(&dest, individual);
+    let mut pr: Map<String, Value> = serde_json::from_str(&props).unwrap_or_default();
+    pr.insert("dlqDeliveryFailureCause".into(), json!(cause));
+    hd.insert("originalDestination".into(), json!(dest));
+    hd.insert("originalSeq".into(), json!(seq));
+    hd.remove("expiration");
+    c.execute(
+        "INSERT INTO amq_messages(dest, target, kind, message_id, body, props, headers, state, enqueued_at, sender, via, priority, grp, origin)
+         SELECT ?2, '', kind, message_id, body, ?3, ?4, 'pending', ?5, sender, via, priority, grp, origin FROM amq_messages WHERE seq=?1",
+        params![seq, to, Value::Object(pr).to_string(), Value::Object(hd).to_string(), now],
+    )?;
+    let copy = c.last_insert_rowid();
+    c.execute("UPDATE amq_messages SET state=?2, acked_at=?3, tx='', moved_to=?4 WHERE seq=?1", params![seq, state, now, copy])?;
+    c.execute("INSERT OR IGNORE INTO amq_destinations(name, created_at, created_by) VALUES(?1, ?2, 'broker')", params![to, now])?;
+    Ok(Some(to))
+}
+
+/// After a redelivery: past the redelivery limit, the message goes to the dead-letter queue.
+fn over_limit(c: &rusqlite::Connection, seq: i64, s: &Settings, now: i64) -> rusqlite::Result<()> {
+    let max = s.max_redeliveries();
+    let n: i64 = c.query_row("SELECT redelivered FROM amq_messages WHERE seq=?1", [seq], |r| r.get(0)).optional()?.unwrap_or(0);
+    if max >= 0 && n > max {
+        dead_letter(c, seq, "dead_letter", &format!("Delivery[{}] exceeds redelivery policy limit: maximumRedeliveries = {max}", n + 1), s.individual_dlq, now)?;
+    }
+    Ok(())
+}
+
+/// A repeating or cron schedule (AMQ_SCHEDULED_PERIOD / _REPEAT / _CRON).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Job {
+    pub period: i64,
+    pub repeat: i64,
+    /// Deliveries still due in the current series.
+    pub left: i64,
+    pub cron: String,
+    pub delay: i64,
+}
 
 /// What set_activemq changes. Empty users: any user name and password log in.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -614,16 +886,25 @@ pub struct Settings {
     pub slow_dispatch_ms: u64,
     pub redeliver: u64,
     pub fail_commits: u64,
+    /// Deliveries after the first before a message goes to the dead-letter queue (None: 6, as
+    /// ActiveMQ's redelivery policy; -1: never).
+    pub max_redeliveries: Option<i64>,
+    /// ActiveMQ.DLQ.Queue.<name> / ActiveMQ.DLQ.Topic.<name> instead of the shared ActiveMQ.DLQ.
+    pub individual_dlq: bool,
+}
+
+impl Settings {
+    pub fn max_redeliveries(&self) -> i64 {
+        self.max_redeliveries.unwrap_or(6)
+    }
+}
+
+fn settings_sync(c: &rusqlite::Connection) -> Settings {
+    c.query_row("SELECT v FROM amq_settings WHERE id=1", [], |r| r.get::<_, String>(0)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
 }
 
 pub async fn settings(ctx: &Ctx) -> Settings {
-    ctx.db
-        .call(|c| c.query_row("SELECT v FROM amq_settings WHERE id=1", [], |r| r.get::<_, String>(0)).optional())
-        .await
-        .ok()
-        .flatten()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    ctx.db.call(|c| Ok(settings_sync(c))).await.unwrap_or_default()
 }
 
 async fn save(ctx: &Ctx, s: &Settings) -> Result<(), ApiError> {
@@ -656,6 +937,17 @@ struct Live {
     remote: String,
     user: String,
     since: i64,
+    /// noLocal: not the messages its own connection (this id) sent.
+    no_local: Option<String>,
+    exclusive: bool,
+    /// The negotiated wire format: "loose", "loose+cache", "tight" or "tight+cache".
+    wire: String,
+}
+
+/// Connections logged in now: env, remote, user, client id, wire format, since.
+fn conns() -> &'static Mutex<Vec<(String, String, String, String, String, i64)>> {
+    static C: OnceLock<Mutex<Vec<(String, String, String, String, String, i64)>>> = OnceLock::new();
+    C.get_or_init(Default::default)
 }
 
 fn live() -> &'static Mutex<Vec<Live>> {
@@ -708,11 +1000,61 @@ fn row_selects(s: &Sel, r: &Row) -> bool {
     selects(s, &hd, &props, &r.message_id, r.redelivered)
 }
 
-/// Scheduled messages whose time came become pending; pending ones past their JMSExpiration, expired.
-fn promote(c: &rusqlite::Connection) -> rusqlite::Result<usize> {
-    let now = util::now_ms();
-    Ok(c.execute("UPDATE amq_messages SET state='pending' WHERE state='scheduled' AND deliver_at<=?1", [now])?
-        + c.execute("UPDATE amq_messages SET state='expired', acked_at=?1 WHERE state='pending' AND expires_at>0 AND expires_at<=?1", [now])?)
+/// Time-driven changes, on the environment's clock (`now`): scheduled messages whose time came
+/// become pending, repeating and cron schedules put a copy out each time, and pending messages past
+/// their JMSExpiration expire (to the dead-letter queue when persistent).
+fn promote(c: &rusqlite::Connection, now: i64) -> rusqlite::Result<usize> {
+    let mut n = c.execute("UPDATE amq_messages SET state='pending' WHERE state='scheduled' AND job='' AND deliver_at<=?1", [now])?;
+    let due: Vec<(i64, String, i64)> = c.prepare("SELECT seq, job, deliver_at FROM amq_messages WHERE state='scheduled' AND job<>'' AND deliver_at<=?1")?.query_map([now], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<Result<_, _>>()?;
+    for (seq, job, mut at) in due {
+        let mut j: Job = serde_json::from_str(&job).unwrap_or_default();
+        let cron = (!j.cron.is_empty()).then(|| crate::cron::parse(&j.cron).ok()).flatten();
+        // ponytail: catches up at most 100 missed deliveries per sweep (a clock moved far ahead).
+        for _ in 0..100 {
+            if at > now {
+                break;
+            }
+            n += 1;
+            if cron.is_none() && j.left <= 0 {
+                // The last one of a plain repeat is the scheduled message itself.
+                c.execute("UPDATE amq_messages SET state='pending', job='' WHERE seq=?1", [seq])?;
+                at = i64::MAX;
+                break;
+            }
+            c.execute(
+                "INSERT INTO amq_messages(dest, target, kind, message_id, body, props, headers, state, enqueued_at, sender, via, priority, expires_at, grp, origin)
+                 SELECT dest, target, kind, '', body, props, headers, 'pending', ?2, sender, via, priority, expires_at, grp, origin FROM amq_messages WHERE seq=?1",
+                params![seq, util::now_ms()],
+            )?;
+            let copy = c.last_insert_rowid();
+            c.execute("UPDATE amq_messages SET message_id=?1 WHERE seq=?2", params![format!("ID:stuntman-{}-0:0:0:{copy}", port()), copy])?;
+            if j.left > 0 {
+                j.left -= 1;
+                at += j.period.max(0);
+            } else if let Some(cr) = &cron {
+                j.left = j.repeat.max(0);
+                match cr.next(at) {
+                    Some(t) => at = t + j.delay,
+                    None => {
+                        c.execute("UPDATE amq_messages SET state='discarded', job='' WHERE seq=?1", [seq])?;
+                        at = i64::MAX;
+                        break;
+                    }
+                }
+            }
+        }
+        if at != i64::MAX {
+            c.execute("UPDATE amq_messages SET deliver_at=?2, job=?3 WHERE seq=?1", params![seq, at, serde_json::to_string(&j).unwrap_or_default()])?;
+        }
+    }
+    let expired: Vec<i64> = c.prepare("SELECT seq FROM amq_messages WHERE state='pending' AND expires_at>0 AND expires_at<=?1")?.query_map([now], |r| r.get(0))?.collect::<Result<_, _>>()?;
+    if !expired.is_empty() {
+        let s = settings_sync(c);
+        for seq in &expired {
+            dead_letter(c, *seq, "expired", "The message expired", s.individual_dlq, util::now_ms())?;
+        }
+    }
+    Ok(n + expired.len())
 }
 
 /// "queue://positions", "topic://prices", "temp-queue://ID:…"; a bare name is a queue.
@@ -827,6 +1169,8 @@ pub struct NewMsg {
     pub via: String,
     /// The transaction it was sent in: invisible until the commit.
     pub tx: String,
+    /// The sending connection's id (noLocal subscribers skip it); empty for the tools.
+    pub origin: String,
 }
 
 /// Puts a message on a queue, or a copy for each subscriber of a topic whose selector takes it:
@@ -839,10 +1183,14 @@ pub async fn publish(ctx: &Ctx, m: NewMsg) -> Result<Vec<i64>, ApiError> {
     if topic {
         let env = ctx.env.to_string();
         let takes = |s: &Option<Arc<Sel>>| s.as_ref().is_none_or(|s| selects(s, &m.headers, &m.props, &m.message_id, 0));
-        targets = live().lock().unwrap().iter().filter(|l| l.env == env && l.dest == m.dest && l.durable.is_none() && takes(&l.sel)).map(|l| l.key.clone()).collect();
+        let mine = |nl: Option<&str>| !m.origin.is_empty() && nl == Some(m.origin.as_str());
+        targets = live().lock().unwrap().iter().filter(|l| l.env == env && l.dest == m.dest && l.durable.is_none() && takes(&l.sel) && !mine(l.no_local.as_deref())).map(|l| l.key.clone()).collect();
         let d = m.dest.clone();
-        let subs: Vec<(String, String)> = ctx.db.call(move |c| c.prepare("SELECT id, selector FROM amq_durable WHERE dest=?1 ORDER BY id")?.query_map([d], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()).await?;
-        for (id, s) in subs {
+        let subs: Vec<(String, String, String)> = ctx.db.call(move |c| c.prepare("SELECT id, selector, no_local FROM amq_durable WHERE dest=?1 ORDER BY id")?.query_map([d], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect()).await?;
+        for (id, s, nl) in subs {
+            if mine(Some(nl.as_str())) {
+                continue;
+            }
             if s.is_empty() || selector::parse(&s).is_ok_and(|e| takes(&Some(Arc::new(e)))) {
                 targets.push(id);
             }
@@ -852,8 +1200,20 @@ pub async fn publish(ctx: &Ctx, m: NewMsg) -> Result<Vec<i64>, ApiError> {
         targets.push(String::new());
     }
     let now = util::now_ms();
-    let delay = m.props.get("AMQ_SCHEDULED_DELAY").and_then(|v| v.as_i64().or_else(|| v.as_str()?.trim().parse().ok())).unwrap_or(0).max(0);
-    let deliver_at = if delay > 0 { now + delay } else { 0 };
+    let clock = stuntman_core::clock::now(ctx);
+    let num = |k: &str| m.props.get(k).and_then(|v| v.as_i64().or_else(|| v.as_str()?.trim().parse().ok())).unwrap_or(0).max(0);
+    let delay = num("AMQ_SCHEDULED_DELAY");
+    let job = Job { period: num("AMQ_SCHEDULED_PERIOD"), repeat: num("AMQ_SCHEDULED_REPEAT"), left: num("AMQ_SCHEDULED_REPEAT"), cron: m.props.get("AMQ_SCHEDULED_CRON").and_then(|v| v.as_str()).unwrap_or("").trim().to_string(), delay };
+    let (deliver_at, job) = if !job.cron.is_empty() {
+        let c = crate::cron::parse(&job.cron).map_err(|e| ApiError::bad(format!("AMQ_SCHEDULED_CRON: {e}")))?;
+        // The first delivery of a series is at the cron time; the repeats follow every period.
+        let first = c.next(clock).ok_or_else(|| ApiError::bad(format!("AMQ_SCHEDULED_CRON “{}” never fires", job.cron)))?;
+        (first + delay, serde_json::to_string(&job).unwrap_or_default())
+    } else if job.repeat > 0 {
+        (clock + delay, serde_json::to_string(&job).unwrap_or_default())
+    } else {
+        (if delay > 0 { clock + delay } else { 0 }, String::new())
+    };
     let priority = m.headers.get("priority").and_then(|v| v.as_i64()).unwrap_or(4);
     let expires = m.headers.get("expiration").and_then(|v| v.as_i64()).unwrap_or(0).max(0);
     let grp = m.headers.get("groupId").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -864,10 +1224,10 @@ pub async fn publish(ctx: &Ctx, m: NewMsg) -> Result<Vec<i64>, ApiError> {
             let tx = c.transaction()?;
             let mut seqs = vec![];
             for t in targets {
-                let state = if topic && t.is_empty() { "discarded" } else if deliver_at > 0 { "scheduled" } else { "pending" };
+                let state = if topic && t.is_empty() { "discarded" } else if deliver_at > 0 || !job.is_empty() { "scheduled" } else { "pending" };
                 tx.execute(
-                    "INSERT INTO amq_messages(dest, target, kind, message_id, body, props, headers, state, enqueued_at, sender, via, tx, priority, deliver_at, expires_at, grp) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
-                    params![m.dest, t, m.kind, m.message_id, m.body, Value::Object(m.props.clone()).to_string(), Value::Object(m.headers.clone()).to_string(), state, now, m.sender, m.via, m.tx, priority, deliver_at, expires, grp],
+                    "INSERT INTO amq_messages(dest, target, kind, message_id, body, props, headers, state, enqueued_at, sender, via, tx, priority, deliver_at, expires_at, grp, origin, job) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+                    params![m.dest, t, m.kind, m.message_id, m.body, Value::Object(m.props.clone()).to_string(), Value::Object(m.headers.clone()).to_string(), state, now, m.sender, m.via, m.tx, priority, deliver_at, expires, grp, m.origin, job],
                 )?;
                 let seq = tx.last_insert_rowid();
                 if m.message_id.is_empty() {
@@ -911,17 +1271,17 @@ fn group_key(env: &str, dest: &str, grp: &str) -> String {
 
 /// Marks the next pending message of a destination as delivered to this consumer: highest
 /// JMSPriority first, then oldest; one its selector takes; not of a group another consumer owns.
-async fn claim(ctx: &Ctx, dest: &str, target: &str, consumer: &str, sel: Option<Arc<Sel>>) -> Option<Row> {
-    let (d, t, k, env) = (dest.to_string(), target.to_string(), consumer.to_string(), ctx.env.to_string());
+async fn claim(ctx: &Ctx, dest: &str, target: &str, consumer: &str, sel: Option<Arc<Sel>>, no_local: Option<String>) -> Option<Row> {
+    let (d, t, k, env, clock) = (dest.to_string(), target.to_string(), consumer.to_string(), ctx.env.to_string(), stuntman_core::clock::now(ctx));
     let (moved, got) = ctx
         .db
         .call(move |c| {
-            let moved = promote(c)?;
+            let moved = promote(c, clock)?;
             let mut gs = groups().lock().unwrap();
             let pick = {
                 // ponytail: scans pending rows in Rust (selectors, groups); an SQL prefilter when queues hold many thousands.
-                let mut st = c.prepare(&format!("SELECT {ROW}, grp FROM amq_messages WHERE dest=?1 AND state='pending' AND tx='' AND target IN ('', ?2) ORDER BY priority DESC, seq"))?;
-                let mut rows = st.query(params![d, t])?;
+                let mut st = c.prepare(&format!("SELECT {ROW}, grp FROM amq_messages WHERE dest=?1 AND state='pending' AND tx='' AND target IN ('', ?2) AND (?3 IS NULL OR origin<>?3) ORDER BY priority DESC, seq"))?;
+                let mut rows = st.query(params![d, t, no_local])?;
                 let mut pick = None;
                 while let Some(r) = rows.next()? {
                     let grp: String = r.get(9)?;
@@ -958,11 +1318,11 @@ async fn claim(ctx: &Ctx, dest: &str, target: &str, consumer: &str, sel: Option<
 }
 
 async fn pending_rows(ctx: &Ctx, dest: &str, sel: Option<Arc<Sel>>) -> Vec<Row> {
-    let d = dest.to_string();
+    let (d, clock) = (dest.to_string(), stuntman_core::clock::now(ctx));
     let rows: Vec<Row> = ctx
         .db
         .call(move |c| {
-            promote(c)?;
+            promote(c, clock)?;
             c.prepare(&format!("SELECT {ROW} FROM amq_messages WHERE dest=?1 AND state='pending' AND tx='' AND target='' ORDER BY priority DESC, seq LIMIT 1000"))?.query_map([d], row)?.collect()
         })
         .await
@@ -971,7 +1331,7 @@ async fn pending_rows(ctx: &Ctx, dest: &str, sel: Option<Arc<Sel>>) -> Vec<Row> 
 }
 
 /// Settles messages: acked (or, while the redeliver provocation lasts, back to pending), dead_letter or expired.
-async fn settle(ctx: &Ctx, seqs: Vec<i64>, state: &'static str) {
+async fn settle(ctx: &Ctx, seqs: Vec<i64>, state: &'static str, cause: String) {
     if seqs.is_empty() {
         return;
     }
@@ -986,11 +1346,16 @@ async fn settle(ctx: &Ctx, seqs: Vec<i64>, state: &'static str) {
         .call(move |c| {
             let tx = c.transaction()?;
             let now = util::now_ms();
+            let s = settings_sync(&tx);
             for (i, seq) in seqs.iter().enumerate() {
                 if i < again {
-                    tx.execute("UPDATE amq_messages SET state='pending', consumer='', delivered_at=NULL, redelivered=redelivered+1 WHERE seq=?1 AND state='delivered'", [seq])?;
-                } else {
+                    if tx.execute("UPDATE amq_messages SET state='pending', consumer='', delivered_at=NULL, redelivered=redelivered+1 WHERE seq=?1 AND state='delivered'", [seq])? > 0 {
+                        over_limit(&tx, *seq, &s, now)?;
+                    }
+                } else if state == "acked" {
                     tx.execute("UPDATE amq_messages SET state=?2, acked_at=?3 WHERE seq=?1 AND state='delivered'", params![seq, state, now])?;
+                } else if tx.query_row("SELECT state FROM amq_messages WHERE seq=?1", [seq], |r| r.get::<_, String>(0)).optional()?.as_deref() == Some("delivered") {
+                    dead_letter(&tx, *seq, state, &cause, s.individual_dlq, now)?;
                 }
             }
             let d: String = tx.query_row("SELECT dest FROM amq_messages WHERE seq=?1", [seqs[0]], |r| r.get(0)).unwrap_or_default();
@@ -1013,9 +1378,12 @@ async fn release(ctx: &Ctx, key: String, held: Vec<i64>, last_delivered: Option<
             if discard {
                 tx.execute("UPDATE amq_messages SET state='discarded' WHERE target=?1 AND (state IN ('pending','scheduled') OR (state='delivered' AND tx=''))", [&key])?;
             }
+            let (s, now) = (settings_sync(&tx), util::now_ms());
             for seq in held {
                 let bump = last_delivered.map(|l| seq <= l).unwrap_or(true) as i64;
-                tx.execute("UPDATE amq_messages SET state='pending', consumer='', delivered_at=NULL, redelivered=redelivered+?2 WHERE seq=?1 AND state='delivered' AND tx=''", params![seq, bump])?;
+                if tx.execute("UPDATE amq_messages SET state='pending', consumer='', delivered_at=NULL, redelivered=redelivered+?2 WHERE seq=?1 AND state='delivered' AND tx=''", params![seq, bump])? > 0 && bump > 0 {
+                    over_limit(&tx, seq, &s, now)?;
+                }
             }
             tx.commit()
         })
@@ -1027,8 +1395,8 @@ async fn release(ctx: &Ctx, key: String, held: Vec<i64>, last_delivered: Option<
 
 /// Creates or reuses a durable subscription. A different topic or selector replaces it, and what
 /// it kept is discarded (ActiveMQ's rule).
-async fn durable_open(ctx: &Ctx, id: &str, client: &str, name: &str, dest: &str, selector: &str) {
-    let (id, client, name, dest, sel, now) = (id.to_string(), client.to_string(), name.to_string(), dest.to_string(), selector.to_string(), util::now_ms());
+async fn durable_open(ctx: &Ctx, id: &str, client: &str, name: &str, dest: &str, selector: &str, no_local: &str) {
+    let (id, client, name, dest, sel, now, nl) = (id.to_string(), client.to_string(), name.to_string(), dest.to_string(), selector.to_string(), util::now_ms(), no_local.to_string());
     let _ = ctx
         .db
         .call(move |c| {
@@ -1038,9 +1406,9 @@ async fn durable_open(ctx: &Ctx, id: &str, client: &str, name: &str, dest: &str,
                 tx.execute("UPDATE amq_messages SET state='discarded' WHERE target=?1 AND state IN ('pending','scheduled')", [&id])?;
             }
             tx.execute(
-                "INSERT INTO amq_durable(id, client_id, name, dest, selector, created_at, last_seen) VALUES(?1,?2,?3,?4,?5,?6,?6)
-                 ON CONFLICT(id) DO UPDATE SET dest=?4, selector=?5, last_seen=?6",
-                params![id, client, name, dest, sel, now],
+                "INSERT INTO amq_durable(id, client_id, name, dest, selector, created_at, last_seen, no_local) VALUES(?1,?2,?3,?4,?5,?6,?6,?7)
+                 ON CONFLICT(id) DO UPDATE SET dest=?4, selector=?5, last_seen=?6, no_local=?7",
+                params![id, client, name, dest, sel, now, nl],
             )?;
             tx.commit()
         })
@@ -1146,12 +1514,16 @@ async fn tx_rollback(ctx: &Ctx, id: &str, bump: bool) {
             let tx = c.transaction()?;
             tx.execute("UPDATE amq_messages SET state='rolled_back', tx='', acked_at=?2 WHERE tx=?1 AND state IN ('pending','scheduled')", params![id, now])?;
             let held: Vec<(i64, String)> = tx.prepare("SELECT seq, consumer FROM amq_messages WHERE tx=?1 AND state='delivered'")?.query_map([&id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
+            let s = settings_sync(&tx);
             for (seq, consumer) in held {
                 let gone = !here.contains(&consumer);
                 tx.execute(
                     "UPDATE amq_messages SET tx='', redelivered=redelivered+?2, state=CASE WHEN ?3 THEN 'pending' ELSE state END, consumer=CASE WHEN ?3 THEN '' ELSE consumer END WHERE seq=?1",
                     params![seq, bump as i64, gone],
                 )?;
+                if gone && bump {
+                    over_limit(&tx, seq, &s, now)?;
+                }
             }
             tx.execute("UPDATE amq_messages SET tx='' WHERE tx=?1", [&id])?;
             tx.execute("UPDATE amq_tx SET state='rolled_back', ended_at=?2 WHERE id=?1", params![id, now])?;
@@ -1209,8 +1581,9 @@ pub async fn serve(envs: Envs, port: u16) {
 }
 
 fn wire_format() -> Ds {
-    let mut w = Writer(11i32.to_be_bytes().to_vec());
-    for (k, v) in [("TightEncodingEnabled", false), ("CacheEnabled", false), ("SizePrefixDisabled", false), ("StackTraceEnabled", false), ("TcpNoDelayEnabled", true)] {
+    let mut w = Writer(11i32.to_be_bytes().to_vec(), vec![], None);
+    // As a real broker: tight encoding and the marshal cache are offered; each side's AND decides.
+    for (k, v) in [("TightEncodingEnabled", true), ("CacheEnabled", true), ("SizePrefixDisabled", false), ("StackTraceEnabled", false), ("TcpNoDelayEnabled", true)] {
         w.utf(k);
         w.0.extend([1, v as u8]);
     }
@@ -1221,7 +1594,8 @@ fn wire_format() -> Ds {
         w.0.extend(v.to_be_bytes());
     }
     w.utf("CacheSize");
-    w.0.extend([5, 0, 0, 0, 0]);
+    w.0.push(5);
+    w.0.extend(CACHE_SIZE.to_be_bytes());
     for (k, v) in [("ProviderName", "ActiveMQ"), ("ProviderVersion", "5.18.6"), ("PlatformDetails", "Stuntman")] {
         w.utf(k);
         prim_put(&mut w, &json!(v));
@@ -1240,6 +1614,8 @@ struct Cons {
     /// Where its messages are addressed: the consumer itself, or its durable subscription.
     target: String,
     sel: Option<Arc<Sel>>,
+    /// noLocal: the consumer's connection id, whose own messages it does not get.
+    no_local: Option<String>,
     id: Obj,
     dest: String,
     prefetch: i32,
@@ -1262,6 +1638,7 @@ struct Conn {
     windows: HashMap<String, i32>,
     sent: u64,
     next: i32,
+    fmt: Fmt,
 }
 
 impl Conn {
@@ -1271,7 +1648,7 @@ impl Conn {
     }
 
     async fn send(&mut self, wr: &mut OwnedWriteHalf, mut d: Ds) -> Flow {
-        if wr.write_all(&encode(&mut d)).await.is_err() {
+        if wr.write_all(&encode_with(&mut d, Some(&mut self.fmt))).await.is_err() {
             return Flow::Stop;
         }
         Flow::Go
@@ -1310,6 +1687,7 @@ impl Conn {
                 expiration: hd.get("expiration").and_then(|v| v.as_i64()).unwrap_or(0),
                 priority: hd.get("priority").and_then(|v| v.as_u64()).unwrap_or(4) as u8,
                 reply_to: s("replyTo").map(|d| Box::new(dest_ds(&d))),
+                original_destination: s("originalDestination").map(|d| Box::new(dest_ds(&d))),
                 timestamp: hd.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(r.enqueued_at),
                 kind: s("type"),
                 content: Some(if r.kind == "text" && !compressed { text_content(&String::from_utf8_lossy(&r.body)) } else { r.body.clone() }),
@@ -1327,6 +1705,7 @@ impl Conn {
                 "map" => Ds::MapMessage(m),
                 "object" => Ds::ObjectMessage(m),
                 "stream" => Ds::StreamMessage(m),
+                "blob" => Ds::BlobMessage(BlobMsg { m, url: s("blobUrl"), mime: s("blobMime"), deleted: false }),
                 _ => Ds::Message(m),
             })
         });
@@ -1336,12 +1715,17 @@ impl Conn {
 
     async fn handle(&mut self, wr: &mut OwnedWriteHalf, b: &[u8]) -> Flow {
         let typ = b[0];
-        let (cid, resp) = if b.len() >= 6 { (i32::from_be_bytes([b[1], b[2], b[3], b[4]]), b[5] != 0) } else { (0, false) };
-        let Some(d) = decode(b) else {
+        let (cid, resp) = peek(b, self.fmt.tight);
+        let Some(d) = decode_with(b, Some(&mut self.fmt)) else {
             eprintln!("ActiveMQ: {}: cannot read command type {typ}", self.remote);
             return if resp { self.fail(wr, cid, "java.io.IOException", format!("Stuntman's ActiveMQ does not implement OpenWire command type {typ}")).await } else { Flow::Go };
         };
         let connected = self.ctx.is_some();
+        // A BlobMessage is a Message with a URL: handled with the others, its URL kept as a header.
+        let (d, blob) = match d {
+            Ds::BlobMessage(b) => (Ds::Message(b.m), Some((b.url, b.mime))),
+            d => (d, None),
+        };
         match d {
             Ds::ConnectionInfo(i) => {
                 let Some(ctx) = self.envs.default_env() else { return self.fail(wr, cid, "javax.jms.JMSException", "No Stuntman environment".into()).await };
@@ -1353,6 +1737,12 @@ impl Conn {
                 self.ctx = Some(ctx);
                 self.user = user;
                 self.client_id = i.client_id.unwrap_or_default();
+                let env = self.ctx.as_ref().unwrap().env.to_string();
+                {
+                    let mut cs = conns().lock().unwrap();
+                    cs.retain(|c| c.1 != self.remote);
+                    cs.push((env, self.remote.clone(), self.user.clone(), self.client_id.clone(), self.fmt.name(), util::now_ms()));
+                }
                 self.reply(wr, cid, resp).await
             }
             Ds::ShutdownInfo(_) => Flow::Stop,
@@ -1391,6 +1781,11 @@ impl Conn {
                     None => None,
                 };
                 let (mut target, mut durable) = (key.clone(), None);
+                let no_local = match i.consumer_id.as_deref() {
+                    Some(Ds::ConsumerId(c)) if i.no_local => Some(c.connection.clone().unwrap_or_default()),
+                    _ => None,
+                };
+                let exclusive = i.exclusive && !dest.starts_with("topic://");
                 if let Some(name) = i.subscription.clone().filter(|n| !n.is_empty() && dest.starts_with("topic://")) {
                     let client = i.client_id.clone().filter(|c| !c.is_empty()).unwrap_or(self.client_id.clone());
                     if client.is_empty() {
@@ -1400,13 +1795,13 @@ impl Conn {
                     if live().lock().unwrap().iter().any(|l| l.env == *ctx.env && l.target == id) {
                         return self.fail(wr, cid, "javax.jms.JMSException", format!("Durable consumer is in use for client: {client} and subscriptionName: {name}")).await;
                     }
-                    durable_open(&ctx, &id, &client, &name, &dest, selector.as_deref().unwrap_or("")).await;
+                    durable_open(&ctx, &id, &client, &name, &dest, selector.as_deref().unwrap_or(""), no_local.as_deref().unwrap_or("")).await;
                     (target, durable) = (id, Some(name));
                 }
                 register(&ctx, &dest, &self.user).await;
-                self.cons.push(Cons { key: key.clone(), target: target.clone(), sel: sel.clone(), id: i.consumer_id.clone(), dest: dest.clone(), prefetch: i.prefetch, held: vec![], pull: None, idle });
+                self.cons.push(Cons { key: key.clone(), target: target.clone(), sel: sel.clone(), no_local: no_local.clone(), id: i.consumer_id.clone(), dest: dest.clone(), prefetch: i.prefetch, held: vec![], pull: None, idle });
                 if !idle {
-                    live().lock().unwrap().push(Live { env: ctx.env.to_string(), key, target, durable, dest: dest.clone(), selector: selector.unwrap_or_default(), sel: sel.clone(), prefetch: i.prefetch, remote: self.remote.clone(), user: self.user.clone(), since: util::now_ms() });
+                    live().lock().unwrap().push(Live { env: ctx.env.to_string(), key, target, durable, dest: dest.clone(), selector: selector.unwrap_or_default(), sel: sel.clone(), prefetch: i.prefetch, remote: self.remote.clone(), user: self.user.clone(), since: util::now_ms(), no_local, exclusive, wire: self.fmt.name() });
                 }
                 if self.reply(wr, cid, resp).await == Flow::Stop {
                     return Flow::Stop;
@@ -1467,11 +1862,15 @@ impl Conn {
                         (4, Some(i)) => vec![c.held.remove(i).0],
                         (_, Some(i)) => c.held.drain(..=i).map(|e| e.0).collect(),
                     };
+                    let cause = match a.ack_type {
+                        6 => "The message expired".to_string(),
+                        _ => a.poison.as_ref().and_then(|e| e.message.clone()).unwrap_or_else(|| "Poison ack from the consumer".into()),
+                    };
                     settle(&ctx, done, match a.ack_type {
                         1 => "dead_letter",
                         6 => "expired",
                         _ => "acked",
-                    })
+                    }, cause)
                     .await;
                 }
                 self.reply(wr, cid, resp).await
@@ -1483,6 +1882,7 @@ impl Conn {
                     26 => "object",
                     27 => "stream",
                     28 => "text",
+                    29 => "blob",
                     _ => "message",
                 };
                 let Some(dest) = obj_dest(&m.destination) else { return self.fail(wr, cid, "javax.jms.InvalidDestinationException", "The message has no destination".into()).await };
@@ -1517,6 +1917,14 @@ impl Conn {
                 put("groupId", json!(m.group_id));
                 put("userId", json!(m.user_id));
                 put("compressed", json!(compressed));
+                if let Some((url, mime)) = blob {
+                    put("blobUrl", json!(url));
+                    put("blobMime", json!(mime));
+                }
+                let origin = match m.producer_id.as_deref() {
+                    Some(Ds::ProducerId(p)) => p.connection.clone().unwrap_or_default(),
+                    _ => String::new(),
+                };
                 hd.insert("persistent".into(), json!(m.persistent));
                 hd.insert("priority".into(), json!(m.priority));
                 hd.insert("timestamp".into(), json!(m.timestamp));
@@ -1526,7 +1934,7 @@ impl Conn {
                 if m.group_seq != 0 {
                     hd.insert("groupSeq".into(), json!(m.group_seq));
                 }
-                let n = NewMsg { dest, kind: kind.into(), body, props: m.props.as_deref().map(map_decode).unwrap_or_default(), headers: hd, message_id: mid_text(&m.message_id), sender: self.user.clone(), via: "openwire".into(), tx: tx.unwrap_or_default() };
+                let n = NewMsg { dest, kind: kind.into(), body, props: m.props.as_deref().map(map_decode).unwrap_or_default(), headers: hd, message_id: mid_text(&m.message_id), sender: self.user.clone(), via: "openwire".into(), tx: tx.unwrap_or_default(), origin };
                 if let Err(e) = publish(&ctx, n).await {
                     return self.fail(wr, cid, "javax.jms.JMSException", e.message).await;
                 }
@@ -1663,6 +2071,7 @@ impl Conn {
     }
 
     async fn close(&mut self) {
+        conns().lock().unwrap().retain(|c| c.1 != self.remote);
         if let Some(ctx) = self.ctx.clone() {
             tx_abandon(&ctx, &self.remote).await;
         }
@@ -1683,7 +2092,12 @@ impl Conn {
                 if c.idle || !room {
                     break;
                 }
-                let Some(r) = claim(&ctx, &c.dest, &c.target, &c.key, c.sel.clone()).await else { break };
+                // An exclusive consumer on the queue (the first one connected) takes everything.
+                let env = ctx.env.to_string();
+                if live().lock().unwrap().iter().find(|l| l.env == env && l.dest == c.dest && l.exclusive).is_some_and(|l| l.key != c.key) {
+                    break;
+                }
+                let Some(r) = claim(&ctx, &c.dest, &c.target, &c.key, c.sel.clone(), c.no_local.clone()).await else { break };
                 if st.is_none() {
                     st = Some(settings(&ctx).await);
                 }
@@ -1743,11 +2157,17 @@ async fn connection(envs: Envs, sock: TcpStream, remote: String) {
             }
         }
     });
-    let mut c = Conn { envs, ctx: None, user: String::new(), client_id: String::new(), remote, cons: vec![], windows: HashMap::new(), sent: 0, next: 0 };
+    let mut c = Conn { envs, ctx: None, user: String::new(), client_id: String::new(), remote, cons: vec![], windows: HashMap::new(), sent: 0, next: 0, fmt: Fmt::default() };
     if c.send(&mut wr, wire_format()).await == Flow::Go {
         let first = tokio::time::timeout(Duration::from_secs(30), rx.recv()).await.ok().flatten();
         match first.as_deref().and_then(decode) {
             Some(Ds::WireFormatInfo(w)) if &w.magic == b"ActiveMQ" && w.version >= VERSION => {
+                let p = w.props.as_deref().map(map_decode).unwrap_or_default();
+                let on = |k: &str| p.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+                c.fmt.tight = on("TightEncodingEnabled");
+                c.fmt.cache = on("CacheEnabled");
+                c.fmt.cache_size = p.get("CacheSize").and_then(|v| v.as_i64()).unwrap_or(0).clamp(0, CACHE_SIZE as i64) as u16;
+                c.fmt.cache &= c.fmt.cache_size > 0;
                 let h = c.hdr();
                 let info = BrokerInfo { h, broker_id: Some(Box::new(Ds::BrokerId(StrId { value: Some("ID:stuntman-1".into()) }))), url: Some(format!("tcp://localhost:{}", port())), name: Some("stuntman".into()), ..Default::default() };
                 if c.send(&mut wr, Ds::BrokerInfo(info)).await == Flow::Go {
@@ -1823,14 +2243,24 @@ fn view(r: &rusqlite::Row) -> rusqlite::Result<Value> {
             v[k] = json!(t);
         }
     }
+    let job: String = r.get(19)?;
+    if !job.is_empty() {
+        v["schedule"] = serde_json::from_str(&job).unwrap_or(Value::Null);
+    }
+    let moved: i64 = r.get(20)?;
+    if moved > 0 {
+        v["movedTo"] = json!({"seq": moved, "destination": r.get::<_, Option<String>>(21)?});
+    }
     Ok(v)
 }
 
 async fn messages(ctx: &Ctx, dest: Option<String>, state: Option<String>, last: u32) -> Result<Vec<Value>, ApiError> {
+    let clock = stuntman_core::clock::now(ctx);
     ctx.db
         .call(move |c| {
-            promote(c)?;
-            c.prepare("SELECT seq, dest, target, kind, message_id, body, props, headers, state, consumer, redelivered, enqueued_at, delivered_at, acked_at, sender, via, tx, deliver_at, expires_at FROM amq_messages WHERE (?1 IS NULL OR dest=?1) AND (?2 IS NULL OR state=?2) ORDER BY seq DESC LIMIT ?3")?
+            promote(c, clock)?;
+            c.prepare("SELECT m.seq, m.dest, m.target, m.kind, m.message_id, m.body, m.props, m.headers, m.state, m.consumer, m.redelivered, m.enqueued_at, m.delivered_at, m.acked_at, m.sender, m.via, m.tx, m.deliver_at, m.expires_at,
+                m.job, m.moved_to, (SELECT d.dest FROM amq_messages d WHERE d.seq=m.moved_to) FROM amq_messages m WHERE (?1 IS NULL OR m.dest=?1) AND (?2 IS NULL OR m.state=?2) ORDER BY m.seq DESC LIMIT ?3")?
                 .query_map(params![dest, state, last], view)?
                 .collect()
         })
@@ -1838,11 +2268,11 @@ async fn messages(ctx: &Ctx, dest: Option<String>, state: Option<String>, last: 
 }
 
 async fn counts(ctx: &Ctx, dest: &str) -> Map<String, Value> {
-    let d = dest.to_string();
+    let (d, clock) = (dest.to_string(), stuntman_core::clock::now(ctx));
     let rows: Vec<(String, i64)> = ctx
         .db
         .call(move |c| {
-            promote(c)?;
+            promote(c, clock)?;
             c.prepare("SELECT state, count(*) FROM amq_messages WHERE dest=?1 GROUP BY state")?.query_map([d], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
         })
         .await
@@ -1859,12 +2289,13 @@ fn dest_arg(a: &stuntman_core::tools::Args) -> Result<String, ApiError> {
 }
 
 fn settings_view(s: &Settings) -> Value {
-    json!({"users": s.users.keys().collect::<Vec<_>>(), "anyUser": s.users.is_empty(), "refuseLogin": s.refuse_login, "dropAfter": s.drop_after, "slowDispatchMs": s.slow_dispatch_ms, "redeliver": s.redeliver, "failCommits": s.fail_commits})
+    json!({"users": s.users.keys().collect::<Vec<_>>(), "anyUser": s.users.is_empty(), "refuseLogin": s.refuse_login, "dropAfter": s.drop_after, "slowDispatchMs": s.slow_dispatch_ms, "redeliver": s.redeliver, "failCommits": s.fail_commits,
+        "maxRedeliveries": s.max_redeliveries(), "individualDlq": s.individual_dlq, "deadLetterQueue": if s.individual_dlq { "queue://ActiveMQ.DLQ.Queue.<name> / ActiveMQ.DLQ.Topic.<name>" } else { DLQ }})
 }
 
 pub fn tools() -> Vec<Tool> {
     vec![
-        Tool::new("list_activemq_destinations", "ActiveMQ (OpenWire, port 61616) queues and topics with their messages per state (scheduled, pending, delivered, acked, dead_letter, expired, rolled_back, discarded), the consumers connected now (with their selector and durable subscription), each topic's durable subscriptions (online or offline, with what they keep), the open and recent transactions (local and XA, prepared ones included), the broker URL and what set_activemq changed.", |ctx, _a| async move {
+        Tool::new("list_activemq_destinations", "ActiveMQ (OpenWire, port 61616) queues and topics with their messages per state (scheduled, pending, delivered, acked, dead_letter, expired, rolled_back, discarded), the consumers connected now (with their selector and durable subscription), each topic's durable subscriptions (online or offline, with what they keep), the open and recent transactions (local and XA, prepared ones included), the connections logged in now with their negotiated wire format (loose or tight, with or without the marshal cache), the broker URL and what set_activemq changed.", |ctx, _a| async move {
             let names: Vec<String> = ctx.db.call(|c| c.prepare("SELECT name FROM amq_destinations UNION SELECT DISTINCT dest FROM amq_messages ORDER BY 1")?.query_map([], |r| r.get(0))?.collect()).await?;
             let env = ctx.env.to_string();
             let conns: Vec<Live> = live().lock().unwrap().iter().filter(|l| l.env == env).cloned().collect();
@@ -1888,7 +2319,7 @@ pub fn tools() -> Vec<Tool> {
                 .await?;
             let mut out = vec![];
             for n in names {
-                let consumers: Vec<Value> = conns.iter().filter(|l| l.dest == n).map(|l| json!({"id": l.key, "prefetch": l.prefetch, "remote": l.remote, "user": l.user, "since": l.since, "selector": l.selector, "durable": l.durable})).collect();
+                let consumers: Vec<Value> = conns.iter().filter(|l| l.dest == n).map(|l| json!({"id": l.key, "prefetch": l.prefetch, "remote": l.remote, "user": l.user, "since": l.since, "selector": l.selector, "durable": l.durable, "noLocal": l.no_local.is_some(), "exclusive": l.exclusive, "wire": l.wire})).collect();
                 let mut d = json!({"name": n, "kind": n.split("://").next().unwrap_or("queue"), "counts": counts(&ctx, &n).await, "consumers": consumers});
                 if n.starts_with("topic://") {
                     d["subscriptions"] = json!(subs.iter().filter(|s| s["destination"] == json!(n)).map(|s| {
@@ -1899,11 +2330,12 @@ pub fn tools() -> Vec<Tool> {
                 }
                 out.push(d);
             }
-            Ok(json!({"destinations": out, "transactions": txs, "url": format!("activemq:tcp://localhost:{}", port()), "port": port(), "openwireVersion": VERSION,
+            let connections: Vec<Value> = self::conns().lock().unwrap().iter().filter(|c| c.0 == env).map(|c| json!({"remote": c.1, "user": c.2, "clientId": c.3, "wire": c.4, "since": c.5})).collect();
+            Ok(json!({"destinations": out, "transactions": txs, "connections": connections, "url": format!("activemq:tcp://localhost:{}", port()), "port": port(), "openwireVersion": VERSION,
                 "bindError": BIND_ERROR.lock().unwrap().clone(), "settings": settings_view(&settings(&ctx).await)}))
         })
         .route("GET", "/activemq/destinations"),
-        Tool::new("list_activemq_messages", "ActiveMQ messages, newest first, with their state: scheduled (AMQ_SCHEDULED_DELAY not over), pending (waiting), delivered (dispatched, not acked yet), acked, dead_letter (poison ack), expired (JMSExpiration passed), rolled_back (sent in a transaction that rolled back), discarded (topic copy whose subscriber left). A message still inside an open transaction carries its id.", |ctx, a| async move {
+        Tool::new("list_activemq_messages", "ActiveMQ messages, newest first, with their state: scheduled (AMQ_SCHEDULED_DELAY not over), pending (waiting), delivered (dispatched, not acked yet), acked, dead_letter (poison ack), expired (JMSExpiration passed), rolled_back (sent in a transaction that rolled back), discarded (topic copy whose subscriber left). A message still inside an open transaction carries its id; a repeating or cron one its schedule; one moved to the dead-letter queue (expired, or poisoned past max_redeliveries) points at its copy there (movedTo), and the copy names its originalDestination.", |ctx, a| async move {
             let dest = a.str("destination").or(a.str("queue")).map(|d| normalize(&d));
             let state = a.str("state").filter(|s| s != "all");
             let rows = messages(&ctx, dest.clone(), state, a.u64("last").unwrap_or(50) as u32).await?;
@@ -1921,9 +2353,16 @@ pub fn tools() -> Vec<Tool> {
                     None => vec![],
                 },
                 "bytes" => base64::engine::general_purpose::STANDARD.decode(a.str("body_base64").or(a.str("body")).unwrap_or_default()).map_err(|_| ApiError::bad("body_base64: not base64"))?,
-                k => return Err(ApiError::bad(format!("kind “{k}”: text or bytes"))),
+                "blob" => vec![],
+                k => return Err(ApiError::bad(format!("kind “{k}”: text, bytes or blob"))),
             };
             let mut headers = Map::new();
+            if kind == "blob" {
+                headers.insert("blobUrl".into(), json!(a.str("blob_url").ok_or_else(|| ApiError::bad("kind=blob: “blob_url” is required"))?));
+                if let Some(m) = a.str("mime_type") {
+                    headers.insert("blobMime".into(), json!(m));
+                }
+            }
             for (k, h) in [("correlation_id", "correlationId"), ("type", "type"), ("group_id", "groupId")] {
                 if let Some(v) = a.str(k) {
                     headers.insert(h.into(), json!(v));
@@ -1947,18 +2386,30 @@ pub fn tools() -> Vec<Tool> {
             if let Some(d) = a.ms("delay")?.filter(|d| *d > 0) {
                 props.insert("AMQ_SCHEDULED_DELAY".into(), json!(d as i64));
             }
+            if let Some(d) = a.ms("period")?.filter(|d| *d > 0) {
+                props.insert("AMQ_SCHEDULED_PERIOD".into(), json!(d as i64));
+            }
+            if let Some(r) = a.u64("repeat").filter(|r| *r > 0) {
+                props.insert("AMQ_SCHEDULED_REPEAT".into(), json!(r as i64));
+            }
+            if let Some(c) = a.str("cron").filter(|c| !c.trim().is_empty()) {
+                props.insert("AMQ_SCHEDULED_CRON".into(), json!(c));
+            }
             let mut seqs = vec![];
             for _ in 0..a.u64("count").unwrap_or(1).clamp(1, 1000) {
-                seqs.extend(publish(&ctx, NewMsg { dest: dest.clone(), kind: kind.clone(), body: body.clone(), props: props.clone(), headers: headers.clone(), message_id: String::new(), sender: sender.clone(), via: via.clone(), tx: String::new() }).await?);
+                seqs.extend(publish(&ctx, NewMsg { dest: dest.clone(), kind: kind.clone(), body: body.clone(), props: props.clone(), headers: headers.clone(), message_id: String::new(), sender: sender.clone(), via: via.clone(), tx: String::new(), origin: String::new() }).await?);
             }
             Ok(json!({"destination": dest, "seqs": seqs, "counts": counts(&ctx, &dest).await}))
         })
-        .req("destination", "queue://<name> (a bare name is a queue) or topic://<name>").param("text", "the TextMessage body (JSON is sent as its text)").param("kind", "text (default) | bytes")
+        .req("destination", "queue://<name> (a bare name is a queue) or topic://<name>").param("text", "the TextMessage body (JSON is sent as its text)").param("kind", "text (default) | bytes | blob (a BlobMessage: blob_url, mime_type)")
+        .param("blob_url", "kind=blob: the remote blob URL the consumer gets").param("mime_type", "kind=blob: its MIME type")
         .param("body_base64", "kind=bytes: the BytesMessage body").param("properties", "{key: value} message properties").param("correlation_id", "JMSCorrelationID").param("type", "JMSType")
         .param("reply_to", "JMSReplyTo destination").param("group_id", "JMSXGroupID").param("persistent", "default true").param("priority", "0-9, default 4 (higher goes first)").param("count", "send this many copies (default 1)")
-        .param("delay", "scheduled delivery (AMQ_SCHEDULED_DELAY) like 5s: scheduled until then").param("ttl", "time to live like 30s (JMSExpiration): expired if nobody took it by then")
+        .param("delay", "scheduled delivery (AMQ_SCHEDULED_DELAY) like 5s: scheduled until then").param("ttl", "time to live like 30s (JMSExpiration): expired (and moved to the DLQ) if nobody took it by then")
+        .param("period", "AMQ_SCHEDULED_PERIOD like 10s: the time between repeats").param("repeat", "AMQ_SCHEDULED_REPEAT: how many more deliveries")
+        .param("cron", "AMQ_SCHEDULED_CRON, 5 fields in UTC on the environment clock, like \"*/5 * * * *\" (repeats until cancel_activemq_scheduled)")
         .route("POST", "/activemq/messages"),
-        Tool::new("set_activemq", "ActiveMQ broker behaviour: users (name → password; empty: anyone logs in), refuse_login (every login fails with a SecurityException), drop_after (close the connection after N dispatched messages), slow_dispatch (wait before each dispatch), redeliver (the next N acks are lost: those messages come again with a higher redelivery count), fail_commits (the next N transaction commits fail with a TransactionRolledBackException, or an XAException for XA, and roll back). Only what you pass changes; reset=true goes back to defaults.", |ctx, a| async move {
+        Tool::new("set_activemq", "ActiveMQ broker behaviour: users (name → password; empty: anyone logs in), refuse_login (every login fails with a SecurityException), drop_after (close the connection after N dispatched messages), slow_dispatch (wait before each dispatch), redeliver (the next N acks are lost: those messages come again with a higher redelivery count), fail_commits (the next N transaction commits fail with a TransactionRolledBackException, or an XAException for XA, and roll back), max_redeliveries (past it a message goes to the dead-letter queue; default 6), individual_dlq (one DLQ per destination instead of ActiveMQ.DLQ). Only what you pass changes; reset=true goes back to defaults.", |ctx, a| async move {
             let mut s = if a.bool("reset").unwrap_or(false) { Settings::default() } else { settings(&ctx).await };
             match a.0.get("users") {
                 Some(Value::Object(o)) => s.users = o.iter().map(|(k, v)| (k.clone(), v.as_str().map(String::from).unwrap_or(v.to_string()))).collect(),
@@ -1986,6 +2437,14 @@ pub fn tools() -> Vec<Tool> {
             if let Some(Value::Number(_) | Value::String(_)) = a.0.get("fail_commits") {
                 s.fail_commits = a.u64("fail_commits").unwrap_or(0);
             }
+            match a.0.get("max_redeliveries") {
+                Some(Value::Number(n)) => s.max_redeliveries = Some(n.as_i64().unwrap_or(6).max(-1)),
+                Some(Value::String(t)) => s.max_redeliveries = Some(t.trim().parse::<i64>().map_err(|_| ApiError::bad("max_redeliveries: a number (-1: never)"))?.max(-1)),
+                _ => {}
+            }
+            if let Some(b) = a.bool("individual_dlq") {
+                s.individual_dlq = b;
+            }
             save(&ctx, &s).await?;
             ctx.live.send("activemq.settings", "", "changed");
             Ok(json!({"settings": settings_view(&s)}))
@@ -1993,8 +2452,23 @@ pub fn tools() -> Vec<Tool> {
         .param("users", "{\"acme\": \"s3cret\"} or \"acme:s3cret,globex:pw\"; {} or \"\": anyone").param("refuse_login", "true: every login fails (java.lang.SecurityException)")
         .param("drop_after", "close the connection after this many dispatched messages; 0: never").param("slow_dispatch", "a delay like 2s before each dispatch; 0: none")
         .param("redeliver", "the next N acks are lost and those messages are delivered again")
-        .param("fail_commits", "the next N commits fail and roll back (the app's retry path)").param("reset", "true: back to defaults")
+        .param("fail_commits", "the next N commits fail and roll back (the app's retry path)")
+        .param("max_redeliveries", "deliveries after the first before a message goes to the dead-letter queue (default 6; -1: never)")
+        .param("individual_dlq", "true: ActiveMQ.DLQ.Queue.<name> / ActiveMQ.DLQ.Topic.<name> per destination; false: the shared ActiveMQ.DLQ")
+        .param("reset", "true: back to defaults")
         .route("PUT", "/activemq/settings"),
+        Tool::new("cancel_activemq_scheduled", "Cancels scheduled ActiveMQ messages (AMQ_SCHEDULED_DELAY, _PERIOD/_REPEAT, _CRON) before they go out: one (seq) or all of a destination. They are kept as discarded.", |ctx, a| async move {
+            let seq = a.str("seq").map(|s| s.trim_start_matches('#').parse::<i64>().map_err(|_| ApiError::bad("seq: a number"))).transpose()?;
+            let dest = a.str("destination").or(a.str("queue")).map(|d| normalize(&d));
+            if seq.is_none() && dest.is_none() {
+                return Err(ApiError::bad("“seq” or “destination” is required"));
+            }
+            let n = ctx.db.call(move |c| c.execute("UPDATE amq_messages SET state='discarded', job='' WHERE state='scheduled' AND (?1 IS NULL OR seq=?1) AND (?2 IS NULL OR dest=?2)", params![seq, dest])).await?;
+            ring(&ctx, "");
+            Ok(json!({"cancelled": n}))
+        })
+        .param("seq", "one scheduled message").param("destination", "every scheduled message of this destination")
+        .route("POST", "/activemq/scheduled/cancel"),
         Tool::new("wait_for_activemq_ack", "Waits until the app acked: one message (seq), at least `count` messages of the destination, or (neither) everything sent to it: nothing pending or delivered and at least one acked. 408 after the timeout.", |ctx, a| async move {
             let dest = dest_arg(&a)?;
             let seq = a.str("seq").map(|s| s.trim_start_matches('#').parse::<i64>().map_err(|_| ApiError::bad("seq: a number"))).transpose()?;
@@ -2030,10 +2504,24 @@ pub fn tools() -> Vec<Tool> {
 mod t {
     use super::*;
 
+    fn fmt(tight: bool, cache: bool) -> Fmt {
+        Fmt { tight, cache, cache_size: 1024, ..Default::default() }
+    }
+
+    /// Loose, loose with the marshal cache, tight with the cache: decode(encode(x)) == x in each,
+    /// twice in a row (the cache indexes carry over between frames).
     fn roundtrip(mut d: Ds) {
         let f = encode(&mut d);
         assert_eq!(u32::from_be_bytes(f[..4].try_into().unwrap()) as usize, f.len() - 4, "size prefix of {d:?}");
         assert_eq!(decode(&f[4..]).as_ref(), Some(&d), "round trip of type {}", d.typ());
+        for (tight, cache) in [(false, true), (true, false), (true, true)] {
+            let (mut w, mut r) = (fmt(tight, cache), fmt(tight, cache));
+            for _ in 0..2 {
+                let f = encode_with(&mut d, Some(&mut w));
+                assert_eq!(u32::from_be_bytes(f[..4].try_into().unwrap()) as usize, f.len() - 4);
+                assert_eq!(decode_with(&f[4..], Some(&mut r)).as_ref(), Some(&d), "tight={tight} cache={cache} round trip of type {}", d.typ());
+            }
+        }
     }
 
     fn cid() -> Obj {
@@ -2082,7 +2570,9 @@ mod t {
             Ds::MessageDispatch(MessageDispatch { h: h(false), consumer_id: cid(), destination: q(), message: None, redelivery: 0 }),
             Ds::MessageAck(MessageAck { h: h(false), destination: q(), consumer_id: cid(), ack_type: 2, first: mid.clone(), last: mid.clone(), count: 1, ..Default::default() }),
             Ds::TextMessage(msg.clone()),
-            Ds::BytesMessage(Msg { content: Some(vec![0, 1, 2, 255]), props: None, ..msg }),
+            Ds::BytesMessage(Msg { content: Some(vec![0, 1, 2, 255]), props: None, ..msg.clone() }),
+            Ds::BlobMessage(BlobMsg { m: Msg { content: None, ..msg }, url: Some("http://files.acme.example/manifest-1043.pdf".into()), mime: Some("application/pdf".into()), deleted: false }),
+            Ds::MessageDispatch(MessageDispatch { h: h(false), consumer_id: cid(), destination: q(), message: None, redelivery: -1 }),
             Ds::Response(Response { h: h(false), correlation_id: 7 }),
             Ds::ExceptionResponse(ExceptionResponse { h: h(false), correlation_id: 7, error: Some(BErr { class: Some("java.lang.SecurityException".into()), message: Some("User name [acme] or password is invalid.".into()) }) }),
         ] {
@@ -2105,9 +2595,44 @@ mod t {
         assert_eq!(&f[13..17], &VERSION.to_be_bytes());
         let Some(Ds::WireFormatInfo(w)) = decode(&f[4..]) else { panic!() };
         let p = map_decode(w.props.as_deref().unwrap());
-        assert_eq!(p["TightEncodingEnabled"], json!(false));
+        assert_eq!(p["TightEncodingEnabled"], json!(true));
+        assert_eq!(p["CacheSize"], json!(1024));
         assert_eq!(p["MaxInactivityDuration"], json!(30_000));
         assert!(f.windows(25).any(|x| x == b"\x00\x15MaxInactivityDuration\x06\x00"), "MaxInactivityDuration goes as a long");
+    }
+
+    #[test]
+    fn tight_known_bytes() {
+        // Tight Response: type, BooleanStream (1 byte of bits: responseRequired false), commandId, correlationId.
+        let f = encode_with(&mut Ds::Response(Response { h: Hdr { id: 1, resp: false }, correlation_id: 5 }), Some(&mut fmt(true, false)));
+        assert_eq!(f, vec![0, 0, 0, 11, 30, 1, 0, 0, 0, 0, 1, 0, 0, 0, 5]);
+        // Longs take 0, 2, 4 or 8 bytes after two bits; strings a present and an ASCII bit.
+        let f = encode_with(&mut Ds::RemoveInfo(RemoveInfo { h: Hdr { id: 2, resp: true }, object_id: None, last_delivered: 300 }), Some(&mut fmt(true, false)));
+        // bits: resp 1, object present 0, the long's (false, true): two bytes follow → 0b1001
+        assert_eq!(f, vec![0, 0, 0, 9, 12, 1, 0b1001, 0, 0, 0, 2, 1, 44]);
+        assert_eq!(peek(&f[4..], true), (2, true));
+        let f = encode(&mut Ds::RemoveInfo(RemoveInfo { h: Hdr { id: 2, resp: true }, object_id: None, last_delivered: 300 }));
+        assert_eq!(peek(&f[4..], false), (2, true));
+        // A message nested in a dispatch carries one more bit (MarshallAware); 70 bits take 9 bytes.
+        let bits = vec![true; 70];
+        assert_eq!(bool_stream(&bits)[0], 9);
+        assert_eq!(bool_stream(&vec![false; 8 * 64])[..2], [0xc0, 64]);
+        assert_eq!(bool_stream(&vec![false; 8 * 300])[..3], [0x80, 1, 44]);
+    }
+
+    #[test]
+    fn marshal_cache_hits_are_read() {
+        // Loose RemoveInfo with the cache: commandId, responseRequired, then the object id as
+        // "known" (false) and its index, then the long.
+        let mut r = fmt(false, true);
+        r.seen.insert(3, cid());
+        let mut b = vec![12, 0, 0, 0, 9, 1, 0, 0, 3];
+        b.extend(42i64.to_be_bytes());
+        let Some(Ds::RemoveInfo(x)) = decode_with(&b, Some(&mut r)) else { panic!() };
+        assert_eq!((x.object_id, x.last_delivered), (cid(), 42));
+        // An index never sent is refused.
+        b[8] = 4;
+        assert!(decode_with(&b, Some(&mut r)).is_none());
     }
 
     #[test]
@@ -2203,6 +2728,50 @@ mod t {
         let s = selector::parse("JMSType = 'order.created' AND JMSCorrelationID = 'c-1' AND JMSPriority = 7 AND JMSDeliveryMode = 'NON_PERSISTENT' AND JMSTimestamp = 5 AND JMSMessageID = 'ID:x:1:1:1' AND JMSXGroupID = 'TRK-1' AND region = 'north' AND amount > 200 AND JMSRedelivered = TRUE").unwrap();
         assert!(selects(&s, hd, props, "ID:x:1:1:1", 1));
         assert!(!selects(&s, hd, props, "ID:x:1:1:1", 0));
+    }
+
+    #[test]
+    fn schedules_and_dead_letters() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(SQL).unwrap();
+        let add = |dest: &str, state: &str, deliver: i64, expires: i64, job: &Job, hd: Value| {
+            let job = if *job == Job::default() { String::new() } else { serde_json::to_string(job).unwrap() };
+            c.execute("INSERT INTO amq_messages(dest, kind, body, headers, state, enqueued_at, deliver_at, expires_at, job) VALUES(?1,'text',x'',?2,?3,0,?4,?5,?6)", params![dest, hd.to_string(), state, deliver, expires, job]).unwrap();
+            c.last_insert_rowid()
+        };
+        let states = |dest: &str| -> Vec<String> { c.prepare("SELECT state FROM amq_messages WHERE dest=?1 ORDER BY seq").unwrap().query_map([dest], |r| r.get(0)).unwrap().map(|x| x.unwrap()).collect() };
+        // Repeat 2, period 1 s, first at t=1000: by t=2500 two deliveries, the last one at 3000 is the message itself.
+        let rep = add("queue://orders.rep", "scheduled", 1000, 0, &Job { period: 1000, repeat: 2, left: 2, ..Default::default() }, json!({}));
+        promote(&c, 2500).unwrap();
+        assert_eq!(states("queue://orders.rep"), ["scheduled", "pending", "pending"]);
+        promote(&c, 3000).unwrap();
+        assert_eq!(states("queue://orders.rep"), ["pending", "pending", "pending"]);
+        let job: String = c.query_row("SELECT job FROM amq_messages WHERE seq=?1", [rep], |r| r.get(0)).unwrap();
+        assert!(job.is_empty());
+        // Cron every minute with one repeat 10 s later: two deliveries per minute, forever.
+        let cron = add("queue://orders.cron", "scheduled", 60_000, 0, &Job { cron: "* * * * *".into(), repeat: 1, left: 1, period: 10_000, ..Default::default() }, json!({}));
+        promote(&c, 125_000).unwrap();
+        assert_eq!(states("queue://orders.cron").iter().filter(|s| *s == "pending").count(), 3, "at 60 s, 70 s and 120 s");
+        let at: i64 = c.query_row("SELECT deliver_at FROM amq_messages WHERE seq=?1", [cron], |r| r.get(0)).unwrap();
+        assert_eq!(at, 130_000);
+        // Expired: a persistent message moves to ActiveMQ.DLQ, a non-persistent one is only dropped.
+        let p = add("queue://orders.exp", "pending", 0, 500, &Job::default(), json!({"persistent": true}));
+        let np = add("queue://orders.exp", "pending", 0, 500, &Job::default(), json!({"persistent": false}));
+        promote(&c, 600).unwrap();
+        let moved: (String, i64) = c.query_row("SELECT state, moved_to FROM amq_messages WHERE seq=?1", [p], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(moved.0, "expired");
+        let (dest, hd, pr): (String, String, String) = c.query_row("SELECT dest, headers, props FROM amq_messages WHERE seq=?1", [moved.1], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!((dest.as_str(), serde_json::from_str::<Value>(&hd).unwrap()["originalDestination"].clone()), (DLQ, json!("queue://orders.exp")));
+        assert_eq!(serde_json::from_str::<Value>(&pr).unwrap()["dlqDeliveryFailureCause"], json!("The message expired"));
+        assert_eq!(c.query_row("SELECT moved_to FROM amq_messages WHERE seq=?1", [np], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        // Past max_redeliveries, to the individual DLQ; on a DLQ already, it stays.
+        let s = Settings { max_redeliveries: Some(1), individual_dlq: true, ..Default::default() };
+        let t = add("topic://prices", "pending", 0, 0, &Job::default(), json!({}));
+        c.execute("UPDATE amq_messages SET redelivered=2 WHERE seq=?1", [t]).unwrap();
+        over_limit(&c, t, &s, 1).unwrap();
+        let to: i64 = c.query_row("SELECT moved_to FROM amq_messages WHERE seq=?1", [t], |r| r.get(0)).unwrap();
+        assert_eq!(c.query_row("SELECT dest FROM amq_messages WHERE seq=?1", [to], |r| r.get::<_, String>(0)).unwrap(), "queue://ActiveMQ.DLQ.Topic.prices");
+        assert_eq!(dead_letter(&c, to, "dead_letter", "again", false, 2).unwrap(), None);
     }
 
     #[test]

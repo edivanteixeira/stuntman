@@ -77,13 +77,13 @@
      "text": "mappings/ and __files/ on the machine that runs Stuntman; a folder of WSDLs works too."
     },
     {
-     "x": 1110,
+     "x": 1072,
      "y": 397,
      "title": "How to group",
      "text": "One service per folder, per host, or everything in one."
     },
     {
-     "x": 560,
+     "x": 496,
      "y": 439,
      "title": "Look first",
      "text": "A dry run: what it would make, with nothing created yet."
@@ -95,7 +95,7 @@
      "text": "Routes, faults and scenarios each service gets."
     },
     {
-     "x": 1160,
+     "x": 1068,
      "y": 590,
      "title": "Gaps",
      "text": "Matchers with no equivalent, to write by hand before you trust the service."
@@ -113,26 +113,26 @@
    "title": "An imported mapping is a normal route",
    "callouts": [
     {
-     "x": 330,
+     "x": 280,
      "y": 205,
      "title": "Request patterns",
      "text": "Each URL pattern becomes a route; imported routes fall through to the next one, as WireMock tries the next mapping."
     },
     {
-     "x": 735,
-     "y": 400,
+     "x": 526,
+     "y": 404,
      "title": "Matchers as rules",
      "text": "Each mapping is one rule in decide and one named answer, in the mappings' priority."
     },
     {
-     "x": 700,
+     "x": 526,
      "y": 502,
      "title": "Delays",
      "text": "fixedDelayMilliseconds and the median of delayDistribution become the answer's latency."
     },
     {
-     "x": 1180,
-     "y": 297,
+     "x": 1020,
+     "y": 268,
      "title": "Plain YAML",
      "text": "Edit what was imported in the editor or the file, like any plugin."
     }

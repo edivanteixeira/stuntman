@@ -76,32 +76,32 @@
    "title": "A route, step by step, with its YAML",
    "callouts": [
     {
-     "x": 330,
+     "x": 280,
      "y": 205,
      "title": "Routes of the plugin",
      "text": "One route per kind of request the provider takes, with its calls today and billing."
     },
     {
-     "x": 700,
+     "x": 526,
      "y": 202,
      "title": "Receive",
      "text": "Bearer token from the plugin's own token route; a missing body field answers 400 like the provider."
     },
     {
-     "x": 700,
-     "y": 291,
+     "x": 526,
+     "y": 292,
      "title": "Keep",
      "text": "State the provider remembers between calls, keyed by an expression. Refused calls change nothing."
     },
     {
-     "x": 735,
-     "y": 400,
+     "x": 526,
+     "y": 404,
      "title": "Decide",
      "text": "First match wins: conditions on body, state and data pick a named answer."
     },
     {
-     "x": 1180,
-     "y": 297,
+     "x": 1020,
+     "y": 268,
      "title": "The same file",
      "text": "The YAML beside the editor marks the changed lines. Try it runs a sample request without keeping anything."
     }
@@ -118,14 +118,14 @@
    "title": "A browser step the plugin draws",
    "callouts": [
     {
-     "x": 720,
-     "y": 293,
+     "x": 516,
+     "y": 302,
      "title": "People from the plugin",
      "text": "Synthetic people with their certificates come from the plugin's data table."
     },
     {
-     "x": 720,
-     "y": 357,
+     "x": 516,
+     "y": 366,
      "title": "Broken on purpose",
      "text": "Pick a person whose certificate expired to see how the app handles it."
     },
@@ -136,14 +136,14 @@
      "text": "Any 6 digits pass; 000000 is refused on purpose."
     },
     {
-     "x": 882,
+     "x": 838,
      "y": 573,
      "title": "Authorize or Deny",
      "text": "Redirects to the app with code and state; the token call then checks the PKCE verifier."
     },
     {
-     "x": 1170,
-     "y": 185,
+     "x": 1088,
+     "y": 175,
      "title": "What Stuntman records",
      "text": "Each step lands on the timeline. Agents skip the page with authorize_as."
     }
@@ -160,26 +160,26 @@
    "title": "Webhook signing, idempotency and the clock",
    "callouts": [
     {
-     "x": 1170,
+     "x": 1121,
      "y": 430,
      "title": "Sign like the provider",
      "text": "Hex HMAC, hex with timestamp, Stripe, Svix, GitHub or CloudEvents, with the secret and header the app checks."
     },
     {
-     "x": 1084,
+     "x": 1008,
      "y": 600,
      "title": "Break every send",
      "text": "Wrong signature, old timestamp, no signature, sent twice or out of order, until set back to none."
     },
     {
-     "x": 1032,
-     "y": 702,
+     "x": 1011,
+     "y": 699,
      "title": "Idempotency-Key",
      "text": "The same key gets the first answer again with no webhook; the same key with another body gets 409."
     },
     {
-     "x": 1150,
-     "y": 847,
+     "x": 1067,
+     "y": 848,
      "title": "The environment's clock",
      "text": "Move it 1 h, 1 day or 30 days: waiting webhooks go out and now() follows. Back to real time resets it."
     }

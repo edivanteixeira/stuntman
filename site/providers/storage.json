@@ -75,32 +75,32 @@
    "title": "Objects, the next read and the history",
    "callouts": [
     {
-     "x": 600,
-     "y": 229,
+     "x": 700,
+     "y": 228,
      "title": "Written by the app",
      "text": "Uploaded by acme-api over the real Blob API: size, type, reads and who wrote it."
     },
     {
-     "x": 557,
+     "x": 634,
      "y": 351,
      "title": "A read armed to fail",
      "text": "set_next_read makes the next read answer 403, 404, 503, slow, truncated or with a bad MD5."
     },
     {
-     "x": 620,
+     "x": 694,
      "y": 404,
      "title": "Added by you",
      "text": "put_object can store a truncated file on purpose; it is never shown as sent by the app."
     },
     {
-     "x": 1150,
-     "y": 421,
+     "x": 1101,
+     "y": 422,
      "title": "Next read, per object",
      "text": "Normal by default; pick a failure once, then it goes back to normal by itself."
     },
     {
-     "x": 1240,
-     "y": 557,
+     "x": 1180,
+     "y": 558,
      "title": "Versions",
      "text": "Every version is kept, with ETag and Content-MD5, so you can compare what the app overwrote."
     }
@@ -117,7 +117,7 @@
    "title": "A rule, tried before it is saved",
    "callouts": [
     {
-     "x": 370,
+     "x": 278,
      "y": 137,
      "title": "Rules in order",
      "text": "The first rule that matches answers. Each shows its hits today and switches off with one click."
@@ -129,20 +129,20 @@
      "text": "Operation, account, container and a glob: * is one level, ** any depth."
     },
     {
-     "x": 668,
-     "y": 443,
+     "x": 597,
+     "y": 444,
      "title": "The answer",
      "text": "503, 403, 404, 409, 412, 413, timeout, reset, empty, slow, truncate or bad_md5."
     },
     {
-     "x": 780,
+     "x": 726,
      "y": 491,
      "title": "How often",
      "text": "The first N attempts, every time, or a random share of the requests."
     },
     {
-     "x": 1170,
-     "y": 430,
+     "x": 1084,
+     "y": 432,
      "title": "What the app will see",
      "text": "Each attempt against the last 50 real requests: 503, 503, then 201."
     }
@@ -159,32 +159,32 @@
    "title": "Every SAS and presigned link",
    "callouts": [
     {
-     "x": 290,
+     "x": 317,
      "y": 193,
      "title": "By state",
      "text": "Valid, expired or revoked; filter by who issued the link and by kind (Azure SAS or S3 presigned)."
     },
     {
-     "x": 935,
-     "y": 249,
+     "x": 892,
+     "y": 250,
      "title": "Refused uses",
      "text": "A late use of an expired link still shows up, with the answer the app's user got."
     },
     {
-     "x": 840,
-     "y": 355,
+     "x": 784,
+     "y": 354,
      "title": "Revoked",
      "text": "revoke_link: the next use answers 403 AuthenticationFailed, like Azure after a key rotation."
     },
     {
-     "x": 1130,
-     "y": 289,
+     "x": 1087,
+     "y": 288,
      "title": "Next use",
      "text": "set_next_use: expired, bad_signature, ip_denied, permission, not_yet_valid or gone."
     },
     {
-     "x": 1150,
-     "y": 515,
+     "x": 1076,
+     "y": 506,
      "title": "Uses",
      "text": "Each download with method, status and address, so you see who used the link and when."
     }

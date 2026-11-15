@@ -74,26 +74,26 @@
    "title": "A plan, checked against what arrived",
    "callouts": [
     {
-     "x": 278,
+     "x": 319,
      "y": 93,
      "title": "Per source",
      "text": "PostHog, Segment, Mixpanel and GA4, each with the calls it accepts and its count."
     },
     {
-     "x": 340,
-     "y": 340,
+     "x": 467,
+     "y": 348,
      "title": "SDK hosts",
      "text": "Point each SDK at its path on :8025; nothing else in the app changes."
     },
     {
-     "x": 922,
+     "x": 892,
      "y": 268,
      "title": "Missing property",
      "text": "workspace_created arrived without plan, which the plan requires."
     },
     {
-     "x": 513,
-     "y": 396,
+     "x": 492,
+     "y": 394,
      "title": "Missing event",
      "text": "trial_started never arrived: check_events answers ok: false."
     }
@@ -110,25 +110,25 @@
    "title": "Writing a plan",
    "callouts": [
     {
-     "x": 526,
+     "x": 572,
      "y": 118,
      "title": "Plans",
      "text": "One plan per flow, such as signup and invite."
     },
     {
-     "x": 580,
+     "x": 682,
      "y": 154,
      "title": "4 of 7 arrived",
      "text": "How much of the plan the app really sent in the window."
     },
     {
-     "x": 745,
-     "y": 530,
+     "x": 490,
+     "y": 525,
      "title": "One event a line",
      "text": "Properties after a colon; the same plan works from set_event_plan."
     },
     {
-     "x": 549,
+     "x": 619,
      "y": 582,
      "title": "Save the plan",
      "text": "Saved in events/plans.yaml, so tests and CI read the same plan."

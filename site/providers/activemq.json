@@ -73,31 +73,31 @@
    "title": "Messages and their states",
    "callouts": [
     {
-     "x": 598,
-     "y": 125,
+     "x": 576,
+     "y": 120,
      "title": "Counts by state",
      "text": "Scheduled, pending, delivered, acked, dead-letter and expired for the destination."
     },
     {
-     "x": 966,
+     "x": 892,
      "y": 208,
      "title": "Scheduled by cron",
      "text": "AMQ_SCHEDULED_CRON on the environment clock; advance_clock brings it forward."
     },
     {
-     "x": 940,
+     "x": 892,
      "y": 272,
      "title": "Inside a transaction",
      "text": "Delivered in a transaction that is still open: the ack takes effect only on commit."
     },
     {
-     "x": 1141,
-     "y": 369,
+     "x": 1122,
+     "y": 370,
      "title": "Redelivery count",
      "text": "Redelivered 7 times, past max_redeliveries: the message went to the DLQ."
     },
     {
-     "x": 990,
+     "x": 892,
      "y": 368,
      "title": "Moved to ActiveMQ.DLQ",
      "text": "The original keeps its state and points at its copy in the dead-letter queue."
@@ -115,32 +115,32 @@
    "title": "Send as the partner, then break the broker",
    "callouts": [
     {
-     "x": 815,
-     "y": 490,
+     "x": 490,
+     "y": 482,
      "title": "Send a message",
      "text": "Text, properties and correlation id, dispatched to the app's consumers as the partner would."
     },
     {
-     "x": 547,
+     "x": 612,
      "y": 646,
      "title": "Refuse login",
      "text": "Every login fails with a SecurityException."
     },
     {
-     "x": 924,
+     "x": 845,
      "y": 646,
      "title": "Redeliver next 2",
      "text": "The next 2 acks are lost; those messages come again with a higher redelivery count."
     },
     {
-     "x": 1057,
+     "x": 978,
      "y": 646,
      "title": "Fail next commit",
      "text": "The commit fails with TransactionRolledBackException, or an XAException for XA."
     },
     {
-     "x": 657,
-     "y": 719,
+     "x": 490,
+     "y": 720,
      "title": "Users",
      "text": "User names and passwords; empty lets anyone log in."
     }
@@ -157,31 +157,31 @@
    "title": "Consumers, durable subscriptions, transactions",
    "callouts": [
     {
-     "x": 866,
+     "x": 812,
      "y": 878,
      "title": "Selector",
      "text": "The consumer only gets messages whose properties match region = 'north'."
     },
     {
-     "x": 1216,
+     "x": 1052,
      "y": 878,
      "title": "Wire format",
      "text": "What the client negotiated: tight encoding with the marshal cache, or loose."
     },
     {
-     "x": 984,
+     "x": 962,
      "y": 1036,
      "title": "Kept while offline",
      "text": "A durable subscription holds 12 messages until its client comes back."
     },
     {
-     "x": 850,
+     "x": 812,
      "y": 1128,
      "title": "Prepared XA",
      "text": "Phase one done; recover lists it from any connection until commit or rollback."
     },
     {
-     "x": 854,
+     "x": 812,
      "y": 1192,
      "title": "Committed",
      "text": "Local transactions with their sends and acks."

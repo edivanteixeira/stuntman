@@ -68,13 +68,13 @@
    "title": "Every text, with what the app saw",
    "callouts": [
     {
-     "x": 290,
+     "x": 332,
      "y": 382,
      "title": "Opted out",
      "text": "The person texted STOP; the next send to this number is refused 400, as Zenvia does."
     },
     {
-     "x": 672,
+     "x": 624,
      "y": 296,
      "title": "Code extracted",
      "text": "The OTP is pulled out of the text; wait_for_sms returns it to the test."
@@ -86,13 +86,13 @@
      "text": "GSM-7 or UCS-2, characters per segment and the segment count billing would use."
     },
     {
-     "x": 1186,
+     "x": 1170,
      "y": 240,
      "title": "Status, as the app saw it",
      "text": "Accepted, SENT, DELIVERED: each callback with the status your app answered."
     },
     {
-     "x": 1148,
+     "x": 1091,
      "y": 460,
      "title": "Provoke on this message",
      "text": "Not delivered with a reason, or the same DELIVERED callback again."
@@ -110,32 +110,32 @@
    "title": "The simulated people behind numbers",
    "callouts": [
     {
-     "x": 330,
+     "x": 409,
      "y": 251,
      "title": "Pattern match",
      "text": "A number pattern with a trailing *: phone off, the text expires after 48 h."
     },
     {
-     "x": 698,
+     "x": 640,
      "y": 271,
      "title": "Delivered after",
      "text": "Each text is delivered after the wait you set, and the status callback follows."
     },
     {
-     "x": 800,
+     "x": 697,
      "y": 376,
      "title": "Answer a question",
      "text": "When the text asks something, the person replies with this text after 30 s."
     },
     {
-     "x": 740,
+     "x": 697,
      "y": 450,
      "title": "Nth text",
      "text": "On the third text in a day the person replies STOP and opts out."
     },
     {
-     "x": 1250,
-     "y": 390,
+     "x": 1092,
+     "y": 388,
      "title": "Saved as YAML",
      "text": "Recipients live in sms/recipients.yaml; first match wins, * is everyone else."
     }
@@ -152,32 +152,32 @@
    "title": "Senders, callbacks, opt-out and limits",
    "callouts": [
     {
-     "x": 290,
+     "x": 308,
      "y": 320,
      "title": "Senders",
      "text": "Alphanumeric, short code and long number; with strict_senders an unknown from gets 400."
     },
     {
-     "x": 600,
-     "y": 456,
+     "x": 416,
+     "y": 457,
      "title": "Callbacks to the app",
      "text": "Where MESSAGE_STATUS and MESSAGE (replies) are posted."
     },
     {
-     "x": 520,
+     "x": 404,
      "y": 609,
      "title": "Opt-out keywords",
      "text": "STOP, CANCEL, UNSUBSCRIBE opt out; START opts back in. Numbers on the list are shown."
     },
     {
-     "x": 480,
-     "y": 717,
+     "x": 415,
+     "y": 716,
      "title": "Throughput",
      "text": "Messages a second before the gateway answers 429."
     },
     {
-     "x": 473,
-     "y": 753,
+     "x": 415,
+     "y": 752,
      "title": "Body size",
      "text": "More segments than this gets 400 \"message too long\"."
     }

@@ -70,32 +70,32 @@
    "title": "A server, its folders and the next sessions",
    "callouts": [
     {
-     "x": 700,
+     "x": 480,
      "y": 18,
      "title": "How to connect",
      "text": "SFTP on :2222, FTP on :2121 and FTPS with AUTH TLS, all on the same server."
     },
     {
-     "x": 530,
+     "x": 476,
      "y": 360,
      "title": "Folders",
      "text": "Folders made by set_file_server, such as /in for the app and /out for the partner."
     },
     {
-     "x": 1000,
-     "y": 280,
+     "x": 754,
+     "y": 282,
      "title": "What the app uploaded",
      "text": "A file's content as text; get_file returns base64 for binary."
     },
     {
-     "x": 806,
+     "x": 740,
      "y": 494,
      "title": "Put a file",
      "text": "Drop a file as if the partner did; the app picks it up on its next poll."
     },
     {
-     "x": 1060,
-     "y": 563,
+     "x": 979,
+     "y": 564,
      "title": "Provoke",
      "text": "Login refused (530), disk full (552), permission denied (550), drop after 4 KB, slow, host key changed."
     }
@@ -118,26 +118,26 @@
      "text": "Each user with its folders: files waiting in /in, files the app wrote to /out."
     },
     {
-     "x": 695,
-     "y": 113,
+     "x": 550,
+     "y": 114,
      "title": "An upload",
      "text": "Who uploaded, which path, size and how long it took."
     },
     {
-     "x": 664,
-     "y": 217,
+     "x": 550,
+     "y": 218,
      "title": "Refused login",
      "text": "A provoked login_refused is marked on the row, so it is not taken for a real bug."
     },
     {
-     "x": 697,
+     "x": 550,
      "y": 287,
      "title": "Did the app retry?",
      "text": "A provoked disk full is marked on the row, next to what the app did after it."
     },
     {
-     "x": 1150,
-     "y": 250,
+     "x": 1020,
+     "y": 248,
      "title": "The file itself",
      "text": "Fixed-width EDI shown as text; the exact bytes are kept."
     }

@@ -101,14 +101,42 @@ def art(page, name, w, h, alt, mobile=None):
             f'alt="{e(alt)}" loading="lazy" decoding="async"></picture></figure>')
 
 
+PIN_SEQ = [0]
+
+
+def pinbtn(n, x, y, title=None, text=None, total=None, group=None):
+    """A numbered mark on a screen. With a title it opens a card beside itself (native popover), with ‹ › to the
+    other marks of the same screen; phones get it as a sheet from the bottom."""
+    if not title:
+        return f'<span class="num" style="--x:{x:.2f}%;--y:{y:.2f}%" aria-hidden="true">{n}</span>'
+    pid = f"{group}-{n}"
+    nav = ""
+    if total and total > 1:
+        prv = f'<button type="button" class="mk__go" data-go="{group}-{n - 1}">‹ Previous</button>' if n > 1 else '<span></span>'
+        nxt = f'<button type="button" class="mk__go mk__next" data-go="{group}-{n + 1}">Next ›</button>' if n < total else '<span></span>'
+        nav = f'<div class="mk__nav">{prv}<span class="mk__pos">{n} of {total}</span>{nxt}</div>'
+    return (f'<button type="button" class="mark" style="--x:{x:.2f}%;--y:{y:.2f}%" popovertarget="{pid}" '
+            f'aria-label="{n}: {e(title)}">{n}</button>'
+            f'<div popover id="{pid}" class="mk" role="note"><div class="mk__head"><span class="mark mark--in">{n}</span><b>{e(title)}</b></div>'
+            f'{f"<p>{e(text)}</p>" if text else ""}{nav}</div>')
+
+
+def marks(pins):
+    """pins: [(n, x%, y%, title, text)] → the marks of one screen, numbered as one group."""
+    PIN_SEQ[0] += 1
+    g = f"mk{PIN_SEQ[0]}"
+    total = sum(1 for pn in pins if len(pn) > 3 and pn[3])
+    return "".join(pinbtn(*pn[:5], total=total, group=g) if len(pn) > 3 and pn[3] else pinbtn(*pn[:3]) for pn in pins)
+
+
 def shot(page, name, alt, pins=()):
-    p = "".join(f'<span class="num" style="--x:{x:.1f}%;--y:{y:.1f}%" aria-hidden="true">{n}</span>' for n, x, y in pins)
+    p = marks(pins)
     return (f'<figure class="shot"><img src="{asset(page, "screens/" + name + ".webp")}" width="1920" height="1200" '
             f'alt="{e(alt)}" loading="lazy" decoding="async">{p}</figure>')
 
 
-def pin(n, x, y):  # 1440 x 900 screen coordinates → percent
-    return (n, x / 1440 * 100, y / 900 * 100)
+def pin(n, x, y, title=None, text=None):  # 1440 x 900 screen coordinates → percent
+    return (n, x / 1440 * 100, y / 900 * 100, title, text)
 
 
 def head(level, title, text=None, cls=""):
@@ -146,6 +174,33 @@ def prompt_box(page, label="Paste this into your coding agent"):
 
 
 COPY_JS = """<script>
+(function () {
+  var phone = matchMedia('(max-width: 760px)');
+  function place(pop) {
+    var b = document.querySelector('[popovertarget="' + pop.id + '"]'); if (!b) return;
+    if (phone.matches) { pop.removeAttribute('data-side'); pop.style.left = pop.style.top = ''; return; }
+    var r = b.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight, m = 14, side = 'right';
+    var x = r.right + m, y = r.top + r.height / 2 - 30;
+    if (x + w > innerWidth - 12) { x = r.left - w - m; side = 'left'; }
+    if (x < 12) { x = Math.max(12, Math.min(innerWidth - w - 12, r.left + r.width / 2 - w / 2)); y = r.bottom + m; side = 'below'; }
+    y = Math.max(12, Math.min(y, innerHeight - h - 12));
+    pop.dataset.side = side; pop.style.left = x + 'px'; pop.style.top = y + 'px';
+    pop.style.setProperty('--ay', (r.top + r.height / 2 - y) + 'px'); pop.style.setProperty('--ax', (r.left + r.width / 2 - x) + 'px');
+  }
+  document.querySelectorAll('.mk').forEach(function (pop) {
+    pop.addEventListener('toggle', function (ev) { if (ev.newState === 'open') place(pop); });
+  });
+  document.querySelectorAll('.mk__go').forEach(function (g) {
+    g.addEventListener('click', function () { var t = document.getElementById(g.dataset.go); if (!t) return;
+      g.closest('.mk').hidePopover(); t.showPopover(); var b = document.querySelector('[popovertarget="' + t.id + '"]'); if (b) b.focus({preventScroll: true}); });
+  });
+  function again() { document.querySelectorAll('.mk:popover-open').forEach(place); }
+  addEventListener('scroll', again, {passive: true}); addEventListener('resize', again);
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function (es) { es.forEach(function (en) { if (en.isIntersecting) { en.target.classList.add('is-seen'); io.unobserve(en.target); } }); }, {threshold: .35});
+    document.querySelectorAll('.shot').forEach(function (s) { if (s.querySelector('.mark')) io.observe(s); });
+  }
+})();
 document.querySelectorAll('[data-copy]').forEach(function (b) {
   b.addEventListener('click', function () {
     var t = document.getElementById(b.dataset.copy).textContent, s = b.parentNode.parentNode.querySelector('.prompt__status');
@@ -278,13 +333,13 @@ def home():
     {session([("say", "you", "Make contract uploads fail twice with a 503, then tell me whether acme-api recovers."),
               ("tool", "create_rule", '{"when": {"op": "put", "path": "contracts/**"}, "then": {"respond": "503"}, "how_often": {"first": 2}}'),
               ("res", "ok", "rule on, recorded as claude-code via MCP")])}</div>
-    {shot(p, "rules", "The storage rule “Contract uploads fail twice,” turned on by claude-code via MCP", [pin(1, 470, 137)])}</article>
+    {shot(p, "rules", "The storage rule “Contract uploads fail twice,” turned on by claude-code via MCP", [pin(1, 470, 137, "The rule, turned on by the agent", "claude-code created it over MCP: the next two uploads to contracts/** answer 503, then the provider behaves again.")])}</article>
   <article class="chapter"><div class="chapter__text"><h3 class="display"><span class="num">2</span>It reads what your app actually did.</h3>
     <p class="body">Not what the code says it does. Every call your app made is on the timeline, in the provider's words.</p>
     {session([("tool", "wait_for_object", '{"container": "documents", "prefix": "contracts/nda-acme"}'),
               ("res", "bad", "408: no new object"),
               ("say", "agent", "Nothing was stored. The timeline shows two 503s, then acme-api gave up. The retry limit is the bug.")])}</div>
-    {shot(p, "timeline", "The timeline: the upload of nda-acme-signed.pdf failed with 503, provoked by the rule; attempt 1 and 2 both 503", [pin(2, 930, 130)])}</article>
+    {shot(p, "timeline", "The timeline: the upload of nda-acme-signed.pdf failed with 503, provoked by the rule; attempt 1 and 2 both 503", [pin(2, 930, 130, "What the app really did", "Attempts 1 and 2 both got the 503 the rule provoked, and then acme-api gave up: the retry limit is the bug.")])}</article>
   <article class="chapter"><div class="chapter__text"><h3 class="display"><span class="num">3</span>It fixes the code and runs the flow again.</h3>
     <p class="body">The rule is still on, so the second run meets the same two failures. This time the app has to get through them.</p></div>
     {session([("say", "agent", "Raised the upload attempts in BlobUploader from 2 to 3, with backoff. Running the signing flow again."),
@@ -507,7 +562,7 @@ def failures():
 <section class="wrap section"><div class="split">
   <div class="stack">{head(2, "A rule is a file, too.", "Edit it in the UI and try it against the last 50 requests before saving. It is saved in <code>storage/rules/&lt;service&gt;.yaml</code>, and an agent creates the same rule with one tool call.")}
   {code('create_rule {\n  "service": "azure-blob",\n  "name": "Contract uploads fail twice",\n  "when": {"op": "put", "container": "documents",\n           "path": "contracts/**"},\n  "then": {"respond": "503"},\n  "how_often": {"first": 2}\n}')}</div>
-  {shot(p, "rules", "The rule editor: when, then, how often and what the app will see", [pin(1, 470, 137)])}
+  {shot(p, "rules", "The rule editor: when, then, how often and what the app will see", [pin(1, 470, 137, "When, then, how often", "Which calls it catches, what they answer and for how many: try it against the last 50 requests before saving.")])}
 </div></section>
 <section class="wrap section"><div class="split">
   <div class="stack">{head(2, "Callbacks your app must verify.", "Stuntman signs callbacks the way each provider does: ECDSA for SendGrid, the app secret for Meta, HMAC for your own inboxes, and Stripe, Svix, GitHub or CloudEvents signatures for plugin webhooks. Ask for a badly signed, old, repeated or replayed one and check that your app rejects it.")}
@@ -526,7 +581,7 @@ def timeline():
 {hero(p, "See what your app sent, in the provider's words.",
       "Every call becomes a sentence: who sent it, what came back, how long it took. Raw HTTP is one click away when you need it.", actions=False)}
 <section class="wrap">
-  {shot(p, "timeline", "The timeline with numbered marks", [pin(1, 875, 188), pin(2, 352, 478), pin(3, 930, 130), pin(4, 1092, 290)])}
+  {shot(p, "timeline", "The timeline with numbered marks", [pin(n + 1, x, y, *notes[n]) for n, (x, y) in enumerate([(875, 188), (352, 478), (930, 130), (1092, 290)])])}
   <ol class="notes">{nl}</ol>
 </section>
 <section class="wrap section">
@@ -679,8 +734,7 @@ def provider_page(d):
     shots = []
     for k, x in enumerate(d["excerpts"]):
         cx, cy, cw, ch = x["crop"]
-        pins = "".join(f'<span class="num" style="--x:{(c["x"] - cx) / cw * 100:.2f}%;--y:{(c["y"] - cy) / ch * 100:.2f}%" aria-hidden="true">{n + 1}</span>'
-                       for n, c in enumerate(x["callouts"]))
+        pins = marks([(n + 1, (c["x"] - cx) / cw * 100, (c["y"] - cy) / ch * 100, c["title"], c["text"]) for n, c in enumerate(x["callouts"])])
         sc = min(1, 1248 / cw)
         notes = "".join(f'<li><span class="num" aria-hidden="true">{n + 1}</span><div><b>{e(c["title"])}</b><p>{e(c["text"])}</p></div></li>'
                         for n, c in enumerate(x["callouts"]))

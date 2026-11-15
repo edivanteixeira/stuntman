@@ -54,7 +54,7 @@
   },
   {
    "title": "Import topics",
-   "text": "Cloud Storage, Amazon MSK and Confluent Cloud sources read Stuntman storage and Kafka; any source takes pubsub_ingest."
+   "text": "Cloud Storage, MSK, Confluent and Kinesis sources read Stuntman storage, Kafka and Kinesis; any source takes pubsub_ingest."
   },
   {
    "title": "Snapshots and Seek",
@@ -73,31 +73,31 @@
    "title": "A topic, and each subscription's view of its messages",
    "callouts": [
     {
-     "x": 630,
-     "y": 114,
+     "x": 540,
+     "y": 115,
      "title": "Schema",
      "text": "Every publish is validated; subscribers get the googclient_schema* attributes."
     },
     {
-     "x": 837,
+     "x": 800,
      "y": 136,
      "title": "Ingestion",
      "text": "An import topic reading a Kafka topic as Amazon MSK, with its state."
     },
     {
-     "x": 1060,
-     "y": 136,
+     "x": 976,
+     "y": 137,
      "title": "Transform",
      "text": "A JavaScript UDF runs on every message before the schema check."
     },
     {
-     "x": 994,
-     "y": 189,
+     "x": 952,
+     "y": 190,
      "title": "Ordering key",
      "text": "Messages with the same key are delivered in order, one out at a time."
     },
     {
-     "x": 1237,
+     "x": 1112,
      "y": 284,
      "title": "State per subscription",
      "text": "Pending, outstanding, acked, expired or dead after 5 attempts, per subscription."
@@ -115,32 +115,32 @@
    "title": "Provoke on publish, and the subscriptions",
    "callouts": [
     {
-     "x": 542,
+     "x": 605,
      "y": 530,
      "title": "Unavailable",
      "text": "Publish answers UNAVAILABLE; the client libraries retry it."
     },
     {
-     "x": 1252,
+     "x": 1183,
      "y": 530,
      "title": "Ack transient",
      "text": "Exactly-once acks fail with TRANSIENT_FAILURE_UNORDERED_ACK_ID until times runs out."
     },
     {
-     "x": 1150,
-     "y": 651,
+     "x": 1082,
+     "y": 652,
      "title": "Dead-letter topic",
      "text": "After 5 delivery attempts the message moves to shipments-dlq."
     },
     {
-     "x": 872,
-     "y": 683,
+     "x": 762,
+     "y": 684,
      "title": "Filter",
      "text": "Messages whose attributes do not match never reach this subscription."
     },
     {
-     "x": 651,
-     "y": 752,
+     "x": 612,
+     "y": 746,
      "title": "BigQuery, Storage, Bigtable",
      "text": "Subscriptions that write rows and files Stuntman keeps for you to read."
     }
@@ -323,6 +323,6 @@
  },
  "notes": [
   "Plaintext gRPC without auth, as the official emulator; one port serves every environment.",
-  "Kinesis and Event Hubs import topics only get what pubsub_ingest feeds."
+  "Kinesis import topics read Stuntman's Kinesis; Event Hubs ones only get what pubsub_ingest feeds."
  ]
 }

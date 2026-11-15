@@ -65,31 +65,31 @@
    "title": "The message, and what was pulled out of it",
    "callouts": [
     {
-     "x": 528,
+     "x": 440,
      "y": 223,
      "title": "Temporary inbox",
      "text": "A test made this address; it expires by itself in 18 min."
     },
     {
-     "x": 1136,
+     "x": 616,
      "y": 146,
      "title": "How it came in",
      "text": "Via the SendGrid API or SMTP, with sender, recipient, time and trace."
     },
     {
-     "x": 740,
-     "y": 240,
+     "x": 672,
+     "y": 239,
      "title": "Extracted code",
      "text": "Your extractor found the OTP; wait_for_message with extract returns it."
     },
     {
-     "x": 1060,
+     "x": 936,
      "y": 240,
      "title": "Links",
      "text": "Every link is detected; short links can be followed to the final URL."
     },
     {
-     "x": 899,
+     "x": 856,
      "y": 313,
      "title": "Events",
      "text": "Delivery and recipient events sent to the app's Event Webhook."
@@ -107,31 +107,31 @@
    "title": "An inbox decides what happens on arrival",
    "callouts": [
     {
-     "x": 900,
+     "x": 676,
      "y": 146,
      "title": "Temporary",
      "text": "Made by a test over the API; extend it or keep it with the environment."
     },
     {
-     "x": 762,
+     "x": 702,
      "y": 252,
      "title": "Bounce it",
      "text": "Hard bounce, 550 mailbox unavailable, as the provider's event."
     },
     {
-     "x": 790,
+     "x": 770,
      "y": 282,
      "title": "Defer N times",
      "text": "Defer 3 times, then accept: tests the app's retry."
     },
     {
-     "x": 737,
+     "x": 702,
      "y": 312,
      "title": "Hold it",
      "text": "Decide by hand with decide_held, or let the steps decide."
     },
     {
-     "x": 780,
+     "x": 732,
      "y": 515,
      "title": "Automatic steps",
      "text": "Delivered, opened 30 s later with 5 s of jitter, click signLink: no person needed."
@@ -149,14 +149,14 @@
    "title": "Extractors, tried before you save",
    "callouts": [
     {
-     "x": 773,
+     "x": 745,
      "y": 281,
      "title": "Take it from",
      "text": "Subject, text, HTML, link, header or attachment."
     },
     {
-     "x": 735,
-     "y": 353,
+     "x": 500,
+     "y": 354,
      "title": "Rule",
      "text": "A regex, CSS selector or header name; a capture group becomes the value."
     },
@@ -167,13 +167,13 @@
      "text": "For short links: the value is the final URL."
     },
     {
-     "x": 1128,
+     "x": 1008,
      "y": 437,
      "title": "Against the last 50",
      "text": "test_extractor runs the rule on recent mail: matched, skipped, no such link."
     },
     {
-     "x": 1067,
+     "x": 1008,
      "y": 519,
      "title": "Why not",
      "text": "Messages where the rule found nothing, with the reason and a suggested fix."

@@ -69,13 +69,13 @@
    "title": "Topics and decoded messages",
    "callouts": [
     {
-     "x": 310,
-     "y": 147,
+     "x": 393,
+     "y": 146,
      "title": "Topics",
      "text": "Each topic with its partitions and message count; made when a client asks, unless auto_create is off."
     },
     {
-     "x": 700,
+     "x": 480,
      "y": 18,
      "title": "How to connect",
      "text": "Kafka on localhost:9092 and the Schema Registry on :8081."
@@ -87,8 +87,8 @@
      "text": "Where each record landed, to check keys go to the partition the app expects."
     },
     {
-     "x": 900,
-     "y": 139,
+     "x": 722,
+     "y": 140,
      "title": "Avro, readable",
      "text": "The value decoded with schema 3 from the registry, not raw bytes."
     }
@@ -111,25 +111,25 @@
      "text": "The record key, which picks the partition as a real producer would."
     },
     {
-     "x": 978,
+     "x": 814,
      "y": 286,
      "title": "Registry subject",
      "text": "With a subject, the value is Avro-encoded with that schema in Confluent framing."
     },
     {
-     "x": 529,
+     "x": 579,
      "y": 386,
      "title": "Produce",
      "text": "Sends the record as the partner would; the app's consumer reads it on its next fetch."
     },
     {
-     "x": 573,
+     "x": 666,
      "y": 460,
      "title": "Leader not available",
      "text": "Producers and consumers get LEADER_NOT_AVAILABLE until you set Normal."
     },
     {
-     "x": 1094,
+     "x": 1025,
      "y": 460,
      "title": "Registry down",
      "text": "The Schema Registry answers 503: does the app retry or drop the record?"

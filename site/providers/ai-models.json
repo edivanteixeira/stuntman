@@ -76,20 +76,20 @@
    "title": "Every model call, with why",
    "callouts": [
     {
-     "x": 330,
-     "y": 100,
+     "x": 418,
+     "y": 111,
      "title": "Six providers",
      "text": "OpenAI, Azure OpenAI, Anthropic, Gemini, OpenRouter and DeepSeek, each with its calls."
     },
     {
-     "x": 340,
+     "x": 444,
      "y": 428,
      "title": "Point the SDK here",
      "text": "Any key is accepted; it is never sent anywhere."
     },
     {
-     "x": 1110,
-     "y": 171,
+     "x": 1040,
+     "y": 170,
      "title": "Why this answer",
      "text": "The rule that matched, the default answer, or a failure someone forced."
     },
@@ -100,8 +100,8 @@
      "text": "System, user and the tools the app offered, as the app sent them."
     },
     {
-     "x": 680,
-     "y": 543,
+     "x": 500,
+     "y": 544,
      "title": "Tokens and cost",
      "text": "Tokens in and out, cached tokens and the cost from your prices."
     }
@@ -124,25 +124,25 @@
      "text": "When the message contains refund: call lookup_order, then answer the text."
     },
     {
-     "x": 580,
+     "x": 494,
      "y": 228,
      "title": "JSON on a system prompt",
      "text": "A system prompt that asks to classify gets a JSON object."
     },
     {
-     "x": 683,
+     "x": 490,
      "y": 426,
      "title": "Add a rule",
      "text": "Name, condition, answer text, and an optional tool with its arguments."
     },
     {
-     "x": 580,
-     "y": 562,
+     "x": 494,
+     "y": 571,
      "title": "Failures on the next calls",
      "text": "429 with Retry-After, 500, 529, filter, length, bad_json, slow and cut."
     },
     {
-     "x": 697,
+     "x": 648,
      "y": 686,
      "title": "How many",
      "text": "Bound the failure to the next N calls; kind=none clears it."

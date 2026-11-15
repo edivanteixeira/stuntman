@@ -74,31 +74,31 @@
    "title": "A trace joined to the provider calls",
    "callouts": [
     {
-     "x": 300,
+     "x": 385,
      "y": 319,
      "title": "Touching a provider",
      "text": "Traces with spans that reached Stuntman, drawn in the provider's colour."
     },
     {
-     "x": 580,
+     "x": 480,
      "y": 160,
      "title": "Failed request",
      "text": "POST /orders: error 500 after 2 retries."
     },
     {
-     "x": 1180,
-     "y": 327,
+     "x": 1120,
+     "y": 328,
      "title": "Provoked spans",
      "text": "Two Azure Blob PUTs answered 503 by a Stuntman rule."
     },
     {
-     "x": 1278,
-     "y": 403,
+     "x": 1212,
+     "y": 404,
      "title": "The app gave up",
      "text": "No third attempt: the retry policy is visible in the span tree."
     },
     {
-     "x": 1240,
+     "x": 1114,
      "y": 642,
      "title": "Answered by",
      "text": "The rule that answered the span, and a link to the object in Files."
@@ -122,26 +122,26 @@
      "text": "Counts per level and service; filter with list_logs or count_logs."
     },
     {
-     "x": 790,
-     "y": 140,
+     "x": 614,
+     "y": 142,
      "title": "The error",
      "text": "The line the app wrote when the order failed."
     },
     {
-     "x": 760,
-     "y": 211,
+     "x": 614,
+     "y": 212,
      "title": "Retries",
      "text": "Warnings for each 503 the app got, with the attempt number."
     },
     {
-     "x": 1193,
-     "y": 271,
+     "x": 1134,
+     "y": 272,
      "title": "Trace id",
      "text": "Every line keeps the trace id the app sent, so it opens its trace."
     },
     {
-     "x": 1185,
-     "y": 563,
+     "x": 1008,
+     "y": 564,
      "title": "Stuntman's side",
      "text": "Which rule made the uploads fail and why the app gave up."
     }
@@ -158,8 +158,8 @@
    "title": "Metrics and why they jumped",
    "callouts": [
     {
-     "x": 348,
-     "y": 137,
+     "x": 457,
+     "y": 138,
      "title": "Semantic names",
      "text": "Metrics grouped by provider calls, the app, runtime and custom."
     },
@@ -176,13 +176,13 @@
      "text": "Errors the app answered while the rule was on."
     },
     {
-     "x": 1090,
-     "y": 399,
+     "x": 1008,
+     "y": 400,
      "title": "Not Stuntman",
      "text": "A host the app still calls directly: a forgotten base URL."
     },
     {
-     "x": 1185,
+     "x": 1008,
      "y": 494,
      "title": "Why it jumped",
      "text": "The step, the breakdown value that drove it and what Stuntman answered."

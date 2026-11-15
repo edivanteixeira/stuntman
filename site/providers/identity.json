@@ -81,31 +81,31 @@
    "title": "The sign-in page Stuntman serves",
    "callouts": [
     {
-     "x": 568,
+     "x": 514,
      "y": 223,
      "title": "Pick who signs in",
      "text": "Each synthetic user with groups and MFA. Agents skip the page with sign_in_as."
     },
     {
-     "x": 832,
+     "x": 754,
      "y": 288,
      "title": "Another tenant",
      "text": "A user from another tenant, for apps that must refuse or accept guests."
     },
     {
-     "x": 820,
+     "x": 754,
      "y": 480,
      "title": "MFA, phone lost",
      "text": "A user whose MFA cannot complete, to test the app's error page."
     },
     {
-     "x": 1120,
-     "y": 197,
+     "x": 1104,
+     "y": 198,
      "title": "What the app asked for",
      "text": "Client, redirect, scopes, prompt, PKCE and state, checked against the app registration."
     },
     {
-     "x": 835,
+     "x": 799,
      "y": 650,
      "title": "Cancel",
      "text": "The person cancels: the app gets error=access_denied."
@@ -123,31 +123,31 @@
    "title": "Users and the claims they carry",
    "callouts": [
     {
-     "x": 295,
+     "x": 350,
      "y": 139,
      "title": "Users",
      "text": "Synthetic people of the tenant: MFA, guest, another tenant, disabled."
     },
     {
-     "x": 650,
+     "x": 612,
      "y": 296,
      "title": "Groups and roles",
      "text": "Set groups or a number of them: 210 groups takes the app down the overage path."
     },
     {
-     "x": 578,
+     "x": 524,
      "y": 427,
      "title": "MFA required",
      "text": "The next sign-in asks for a code; provoke mfa_fails to make it fail."
     },
     {
-     "x": 1200,
-     "y": 250,
+     "x": 1020,
+     "y": 244,
      "title": "The token",
      "text": "The ID token the app will get, with the claims of this user."
     },
     {
-     "x": 660,
+     "x": 600,
      "y": 488,
      "title": "Revoke consent",
      "text": "The next sign-in asks again and refresh tokens stop working."
@@ -165,31 +165,31 @@
    "title": "Older protocols on the same users",
    "callouts": [
     {
-     "x": 450,
-     "y": 179,
+     "x": 1414,
+     "y": 180,
      "title": "SAML 2.0",
      "text": "Metadata, SSO and entity ID per tenant, with signed assertions (RSA-SHA256)."
     },
     {
-     "x": 362,
+     "x": 306,
      "y": 328,
      "title": "LDAP provocations",
      "text": "busy (51), unavailable (52) or timeout; normal stops it."
     },
     {
-     "x": 450,
-     "y": 407,
+     "x": 786,
+     "y": 398,
      "title": "Password grant",
      "text": "Off by default; on, it answers with the provider's AADSTS errors."
     },
     {
-     "x": 375,
+     "x": 306,
      "y": 648,
      "title": "Bot twists",
      "text": "Send an activity with a bad signature, expired, wrong audience or no token."
     },
     {
-     "x": 918,
+     "x": 842,
      "y": 648,
      "title": "Send to the bot",
      "text": "Posts the activity to the bot's endpoint as Teams would, signed by the connector."

@@ -65,31 +65,31 @@
    "title": "A mailbox the app reads",
    "callouts": [
     {
-     "x": 780,
+     "x": 480,
      "y": 18,
      "title": "Where to connect",
      "text": "IMAP on 1143 with STARTTLS, POP3 on 1110 with STLS."
     },
     {
-     "x": 330,
-     "y": 100,
+     "x": 414,
+     "y": 93,
      "title": "Mailboxes",
      "text": "Each address is a login; the count shows unread messages."
     },
     {
-     "x": 513,
+     "x": 492,
      "y": 138,
      "title": "Unread",
      "text": "The dot clears when the app sets \\Seen; a PEEK fetch leaves it."
     },
     {
-     "x": 1137,
-     "y": 139,
+     "x": 992,
+     "y": 140,
      "title": "Attachments",
      "text": "XML, PDF or images, as a supplier would attach them."
     },
     {
-     "x": 556,
+     "x": 480,
      "y": 420,
      "title": "Put the message",
      "text": "From, subject, text and an attachment; the app finds it on its next poll."
@@ -107,31 +107,31 @@
    "title": "What the app did, and what to break",
    "callouts": [
     {
-     "x": 690,
-     "y": 503,
+     "x": 494,
+     "y": 566,
      "title": "Put by you",
      "text": "Messages you or an agent put in, with their UID."
     },
     {
-     "x": 740,
-     "y": 539,
+     "x": 494,
+     "y": 566,
      "title": "The app's login",
      "text": "Each command is logged; passwords never are."
     },
     {
-     "x": 710,
-     "y": 611,
+     "x": 494,
+     "y": 566,
      "title": "How it fetched",
      "text": "BODY.PEEK[] leaves the message unread; the log shows which form the app used."
     },
     {
-     "x": 796,
+     "x": 713,
      "y": 704,
      "title": "Drop during FETCH",
      "text": "The connection closes mid-fetch: does the app retry without losing the message?"
     },
     {
-     "x": 1055,
+     "x": 959,
      "y": 704,
      "title": "XOAUTH2 token expired",
      "text": "The OAuth login is refused, as when a refresh is due."

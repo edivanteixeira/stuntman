@@ -265,8 +265,6 @@ pre.code .c { color: var(--color-caption); } pre.code.dark .c { color: var(--col
 .pshot { margin-top: var(--space-2xl); }
 .pshot h3 { font-size: var(--text-lg); margin-bottom: var(--space-md); }
 .pshot .num, .callouts .num { width: 26px; height: 26px; background: var(--c); font-size: var(--text-xs); }
-.pshot .shot .num { transform: translate(-112%, -112%); box-shadow: 0 0 0 2px var(--color-surface), 0 2px 6px rgb(22 24 27 / 25%); }
-.pshot .shot .num::after { content: ""; position: absolute; right: -9px; bottom: -9px; width: 6px; height: 6px; border-radius: 50%; background: var(--c); }
 .callouts { list-style: none; margin: var(--space-lg) 0 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--space-md) var(--space-lg); }
 .callouts li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--space-sm); }
@@ -309,5 +307,46 @@ pre.code .c { color: var(--color-caption); } pre.code.dark .c { color: var(--col
 @media (max-width: 600px) {
   .pcards, .pprov, .callouts, .padv, .pnext { grid-template-columns: minmax(0, 1fr); }
   .pnext a, .pnext a:last-child, .pnext a:nth-child(2) { text-align: left; }
-  .pshot .shot .num { width: 20px; height: 20px; font-size: 10px; }
 }
+
+/* numbered marks (approved in FigCraft: "Site · Screen marks", option B) */
+.shot > .mark { position: absolute; left: var(--x); top: var(--y); transform: translate(-50%, -50%); z-index: 1; }
+.mark { display: inline-grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 2px solid var(--color-surface); border-radius: 50%;
+  background: var(--c, var(--color-ink)); color: #fff; font: 700 12px/1 var(--font-body); cursor: pointer;
+  box-shadow: 0 0 0 4px color-mix(in oklch, var(--c, var(--color-ink)) 18%, transparent), 0 2px 4px rgb(22 24 27 / 20%); transition: transform .15s ease; }
+.shot > .mark:hover { transform: translate(-50%, -50%) scale(1.08); }
+.shot > .mark:focus-visible { outline: 2px solid var(--color-ink); outline-offset: 3px; }
+.shot > .mark[aria-expanded="true"], .shot > .mark:has(+ .mk:popover-open) { box-shadow: 0 0 0 5px color-mix(in oklch, var(--c, var(--color-ink)) 32%, transparent), 0 2px 4px rgb(22 24 27 / 20%); }
+.shot.is-seen > .mark { animation: markbreath 1.2s ease-out 1; }
+@keyframes markbreath { 0% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--c, var(--color-ink)) 45%, transparent); }
+  100% { box-shadow: 0 0 0 4px color-mix(in oklch, var(--c, var(--color-ink)) 18%, transparent), 0 2px 4px rgb(22 24 27 / 20%); } }
+@media (prefers-reduced-motion: reduce) { .shot.is-seen > .mark { animation: none; } }
+.mark--in { width: 22px; height: 22px; border: 0; box-shadow: none; font-size: 11px; cursor: default; flex: none; }
+.mk { position: fixed; inset: auto; margin: 0; width: min(20rem, calc(100vw - 24px)); padding: var(--space-md) var(--space-md) var(--space-sm);
+  border: 1px solid var(--color-rule); border-top: 4px solid var(--c, var(--color-ink)); border-radius: 12px; background: var(--color-surface);
+  color: var(--color-ink); box-shadow: 0 14px 32px rgb(22 24 27 / 16%); overflow: visible; text-align: left; }
+.mk:popover-open { animation: mkin .14s ease-out; }
+@keyframes mkin { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+.mk::before { content: ""; position: absolute; width: 12px; height: 12px; background: var(--color-surface); border: 1px solid var(--color-rule); transform: rotate(45deg); }
+.mk[data-side="right"]::before { left: -7px; top: calc(var(--ay, 30px) - 6px); border-top: 0; border-right: 0; }
+.mk[data-side="left"]::before { right: -7px; top: calc(var(--ay, 30px) - 6px); border-bottom: 0; border-left: 0; }
+.mk[data-side="below"]::before { top: -7px; left: calc(var(--ax, 50%) - 6px); border-right: 0; border-bottom: 0; }
+.mk:not([data-side])::before { display: none; }
+.mk__head { display: flex; gap: var(--space-sm); align-items: center; }
+.mk__head b { font-weight: 600; font-size: var(--text-md); }
+.mk p { margin-top: var(--space-sm); color: var(--color-text-2); font-size: var(--text-sm); line-height: 1.5; }
+.mk__nav { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; margin-top: var(--space-md); padding-top: var(--space-sm);
+  border-top: 1px solid var(--color-rule); font-size: var(--text-xs); }
+.mk__go { border: 0; background: none; padding: 4px 0; font: 500 var(--text-xs) var(--font-body); color: var(--color-caption); cursor: pointer; justify-self: start; }
+.mk__next { justify-self: end; color: var(--c, var(--color-ink)); }
+.mk__go:hover { text-decoration: underline; } .mk__pos { color: var(--color-caption); }
+@media (max-width: 760px) {
+  .mark { width: 20px; height: 20px; font-size: 10px; }
+  .mk { left: 0; right: 0; bottom: 0; top: auto; width: 100%; max-width: none; border-radius: 18px 18px 0 0; border-top-width: 1px;
+    padding: var(--space-lg) var(--space-lg) calc(var(--space-lg) + env(safe-area-inset-bottom)); box-shadow: 0 -8px 28px rgb(22 24 27 / 18%); }
+  .mk::after { content: ""; position: absolute; top: 10px; left: 50%; width: 40px; height: 4px; margin-left: -20px; border-radius: 2px; background: var(--color-rule); }
+  .mk__head b { font-size: var(--text-lg); } .mk p { font-size: var(--text-md); }
+  .mk:popover-open { animation: mkup .2s ease-out; }
+  @keyframes mkup { from { transform: translateY(100%); } to { transform: none; } }
+}
+@media (min-width: 761px) { .callouts, .notes { display: none; } }

@@ -64,32 +64,32 @@
    "title": "Deliveries and their checks",
    "callouts": [
     {
-     "x": 320,
+     "x": 359,
      "y": 320,
      "title": "Ephemeral inboxes",
      "text": "Made by a test or an agent; each shows when it expires and who made it."
     },
     {
-     "x": 625,
+     "x": 550,
      "y": 289,
      "title": "Old secret",
      "text": "Signed with the previous secret: the app is still using it after rotation."
     },
     {
-     "x": 672,
+     "x": 550,
      "y": 341,
      "title": "Duplicate",
      "text": "The same event id seen before: the app sent it twice."
     },
     {
-     "x": 672,
+     "x": 550,
      "y": 393,
      "title": "Old timestamp",
      "text": "Signed, but the timestamp is outside the tolerance (5 min by default)."
     },
     {
-     "x": 1130,
-     "y": 196,
+     "x": 1008,
+     "y": 203,
      "title": "Signature",
      "text": "Which scheme, which secret, the timestamp age and whether the id is new."
     }
@@ -106,7 +106,7 @@
    "title": "How an inbox answers",
    "callouts": [
     {
-     "x": 708,
+     "x": 615,
      "y": 176,
      "title": "Mode",
      "text": "Fail N times then succeed; also always 200, 202, error, a share, hang, reset or empty."
@@ -118,8 +118,8 @@
      "text": "Each event fails 3 times, not the inbox as a whole."
     },
     {
-     "x": 655,
-     "y": 396,
+     "x": 615,
+     "y": 394,
      "title": "Hang",
      "text": "Hold the request: 35 s tests a client that gives up at 30 s."
     },
@@ -130,8 +130,8 @@
      "text": "Private redirect, huge answer, slow answer: the app should not follow, should cap and give up."
     },
     {
-     "x": 1180,
-     "y": 175,
+     "x": 1158,
+     "y": 186,
      "title": "Attempts",
      "text": "Each attempt of the last event and the gap before it: the app's backoff, measured."
     }

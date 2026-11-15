@@ -71,19 +71,19 @@
    "title": "A new service from a spec",
    "callouts": [
     {
-     "x": 660,
-     "y": 162,
+     "x": 604,
+     "y": 151,
      "title": "Start from a spec",
      "text": "OpenAPI 3.x, Swagger 2.0 or a WSDL; Stuntman tells which one it is."
     },
     {
-     "x": 663,
-     "y": 260,
+     "x": 492,
+     "y": 259,
      "title": "URL or file",
      "text": "Files the spec points to with $ref are read too."
     },
     {
-     "x": 686,
+     "x": 506,
      "y": 568,
      "title": "Check bodies",
      "text": "A body that breaks the schema gets the provider's 400 error."
@@ -95,8 +95,8 @@
      "text": "Every route with the responses it declares, before anything is created."
     },
     {
-     "x": 1150,
-     "y": 633,
+     "x": 1004,
+     "y": 634,
      "title": "OAuth from securitySchemes",
      "text": "Client credentials on /oauth/token, any client accepted until you add some."
     }
@@ -113,32 +113,32 @@
    "title": "Routes made from the spec are normal routes",
    "callouts": [
     {
-     "x": 590,
+     "x": 618,
      "y": 150,
      "title": "Routes from the spec",
      "text": "One per operation, with calls today."
     },
     {
-     "x": 860,
-     "y": 240,
+     "x": 735,
+     "y": 242,
      "title": "Receive",
      "text": "Bearer token from /oauth/token; the body is checked against ChargeRequest, else the invalid answer."
     },
     {
-     "x": 860,
-     "y": 395,
+     "x": 735,
+     "y": 396,
      "title": "Decide",
      "text": "Rules you add pick the spec's other responses: a card ending 0002 gets 402."
     },
     {
-     "x": 551,
+     "x": 624,
      "y": 515,
      "title": "Re-import the spec",
      "text": "Reads a new version and keeps your steps; the served spec is one click away."
     },
     {
-     "x": 590,
-     "y": 615,
+     "x": 492,
+     "y": 607,
      "title": "Path it lacks",
      "text": "A call to a path the spec does not have shows in Unmatched."
     }
@@ -155,32 +155,32 @@
    "title": "Answers from the spec's responses",
    "callouts": [
     {
-     "x": 590,
-     "y": 168,
+     "x": 574,
+     "y": 167,
      "title": "One per response",
      "text": "Marked example (the spec's example) or schema (built from the schema)."
     },
     {
-     "x": 915,
+     "x": 849,
      "y": 191,
      "title": "Reset to the spec",
      "text": "Edit an answer to match the real provider, or go back to what the spec said."
     },
     {
-     "x": 865,
+     "x": 719,
      "y": 462,
      "title": "Checked against the schema",
      "text": "The body is a template checked against the response schema."
     },
     {
-     "x": 960,
+     "x": 731,
      "y": 531,
      "title": "Timeline sentence",
      "text": "What the call leaves on the timeline, as a template."
     },
     {
-     "x": 1320,
-     "y": 300,
+     "x": 1224,
+     "y": 302,
      "title": "What the app gets",
      "text": "Status, headers and body, filled from the last call."
     }

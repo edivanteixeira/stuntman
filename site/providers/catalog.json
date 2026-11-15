@@ -102,25 +102,25 @@
      "text": "Filter Global or Brazil, set by the plugin's author."
     },
     {
-     "x": 620,
-     "y": 130,
+     "x": 480,
+     "y": 131,
      "title": "A collection",
      "text": "A pack of plugins for one kind of app; add the rest in one call."
     },
     {
-     "x": 530,
+     "x": 480,
      "y": 276,
      "title": "Installed here",
      "text": "Each card says whether this environment has it, and its version."
     },
     {
-     "x": 1150,
-     "y": 264,
+     "x": 1008,
+     "y": 274,
      "title": "What it covers",
      "text": "Routes and the answers you can give, before you install."
     },
     {
-     "x": 1079,
+     "x": 1022,
      "y": 439,
      "title": "Add to the environment",
      "text": "Installs the plugin YAML; point the app at it or use the real host name."
@@ -138,31 +138,31 @@
    "title": "An installed plugin: named answers and data",
    "callouts": [
     {
-     "x": 300,
-     "y": 260,
+     "x": 351,
+     "y": 258,
      "title": "Named answers",
      "text": "Each situation the provider can answer, with its status, ready to force."
     },
     {
-     "x": 720,
-     "y": 330,
+     "x": 492,
+     "y": 333,
      "title": "Body template",
      "text": "Filled from the request and the state, in the provider's own shape."
     },
     {
-     "x": 1180,
-     "y": 137,
+     "x": 1052,
+     "y": 136,
      "title": "Force for the next calls",
      "text": "The same as force_answer: ends by itself after N calls."
     },
     {
-     "x": 1100,
-     "y": 325,
+     "x": 1020,
+     "y": 326,
      "title": "Data the answers read",
      "text": "Synthetic CPFs with their state; set_data replaces or appends rows."
     },
     {
-     "x": 680,
+     "x": 480,
      "y": 576,
      "title": "Used by",
      "text": "The route and decide step that gives this answer."

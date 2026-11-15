@@ -69,13 +69,13 @@
    "title": "Start a recording",
    "callouts": [
     {
-     "x": 772,
-     "y": 160,
+     "x": 716,
+     "y": 151,
      "title": "Record the real provider",
      "text": "One of the ways to start a service, next to a spec or the catalog."
     },
     {
-     "x": 723,
+     "x": 492,
      "y": 261,
      "title": "The upstream",
      "text": "The provider's sandbox: Stuntman sends each call there and keeps a copy."
@@ -93,7 +93,7 @@
      "text": "Credentials go to secret://; card numbers, CPFs and e-mails are replaced with synthetic ones."
     },
     {
-     "x": 1207,
+     "x": 996,
      "y": 555,
      "title": "Sandbox keys only",
      "text": "The key reaches the provider as the app sent it and may use its quota."
@@ -111,32 +111,32 @@
    "title": "While it records",
    "callouts": [
     {
-     "x": 1350,
-     "y": 28,
+     "x": 1274,
+     "y": 29,
      "title": "Time left",
      "text": "The recording stops by itself; Stop and review ends it now."
     },
     {
-     "x": 660,
-     "y": 108,
+     "x": 846,
+     "y": 109,
      "title": "Calls kept, secrets masked",
      "text": "Pause sends nothing more to the sandbox; calls then get the routes' answers or 404."
     },
     {
-     "x": 740,
-     "y": 432,
+     "x": 550,
+     "y": 441,
      "title": "A PDF kept as a file",
      "text": "Binary answers up to 5 MB are saved next to the plugin."
     },
     {
-     "x": 740,
-     "y": 535,
+     "x": 550,
+     "y": 545,
      "title": "No answer from the sandbox",
      "text": "A timeout gives the app a 502 and is left out of the review."
     },
     {
-     "x": 1200,
-     "y": 350,
+     "x": 1030,
+     "y": 342,
      "title": "What was kept",
      "text": "authorization stored as secret://globex-token, never the real value."
     }
@@ -153,31 +153,31 @@
    "title": "The review becomes a plugin",
    "callouts": [
     {
-     "x": 504,
-     "y": 200,
+     "x": 525,
+     "y": 197,
      "title": "Routes found",
      "text": "Uncheck what the plugin should not have, such as a health check."
     },
     {
-     "x": 665,
+     "x": 852,
      "y": 490,
      "title": "How paths were grouped",
      "text": "Ids in paths became {id}; split them back if they are different routes."
     },
     {
-     "x": 610,
+     "x": 742,
      "y": 555,
      "title": "Create the plugin",
      "text": "Writes routes and answers; Record more adds to the same recording."
     },
     {
-     "x": 1220,
-     "y": 360,
+     "x": 1030,
+     "y": 364,
      "title": "Default answer as a template",
      "text": "Ids and dates became templates; fields equal to the request echo it."
     },
     {
-     "x": 1220,
+     "x": 1032,
      "y": 577,
      "title": "Rule suggested",
      "text": "Tells the invalid answer apart from created by the field its calls lacked."

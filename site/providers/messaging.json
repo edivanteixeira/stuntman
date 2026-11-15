@@ -69,32 +69,32 @@
    "title": "Messages with their delivery history",
    "callouts": [
     {
-     "x": 305,
+     "x": 367,
      "y": 411,
      "title": "Both brokers",
      "text": "Service Bus and RabbitMQ namespaces side by side, with queues, topics and subscriptions."
     },
     {
-     "x": 757,
+     "x": 736,
      "y": 144,
      "title": "Counts by state",
      "text": "Active, scheduled, locked and dead-letter for the entity."
     },
     {
-     "x": 634,
+     "x": 591,
      "y": 196,
      "title": "Next delivery",
      "text": "Lose the lock, duplicate, hold, drop or dead-letter the next delivery, once."
     },
     {
-     "x": 846,
-     "y": 316,
+     "x": 764,
+     "y": 322,
      "title": "Locked",
      "text": "Which consumer holds the lock and how long it has left."
     },
     {
-     "x": 1165,
-     "y": 621,
+     "x": 1076,
+     "y": 620,
      "title": "Delivery history",
      "text": "Published, delivered, abandoned with the handler's error, then completed on attempt 2."
     }
@@ -111,31 +111,31 @@
    "title": "Consumers, and how to knock them over",
    "callouts": [
     {
-     "x": 560,
+     "x": 606,
      "y": 221,
      "title": "Receiving now",
      "text": "Each connection with prefetch and receive mode; names come from the AMQP client id."
     },
     {
-     "x": 701,
-     "y": 335,
+     "x": 634,
+     "y": 334,
      "title": "Disconnected",
      "text": "Consumers that left in the last day, and why."
     },
     {
-     "x": 1070,
+     "x": 1019,
      "y": 172,
      "title": "Disconnect it",
      "text": "A forced detach (or CONNECTION_FORCED on RabbitMQ) tests the app's reconnect logic."
     },
     {
-     "x": 1185,
+     "x": 1129,
      "y": 172,
      "title": "Expire its locks",
      "text": "Its next complete fails with MessageLockLost and the messages come again."
     },
     {
-     "x": 1243,
+     "x": 1208,
      "y": 394,
      "title": "Locks held",
      "text": "The messages this consumer has locked and the time left on each."
@@ -159,25 +159,25 @@
      "text": "Operation, namespace, entity and subject; more conditions on properties, session, size or sender."
     },
     {
-     "x": 658,
-     "y": 443,
+     "x": 597,
+     "y": 444,
      "title": "Instead",
      "text": "What happens to the matching delivery: here the lock is lost and the message comes again."
     },
     {
-     "x": 645,
+     "x": 606,
      "y": 491,
      "title": "How often",
      "text": "The first N, every time, or a random share of deliveries."
     },
     {
-     "x": 1158,
+     "x": 1008,
      "y": 137,
      "title": "Try it",
      "text": "How many of the last 50 deliveries would match, and which ones."
     },
     {
-     "x": 1218,
+     "x": 1084,
      "y": 404,
      "title": "What the app will see",
      "text": "Lock lost after 30 s and redelivered, then back to normal."

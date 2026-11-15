@@ -104,7 +104,23 @@ this session. Every tool is a route under `/api`; `GET http://localhost:8025/api
 `http` route and parameters. Send JSON with `content-type: application/json`, and pass `"by": "<your name>"` so the
 timeline names you.
 
-Check the connection by calling `list_environments`. The default environment is `stg-a`.
+Check the connection by calling `list_environments`.
+
+**Create an environment for this project, and work only in it.** The default environment (the one `list_environments` marks as default) may be
+shared with other people, agents and apps: never configure, reset or provoke failures in it. Call
+`create_environment` with `name` = the project and branch in lowercase letters, numbers and dashes (for example
+`acme-api-checkout`), `from: "empty"` and `expires: "7d"` unless the developer wants it kept. If one with that name
+already exists, ask before reusing or replacing it. Then, for the rest of this setup:
+
+- Reconnect MCP to `http://localhost:8025/e/<name>/mcp` (or, over HTTP, call `http://localhost:8025/e/<name>/api/...`).
+- Every HTTP address you give the app carries the prefix: `http://localhost:8028/e/<name>/<service>`,
+  `http://localhost:8027/e/<name>/in/<inbox>`, `http://localhost:4318/e/<name>/v1/traces`, and so on.
+  `get_environment` lists them.
+- gRPC clients (Pub/Sub, OTLP gRPC) send the metadata `x-stuntman-env: <name>`.
+- Service Bus and Key Vault pick the environment by host name: set a base domain with `set_environment`. RabbitMQ
+  picks it by vhost (`<name>/<namespace>`).
+- SMTP, Kafka, FTP/SFTP, IMAP/POP3, LDAP and ActiveMQ ports belong to the default environment. If the project
+  uses any of them, tell the developer, and ask before writing to the default environment.
 
 ## Step 4 of 8 — Find every provider this project calls
 
@@ -150,7 +166,7 @@ Ask: *"Did I miss anything, or is there a provider you want to leave out?"* and 
 
 ## Step 5 of 8 — Set Stuntman up for each provider
 
-Use the default environment (`stg-a`) unless the developer asks for another one. For each provider:
+Do everything in the environment you created in step 3. For each provider:
 
 | Line | What to do |
 |---|---|
@@ -188,7 +204,7 @@ Change **base URLs only**; the app keeps its code and SDKs.
 | Azure Blob | `DefaultEndpointsProtocol=http;AccountName=<account>;AccountKey=<key from get_account>;BlobEndpoint=http://127.0.0.1:10000/<account>;` (Azure SDKs need `127.0.0.1`, not `localhost`) |
 | S3 / R2 | endpoint `http://127.0.0.1:9000`, path-style addressing, keys from `get_account` |
 | Service Bus | `Endpoint=sb://<namespace>.<base domain>:5673;SharedAccessKeyName=any;SharedAccessKey=any` — Service Bus and Key Vault find the namespace or vault by host name: set the environment's base domain first (`set_environment`) and make it resolve to this machine; see the [environments guide](https://github.com/edivanteixeira/stuntman/blob/main/docs/environments.md#how-a-request-finds-its-environment) |
-| RabbitMQ | `amqp://any:any@localhost:5673/stg-a%2F<namespace>` (the vhost is `<env>/<namespace>`, URL-encoded) |
+| RabbitMQ | `amqp://any:any@localhost:5673/<name>%2F<namespace>` (the vhost is `<env>/<namespace>`, URL-encoded) |
 | Key Vault | `https://<vault>.vault.<base domain>:8444`, trusting the Test CA from `http://localhost:8025/api/test-ca.pem` |
 | Identity | the authority returned by `list_providers` |
 | OpenTelemetry | `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` |

@@ -35,7 +35,9 @@ services:
       - "${BIND:-127.0.0.1}:1110:1110"   # POP3
       - "${BIND:-127.0.0.1}:9092:9092"   # Kafka (advertised as STUNTMAN_KAFKA_ADVERTISED_HOST)
       - "${BIND:-127.0.0.1}:8081:8081"   # Schema Registry
+      - "${BIND:-127.0.0.1}:8085:8085"   # Pub/Sub emulator (PUBSUB_EMULATOR_HOST)
       - "${BIND:-127.0.0.1}:15672:15672" # RabbitMQ management API
+      - "${BIND:-127.0.0.1}:61616:61616" # ActiveMQ (OpenWire)
       - "${BIND:-127.0.0.1}:12201:12201/udp" # GELF
       - "${BIND:-127.0.0.1}:8125:8125/udp"   # StatsD
 volumes:

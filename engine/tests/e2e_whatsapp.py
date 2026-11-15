@@ -207,7 +207,7 @@ def main():
     DATA = tempfile.mkdtemp(prefix="duble-wa-")
     recv = http.server.ThreadingHTTPServer(("127.0.0.1", RECV), Recv)
     threading.Thread(target=recv.serve_forever, daemon=True).start()
-    env = dict(os.environ, STUNTMAN_DATA=DATA, STUNTMAN_PORT=str(HTTP), STUNTMAN_HOOKS_PORT=str(free_port()), STUNTMAN_SMTP_PORT=str(free_port()), STUNTMAN_OTLP_HTTP_PORT=str(free_port()),
+    env = dict(os.environ, STUNTMAN_ENV=os.environ.get("STUNTMAN_ENV", "stg-a"), STUNTMAN_DATA=DATA, STUNTMAN_PORT=str(HTTP), STUNTMAN_HOOKS_PORT=str(free_port()), STUNTMAN_SMTP_PORT=str(free_port()), STUNTMAN_OTLP_HTTP_PORT=str(free_port()),
                STUNTMAN_OTLP_GRPC_PORT=str(free_port()), STUNTMAN_BLOB_PORT=str(free_port()), STUNTMAN_S3_PORT=str(free_port()), STUNTMAN_APIS_PORT=str(free_port()),
                STUNTMAN_APIS_TLS_PORT=str(free_port()), STUNTMAN_WEB="/nonexistent")
     log = DATA + ".log"

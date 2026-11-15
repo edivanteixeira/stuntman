@@ -52,7 +52,7 @@ def wait(inbox, event=None):
 
 def main():
     data = tempfile.mkdtemp(prefix="duble-wh-")
-    env = dict(os.environ, STUNTMAN_DATA=data, STUNTMAN_PORT=str(HTTP), STUNTMAN_HOOKS_PORT=str(HOOKS), STUNTMAN_SMTP_PORT=str(free_port()), STUNTMAN_WEB="/nonexistent")
+    env = dict(os.environ, STUNTMAN_ENV=os.environ.get("STUNTMAN_ENV", "stg-a"), STUNTMAN_DATA=data, STUNTMAN_PORT=str(HTTP), STUNTMAN_HOOKS_PORT=str(HOOKS), STUNTMAN_SMTP_PORT=str(free_port()), STUNTMAN_WEB="/nonexistent")
     srv = subprocess.Popen([os.path.join(ROOT, "target", "debug", "stuntman")], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     try:
         for _ in range(50):

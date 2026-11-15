@@ -308,7 +308,7 @@ def main():
     tmp = tempfile.mkdtemp(prefix="stuntman-sto-files-")
     recv = http.server.ThreadingHTTPServer(("127.0.0.1", RECV), Recv)
     threading.Thread(target=recv.serve_forever, daemon=True).start()
-    env = dict(os.environ, STUNTMAN_DATA=data, STUNTMAN_PORT=str(HTTP), STUNTMAN_HOOKS_PORT=str(HOOKS), STUNTMAN_SMTP_PORT=str(SMTP), STUNTMAN_OTLP_HTTP_PORT=str(OTLP),
+    env = dict(os.environ, STUNTMAN_ENV=os.environ.get("STUNTMAN_ENV", "stg-a"), STUNTMAN_DATA=data, STUNTMAN_PORT=str(HTTP), STUNTMAN_HOOKS_PORT=str(HOOKS), STUNTMAN_SMTP_PORT=str(SMTP), STUNTMAN_OTLP_HTTP_PORT=str(OTLP),
                STUNTMAN_OTLP_GRPC_PORT=str(OTLP_G), STUNTMAN_BLOB_PORT=str(BLOB), STUNTMAN_S3_PORT=str(S3), STUNTMAN_WEB="/nonexistent")
     log = open(os.path.join(tmp, "server.log"), "w")
     srv = subprocess.Popen([BIN], env=env, stdout=log, stderr=subprocess.STDOUT)

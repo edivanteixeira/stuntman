@@ -34,8 +34,8 @@ pub fn set_dir(p: &Path) {
 fn params() -> CertificateParams {
     let mut p = CertificateParams::new(Vec::<String>::new()).expect("ca params");
     let mut dn = DistinguishedName::new();
-    dn.push(DnType::CommonName, "Duble Test CA");
-    dn.push(DnType::OrganizationName, "Duble (test only, never trust in production)");
+    dn.push(DnType::CommonName, "Stuntman Test CA");
+    dn.push(DnType::OrganizationName, "Stuntman (test only, never trust in production)");
     p.distinguished_name = dn;
     p.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     p.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign, KeyUsagePurpose::DigitalSignature];

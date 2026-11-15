@@ -59,7 +59,7 @@
  ],
  "excerpts": [
   {
-   "frame": 122531,
+   "frame": 142072,
    "crop": [
     232,
     0,
@@ -101,7 +101,7 @@
    ]
   },
   {
-   "frame": 122531,
+   "frame": 142072,
    "crop": [
     472,
     410,
@@ -118,19 +118,19 @@
     },
     {
      "x": 646,
-     "y": 622,
+     "y": 688,
      "title": "Throughput exceeded",
      "text": "The next puts answer ProvisionedThroughputExceededException; the SDKs retry."
     },
     {
-     "x": 605,
-     "y": 654,
+     "x": 613,
+     "y": 720,
      "title": "Reshard now",
      "text": "Splits the widest open shard; consumers must follow the children."
     },
     {
      "x": 652,
-     "y": 860,
+     "y": 836,
      "title": "Parent shard",
      "text": "Children of a split name their parent; the parent's sequence range is closed."
     },

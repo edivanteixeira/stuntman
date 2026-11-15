@@ -1,0 +1,262 @@
+# BrasilAPI: CEP (v1 and v2, with coordinates), CNPJ, banks, national holidays and DDD. Holidays are
+# computed for any year from 1900 to 2199 (Easter by the Meeus algorithm, then Carnaval, Sexta-feira
+# Santa and Corpus Christi from it; Dia da Consciência Negra from 2024). CNPJ check digits are
+# computed. Synthetic addresses and companies; the banks are the public registry (a few of them).
+service:
+  name: brasilapi
+  title: BrasilAPI
+  origin: community
+  region: BR
+  description: CEP, CNPJ, banks, holidays and DDD lookups
+  base_url: https://brasilapi.com.br
+  real_host: brasilapi.com.br
+  cors: true
+  limits:
+    latency: 60ms..400ms
+routes:
+  # ---------------------------------------------------------------- CEP
+  - route: GET /api/cep/v2/{cep}
+    let: &cep_lets
+      d: "digits(path.cep)"
+      a: "lookup('addresses', 'cep', d)"
+      v1: "{'cep': d, 'state': a.state, 'city': a.city, 'neighborhood': a.neighborhood, 'street': a.street, 'service': 'open-cep'}"
+      v2: "{'cep': d, 'state': a.state, 'city': a.city, 'neighborhood': a.neighborhood, 'street': a.street, 'service': 'open-cep', 'location': {'type': 'Point', 'coordinates': {'longitude': a.lng, 'latitude': a.lat}}}"
+    decide: &cep_decide
+      - when: "size(d) != 8"
+        answer: cep_invalid
+      - when: "!has(a)"
+        answer: cep_not_found
+      - answer: cep
+  - route: GET /api/cep/v1/{cep}
+    let: *cep_lets
+    decide: *cep_decide
+
+  # ---------------------------------------------------------------- CNPJ
+  - route: GET /api/cnpj/v1/{cnpj}
+    let:
+      n: double(digits(path.cnpj))
+      s1: (int(n / 10000000000000) % 10) * 5 + (int(n / 1000000000000) % 10) * 4 + (int(n / 100000000000) % 10) * 3 + (int(n / 10000000000) % 10) * 2 + (int(n / 1000000000) % 10) * 9 + (int(n / 100000000) % 10) * 8 + (int(n / 10000000) % 10) * 7 + (int(n / 1000000) % 10) * 6 + (int(n / 100000) % 10) * 5 + (int(n / 10000) % 10) * 4 + (int(n / 1000) % 10) * 3 + (int(n / 100) % 10) * 2
+      dv1: "s1 % 11 < 2 ? 0 : 11 - s1 % 11"
+      s2: (int(n / 10000000000000) % 10) * 6 + (int(n / 1000000000000) % 10) * 5 + (int(n / 100000000000) % 10) * 4 + (int(n / 10000000000) % 10) * 3 + (int(n / 1000000000) % 10) * 2 + (int(n / 100000000) % 10) * 9 + (int(n / 10000000) % 10) * 8 + (int(n / 1000000) % 10) * 7 + (int(n / 100000) % 10) * 6 + (int(n / 10000) % 10) * 5 + (int(n / 1000) % 10) * 4 + (int(n / 100) % 10) * 3 + dv1 * 2
+      dv2: "s2 % 11 < 2 ? 0 : 11 - s2 % 11"
+      company: "lookup('companies', 'cnpj', digits(path.cnpj))"
+    decide:
+      - when: size(digits(path.cnpj)) != 14 || n == 0 || n % 100 != dv1 * 10 + dv2
+        answer: cnpj_invalid
+      - when: "!has(company)"
+        answer: cnpj_not_found
+      - answer: company
+
+  # ---------------------------------------------------------------- banks
+  - route: GET /api/banks/v1
+    decide:
+      - answer: banks
+  - route: GET /api/banks/v1/{code}
+    let:
+      bank: "lookup('banks', 'code', int(path.code))"
+    decide:
+      - when: "!has(bank)"
+        answer: bank_not_found
+      - answer: bank
+
+  # ---------------------------------------------------------------- holidays
+  - route: GET /api/feriados/v1/{ano}
+    let:
+      y: "int(path.ano)"
+      ga: "y % 19"
+      gb: "int(y / 100)"
+      gc: "y % 100"
+      gh: "(19 * ga + gb - int(gb / 4) - int((gb - int((gb + 8) / 25) + 1) / 3) + 15) % 30"
+      gl: "(32 + 2 * (gb % 4) + 2 * int(gc / 4) - gh - gc % 4) % 7"
+      gm: "int((ga + 11 * gh + 22 * gl) / 451)"
+      emonth: "int((gh + gl - 7 * gm + 114) / 31)"
+      eday: "(gh + gl - 7 * gm + 114) % 31 + 1"
+      leap: "y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)"
+      yp: "y - 1"
+      era: "int(yp / 400)"
+      yoe: "yp - era * 400"
+      jan1: "era * 146097 + yoe * 365 + int(yoe / 4) - int(yoe / 100) + 306 - 719468"
+      easter: "jan1 + 31 + (leap ? 29 : 28) + (emonth == 4 ? 31 : 0) + eday - 1"
+      day: "86400000"
+      list: >-
+        [{"date": path.ano + '-01-01', "name": "Confraternização mundial", "type": "national"},
+        {"date": substring(iso((easter - 47) * day), 0, 10), "name": "Carnaval", "type": "national"},
+        {"date": substring(iso((easter - 2) * day), 0, 10), "name": "Sexta-feira Santa", "type": "national"},
+        {"date": substring(iso(easter * day), 0, 10), "name": "Páscoa", "type": "national"},
+        {"date": path.ano + '-04-21', "name": "Tiradentes", "type": "national"},
+        {"date": path.ano + '-05-01', "name": "Dia do trabalho", "type": "national"},
+        {"date": substring(iso((easter + 60) * day), 0, 10), "name": "Corpus Christi", "type": "national"},
+        {"date": path.ano + '-09-07', "name": "Independência do Brasil", "type": "national"},
+        {"date": path.ano + '-10-12', "name": "Nossa Senhora Aparecida", "type": "national"},
+        {"date": path.ano + '-11-02', "name": "Finados", "type": "national"},
+        {"date": path.ano + '-11-15', "name": "Proclamação da República", "type": "national"},
+        {"date": path.ano + '-11-20', "name": "Dia da consciência negra", "type": "national"},
+        {"date": path.ano + '-12-25', "name": "Natal", "type": "national"}]
+      list_old: >-
+        [{"date": path.ano + '-01-01', "name": "Confraternização mundial", "type": "national"},
+        {"date": substring(iso((easter - 47) * day), 0, 10), "name": "Carnaval", "type": "national"},
+        {"date": substring(iso((easter - 2) * day), 0, 10), "name": "Sexta-feira Santa", "type": "national"},
+        {"date": substring(iso(easter * day), 0, 10), "name": "Páscoa", "type": "national"},
+        {"date": path.ano + '-04-21', "name": "Tiradentes", "type": "national"},
+        {"date": path.ano + '-05-01', "name": "Dia do trabalho", "type": "national"},
+        {"date": substring(iso((easter + 60) * day), 0, 10), "name": "Corpus Christi", "type": "national"},
+        {"date": path.ano + '-09-07', "name": "Independência do Brasil", "type": "national"},
+        {"date": path.ano + '-10-12', "name": "Nossa Senhora Aparecida", "type": "national"},
+        {"date": path.ano + '-11-02', "name": "Finados", "type": "national"},
+        {"date": path.ano + '-11-15', "name": "Proclamação da República", "type": "national"},
+        {"date": path.ano + '-12-25', "name": "Natal", "type": "national"}]
+    decide:
+      - when: "!path.ano.matches('^[0-9]{4}$') || y < 1900 || y > 2199"
+        answer: year_out_of_range
+      - answer: holidays
+
+  # ---------------------------------------------------------------- DDD
+  - route: GET /api/ddd/v1/{ddd}
+    let:
+      row: "lookup('ddds', 'ddd', path.ddd)"
+    decide:
+      - when: "!has(row)"
+        answer: ddd_not_found
+      - answer: ddd
+answers:
+  - name: cep
+    sentence: "CEP {{ d }}: {{ a.street }}, {{ a.city }}/{{ a.state }}"
+    body: '{{ __path.contains(''/v2/'') ? json(v2) : json(v1) }}'
+  - name: cep_invalid
+    status: 400
+    sentence: "CEP {{ path.cep }} is not 8 digits"
+    body: '{"message": "CEP deve conter exatamente 8 caracteres.", "type": "validation_error", "name": "CepPromiseError", "errors": [{"message": "CEP informado possui {{ size(d) > 8 ? ''mais'' : ''menos'' }} do que 8 caracteres.", "service": "cep_validation"}]}'
+  - name: cep_not_found
+    status: 404
+    sentence: "CEP {{ d }} not found"
+    body: '{"message": "Todos os serviços de CEP retornaram erro.", "type": "service_error", "name": "CepPromiseError", "errors": [{"name": "ServiceError", "message": "CEP INVÁLIDO", "service": "correios"}, {"name": "ServiceError", "message": "CEP não encontrado na base do ViaCEP.", "service": "viacep"}, {"name": "ServiceError", "message": "CEP não encontrado na base do WideNet.", "service": "widenet"}]}'
+  - name: company
+    sentence: "CNPJ {{ company.cnpj }}: {{ company.razao_social }} ({{ company.descricao_situacao_cadastral }})"
+    body: '{{ company | json }}'
+  - name: cnpj_invalid
+    status: 400
+    sentence: "CNPJ {{ path.cnpj }} is invalid"
+    body: '{"message": "CNPJ {{ digits(path.cnpj) }} inválido.", "type": "bad_request", "name": "BadRequestError"}'
+  - name: cnpj_not_found
+    status: 404
+    sentence: "CNPJ {{ path.cnpj }} not found"
+    body: '{"message": "CNPJ {{ digits(path.cnpj) }} não encontrado.", "type": "not_found", "name": "NotFoundError"}'
+  - name: banks
+    sentence: "Banks: {{ size(data.banks) }}"
+    body: '{{ data.banks | json }}'
+  - name: bank
+    sentence: "Bank {{ bank.code }}: {{ bank.name }}"
+    body: '{{ bank | json }}'
+  - name: bank_not_found
+    status: 404
+    sentence: "No bank {{ path.code }}"
+    body: '{"message": "Código bancário não encontrado", "type": "BANK_CODE_NOT_FOUND", "name": "NotFoundError"}'
+  - name: holidays
+    note: the national holidays of the year, Easter-based ones computed
+    sentence: "Holidays of {{ path.ano }}: Easter on {{ substring(iso(easter * day), 0, 10) }}"
+    body: '{{ y >= 2024 ? json(list) : json(list_old) }}'
+  - name: year_out_of_range
+    status: 404
+    sentence: "Holidays of {{ path.ano }}: out of range"
+    body: '{"message": "Ano fora do intervalo suportado entre 1900 e 2199.", "type": "feriados_range_error", "name": "NotFoundError"}'
+  - name: ddd
+    sentence: "DDD {{ path.ddd }}: {{ row.state }} ({{ size(row.cities) }} cities)"
+    body: '{"state": {{ row.state | json }}, "cities": {{ row.cities | json }}}'
+  - name: ddd_not_found
+    status: 404
+    sentence: "DDD {{ path.ddd }} not found"
+    body: '{"message": "DDD não encontrado", "type": "ddd_error", "name": "DDD_NOT_FOUND"}'
+  - name: rate_limited
+    status: 429
+    note: exists only to be forced
+    sentence: "Too many requests (429)"
+    body: '{"message": "Too many requests, please try again later.", "type": "rate_limit", "name": "TooManyRequests"}'
+data:
+  addresses:
+    - {cep: '01310100', state: SP, city: São Paulo, neighborhood: Jardim Exemplo, street: Rua das Palmeiras, lat: '-23.5643', lng: '-46.6527'}
+    - {cep: '04538000', state: SP, city: São Paulo, neighborhood: Vila Simulada, street: Avenida dos Testes, lat: '-23.5781', lng: '-46.6869'}
+    - {cep: '01317000', state: SP, city: São Paulo, neighborhood: Bela Vista, street: Rua Alfa, lat: '-23.5587', lng: '-46.6450'}
+    - {cep: '04077000', state: SP, city: São Paulo, neighborhood: Moema, street: Alameda Beta, lat: '-23.6010', lng: '-46.6650'}
+    - {cep: '20040002', state: RJ, city: Rio de Janeiro, neighborhood: Centro, street: Rua Gama, lat: '-22.9035', lng: '-43.1780'}
+    - {cep: '80010000', state: PR, city: Curitiba, neighborhood: Centro, street: Rua Delta, lat: '-25.4290', lng: '-49.2710'}
+  # Each row is BrasilAPI's answer as it comes (lookup matches cnpj by its digits).
+  companies:
+    - cnpj: '11222333000181'
+      identificador_matriz_filial: 1
+      descricao_identificador_matriz_filial: MATRIZ
+      razao_social: ACME TECNOLOGIA LTDA
+      nome_fantasia: ACME
+      situacao_cadastral: 2
+      descricao_situacao_cadastral: ATIVA
+      data_situacao_cadastral: '2010-05-10'
+      motivo_situacao_cadastral: 0
+      data_inicio_atividade: '2010-05-10'
+      cnae_fiscal: 6201501
+      cnae_fiscal_descricao: Desenvolvimento de programas de computador sob encomenda
+      cnaes_secundarios: [{codigo: 6204000, descricao: Consultoria em tecnologia da informação}]
+      descricao_tipo_de_logradouro: RUA
+      logradouro: DAS PALMEIRAS
+      numero: '120'
+      complemento: ANDAR 4
+      bairro: JARDIM EXEMPLO
+      cep: '01310100'
+      uf: SP
+      codigo_municipio: 7107
+      codigo_municipio_ibge: 3550308
+      municipio: SAO PAULO
+      ddd_telefone_1: '1140000001'
+      email: contato@acme.example.com
+      natureza_juridica: Sociedade Empresária Limitada
+      codigo_natureza_juridica: 2062
+      porte: DEMAIS
+      codigo_porte: 5
+      capital_social: 250000
+      opcao_pelo_simples: false
+      opcao_pelo_mei: false
+      qsa: [{nome_socio: EMMA CARTER SOUZA, qualificacao_socio: Sócio-Administrador, codigo_qualificacao_socio: 49, data_entrada_sociedade: '2010-05-10', identificador_de_socio: 2, cnpj_cpf_do_socio: '***982247**', faixa_etaria: Entre 31 a 40 anos}]
+    - cnpj: '44555666000181'
+      identificador_matriz_filial: 1
+      descricao_identificador_matriz_filial: MATRIZ
+      razao_social: GLOBEX COMERCIO DE ALIMENTOS LTDA
+      nome_fantasia: GLOBEX
+      situacao_cadastral: 2
+      descricao_situacao_cadastral: ATIVA
+      data_situacao_cadastral: '2015-03-02'
+      motivo_situacao_cadastral: 0
+      data_inicio_atividade: '2015-03-02'
+      cnae_fiscal: 4639701
+      cnae_fiscal_descricao: Comércio atacadista de produtos alimentícios em geral
+      cnaes_secundarios: []
+      descricao_tipo_de_logradouro: AVENIDA
+      logradouro: DOS TESTES
+      numero: '1500'
+      complemento: ''
+      bairro: VILA SIMULADA
+      cep: '04538000'
+      uf: SP
+      codigo_municipio: 7107
+      codigo_municipio_ibge: 3550308
+      municipio: SAO PAULO
+      ddd_telefone_1: '1140000002'
+      email: null
+      natureza_juridica: Sociedade Empresária Limitada
+      codigo_natureza_juridica: 2062
+      porte: EMPRESA DE PEQUENO PORTE
+      codigo_porte: 3
+      capital_social: 80000
+      opcao_pelo_simples: true
+      opcao_pelo_mei: false
+      qsa: [{nome_socio: OLIVIA BROOKS PEREIRA, qualificacao_socio: Sócio-Administrador, codigo_qualificacao_socio: 49, data_entrada_sociedade: '2015-03-02', identificador_de_socio: 2, cnpj_cpf_do_socio: '***533447**', faixa_etaria: Entre 41 a 50 anos}]
+  # A few rows of the public bank registry (ISPB, compe code).
+  banks:
+    - {ispb: '00000000', name: BCO DO BRASIL S.A., code: 1, fullName: Banco do Brasil S.A.}
+    - {ispb: '90400888', name: BCO SANTANDER (BRASIL) S.A., code: 33, fullName: BANCO SANTANDER (BRASIL) S.A.}
+    - {ispb: '00416968', name: BANCO INTER, code: 77, fullName: Banco Inter S.A.}
+    - {ispb: '00360305', name: CAIXA ECONOMICA FEDERAL, code: 104, fullName: Caixa Econômica Federal}
+    - {ispb: '60746948', name: BCO BRADESCO S.A., code: 237, fullName: Banco Bradesco S.A.}
+    - {ispb: '18236120', name: NU PAGAMENTOS - IP, code: 260, fullName: NU PAGAMENTOS S.A. - INSTITUIÇÃO DE PAGAMENTO}
+    - {ispb: '60701190', name: ITAÚ UNIBANCO S.A., code: 341, fullName: ITAÚ UNIBANCO S.A.}
+  ddds:
+    - {ddd: '11', state: SP, cities: [SÃO PAULO, OSASCO, GUARULHOS, SANTO ANDRÉ, SÃO BERNARDO DO CAMPO, BARUERI, JUNDIAÍ]}
+    - {ddd: '21', state: RJ, cities: [RIO DE JANEIRO, NITERÓI, SÃO GONÇALO, DUQUE DE CAXIAS, NOVA IGUAÇU]}
+    - {ddd: '41', state: PR, cities: [CURITIBA, SÃO JOSÉ DOS PINHAIS, COLOMBO, ARAUCÁRIA, PARANAGUÁ]}

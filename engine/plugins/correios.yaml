@@ -1,0 +1,191 @@
+# API Correios (CWS, homologação): the token (POST /token/v1/autentica/cartaopostagem with Basic auth:
+# the user and the API access code, and the posting card number), national price and delivery time
+# (/preco/v1/nacional/{coProduto}, /prazo/v1/nacional/{coProduto}), tracking (/srorastro/v1/objetos/{codigo})
+# and CEP (/cep/v2/enderecos/{cep}). Tokens last 24 h on the environment's clock; any user and code
+# work. Prices use the products table (03220 SEDEX, 03298 PAC, 04227 Mini Envios) with a charge per
+# extra kg and a farther-region surcharge; decimals come with a comma, as the API sends them.
+# Tracking answers the objects table; any other well-formed code is "SRO-020: Objeto não encontrado".
+service:
+  name: correios
+  title: Correios
+  origin: community
+  region: BR
+  description: Shipping prices, delivery times, tracking and CEP (API Correios, homologação)
+  base_url: https://apihom.correios.com.br
+  real_host: apihom.correios.com.br
+  limits:
+    latency: 200ms..900ms
+routes:
+  # ---------------------------------------------------------------- token
+  - route: POST /token/v1/autentica/cartaopostagem
+    let: &tok_lets
+      user: "split(default(headers.authorization, ''), ' ')[0] == 'Basic' ? 'acme-correios' : ''"
+      tok: "base64url(json({'alg': 'RS256', 'typ': 'JWT'})) + '.' + base64url(json({'id': user, 'cartao': default(body.numero, ''), 'exp': int((__now + 86400000) / 1000), 'jti': uuid()})) + '.' + base64url(uuid())"
+    keep:
+      state: tokens
+      key: tok
+    decide:
+      - when: "!has(headers.authorization) || !headers.authorization.startsWith('Basic ')"
+        answer: no_credentials
+      - when: "!has(body.numero)"
+        answer: no_card
+      - answer: token_card
+  - route: POST /token/v1/autentica
+    let: *tok_lets
+    keep:
+      state: tokens
+      key: tok
+    decide:
+      - when: "!has(headers.authorization) || !headers.authorization.startsWith('Basic ')"
+        answer: no_credentials
+      - answer: token
+
+  # ---------------------------------------------------------------- price and delivery time
+  - route: GET /preco/v1/nacional/{coProduto}
+    let: &calc_lets
+      bearer: "substring(default(headers.authorization, ''), 7)"
+      authed: "default(headers.authorization, '').startsWith('Bearer ') && bearer in state.tokens && __now < state.tokens[bearer].at + 86400000"
+      prod: "lookup('products', 'code', path.coProduto)"
+      orig: "digits(default(query.cepOrigem, ''))"
+      dest: "digits(default(query.cepDestino, ''))"
+      far: "substring(orig, 0, 1) != substring(dest, 0, 1)"
+      grams: "int(default(query.psObjeto, 300))"
+      kg: "int((grams + 999) / 1000)"
+      cents: "int(prod.base) + (far ? int(prod.far) : 0) + int(prod.per_kg) * (kg > 1 ? kg - 1 : 0)"
+      price: "string(int(cents / 100)) + ',' + (cents % 100 < 10 ? '0' : '') + string(cents % 100)"
+      days: "far ? int(prod.days_far) : int(prod.days_local)"
+      problem: >-
+        !has(prod) ? 'PRC-101: Produto ' + path.coProduto + ' não encontrado.'
+        : size(orig) != 8 ? 'PRC-102: CEP de origem não informado ou inválido.'
+        : size(dest) != 8 ? 'PRC-103: CEP de destino não informado ou inválido.'
+        : grams > int(prod.max_g) ? 'PRC-110: Peso excede o limite do produto (' + prod.max_g + ' g).'
+        : null
+    decide:
+      - when: "!authed"
+        answer: unauthorized
+      - when: has(problem)
+        answer: bad_request
+      - answer: price
+  - route: GET /prazo/v1/nacional/{coProduto}
+    let: *calc_lets
+    decide:
+      - when: "!authed"
+        answer: unauthorized
+      - when: has(problem) && !problem.startsWith('PRC-110')
+        answer: bad_request
+      - answer: delivery_time
+
+  # ---------------------------------------------------------------- tracking and CEP
+  - route: GET /srorastro/v1/objetos/{codigo}
+    let:
+      bearer: "substring(default(headers.authorization, ''), 7)"
+      authed: "default(headers.authorization, '').startsWith('Bearer ') && bearer in state.tokens && __now < state.tokens[bearer].at + 86400000"
+      obj: "lookup('objects', 'codObjeto', upper(path.codigo))"
+      last_only: "default(query.resultado, 'T') == 'U'"
+    decide:
+      - when: "!authed"
+        answer: unauthorized
+      - when: "!upper(path.codigo).matches('^[A-Z]{2}[0-9]{9}[A-Z]{2}$')"
+        answer: object_invalid
+      - when: "!has(obj)"
+        answer: object_not_found
+      - answer: tracking
+  - route: GET /cep/v2/enderecos/{cep}
+    let:
+      bearer: "substring(default(headers.authorization, ''), 7)"
+      authed: "default(headers.authorization, '').startsWith('Bearer ') && bearer in state.tokens && __now < state.tokens[bearer].at + 86400000"
+      a: "lookup('addresses', 'cep', digits(path.cep))"
+    decide:
+      - when: "!authed"
+        answer: unauthorized
+      - when: "size(digits(path.cep)) != 8 || !has(a)"
+        answer: cep_not_found
+      - answer: address
+answers:
+  - name: token_card
+    status: 201
+    note: a token for the posting card, valid 24 h
+    sentence: "Token for posting card {{ body.numero }} (24 h)"
+    body: '{"ambiente": "HOMOLOGACAO", "id": {{ user | json }}, "ip": "127.0.0.1", "perfil": "PJ", "cnpj": {{ data.settings[0].cnpj | json }}, "cartaoPostagem": {"numero": {{ body.numero | json }}, "contrato": {{ data.settings[0].contrato | json }}, "dr": {{ int(data.settings[0].dr) }}, "api": [27, 34, 35, 36, 37, 41, 76, 78, 80, 83, 87, 93, 566, 586, 587, 623, 624, 647]}, "emissao": {{ iso(__now, ''America/Sao_Paulo'') | json }}, "expiraEm": {{ iso(__now + 86400000, ''America/Sao_Paulo'') | json }}, "zoneOffset": "-03:00", "token": {{ tok | json }}}'
+  - name: token
+    status: 201
+    sentence: "Token issued (24 h)"
+    body: '{"ambiente": "HOMOLOGACAO", "id": {{ user | json }}, "ip": "127.0.0.1", "perfil": "PJ", "cnpj": {{ data.settings[0].cnpj | json }}, "emissao": {{ iso(__now, ''America/Sao_Paulo'') | json }}, "expiraEm": {{ iso(__now + 86400000, ''America/Sao_Paulo'') | json }}, "zoneOffset": "-03:00", "token": {{ tok | json }}}'
+  - name: price
+    sentence: "{{ prod.name }} {{ orig }} → {{ dest }}, {{ grams }} g: R$ {{ price }}"
+    body: '{"coProduto": {{ path.coProduto | json }}, "pcBase": {{ price | json }}, "pcBaseGeral": {{ price | json }}, "peVariacao": "0,0000", "pcReferencia": {{ price | json }}, "vlBaseCalculoImposto": {{ price | json }}, "inPesoCubico": "N", "psCobrado": {{ string(grams) | json }}, "peAdValorem": "0,0000", "vlSeguroAutomatico": "0,00", "qtAdicional": "0", "pcFaixa": {{ price | json }}, "pcFaixaVariacao": {{ price | json }}, "pcProduto": {{ price | json }}, "pcTotalServicosAdicionais": "0,00", "pcFinal": {{ price | json }}}'
+  - name: delivery_time
+    sentence: "{{ prod.name }} {{ orig }} → {{ dest }}: {{ days }} days"
+    body: '{"coProduto": {{ path.coProduto | json }}, "prazoEntrega": {{ days }}, "dataMaxima": {{ substring(iso(__now + days * 86400000, ''America/Sao_Paulo''), 0, 10) + ''T23:59:00'' | json }}, "entregaDomiciliar": "S", "entregaSabado": {{ prod.code == ''03220'' ? ''S'' : ''N'' | json }}, "msg": null}'
+  - name: tracking
+    note: the object's events, newest first (resultado=U for the last one only)
+    sentence: "Tracking {{ obj.codObjeto }}: {{ obj.eventos[0].descricao }}"
+    body: '{"versao": "1.0.0", "quantidade": 1, "objetos": [{"codObjeto": {{ obj.codObjeto | json }}, "tipoPostal": {{ obj.tipoPostal | json }}, "dtPrevista": {{ obj.dtPrevista | json }}, "contrato": {{ data.settings[0].contrato | json }}, "largura": 11, "comprimento": 16, "altura": 2, "peso": 0.3, "formato": "PACOTE", "modalidade": "F", "eventos": {{ last_only ? json([obj.eventos[0]]) : json(obj.eventos) }}}], "tipoResultado": {{ last_only ? ''Último evento'' : ''Todos os eventos'' | json }}}'
+  - name: address
+    sentence: "CEP {{ a.cep }}: {{ a.logradouro }}, {{ a.localidade }}/{{ a.uf }}"
+    body: '{{ a | json }}'
+  # ---- errors
+  - name: no_credentials
+    status: 401
+    note: no Basic credential (user and API access code)
+    sentence: "Token refused: no credentials"
+    body: '{"msgs": ["GTW-001: Credenciais de acesso não informadas."], "date": {{ iso(__now, ''America/Sao_Paulo'') | json }}, "method": "POST", "path": {{ __path | json }}}'
+  - name: no_card
+    status: 400
+    sentence: "Token refused: no posting card number"
+    body: '{"msgs": ["GTW-006: Número do cartão de postagem não informado."], "date": {{ iso(__now, ''America/Sao_Paulo'') | json }}, "method": "POST", "path": {{ __path | json }}}'
+  - name: unauthorized
+    status: 401
+    note: no token, an unknown one, or one older than 24 h
+    sentence: "Refused: token missing or expired"
+    body: '{"msgs": ["GTW-007: Token inválido ou expirado."], "date": {{ iso(__now, ''America/Sao_Paulo'') | json }}, "method": "GET", "path": {{ __path | json }}}'
+  - name: bad_request
+    status: 400
+    note: unknown product, missing or malformed CEP, too heavy
+    sentence: "Refused: {{ problem }}"
+    body: '{"msgs": [{{ problem | json }}], "date": {{ iso(__now, ''America/Sao_Paulo'') | json }}, "method": "GET", "path": {{ __path | json }}}'
+  - name: object_invalid
+    sentence: "Tracking {{ path.codigo }}: invalid code"
+    body: '{"versao": "1.0.0", "quantidade": 1, "objetos": [{"codObjeto": {{ path.codigo | json }}, "mensagem": "SRO-019: Objeto inválido"}], "tipoResultado": "Todos os eventos"}'
+  - name: object_not_found
+    sentence: "Tracking {{ path.codigo }}: not found"
+    body: '{"versao": "1.0.0", "quantidade": 1, "objetos": [{"codObjeto": {{ upper(path.codigo) | json }}, "mensagem": "SRO-020: Objeto não encontrado na base de dados dos Correios."}], "tipoResultado": "Todos os eventos"}'
+  - name: cep_not_found
+    status: 404
+    sentence: "CEP {{ path.cep }} not found"
+    body: '{"msgs": ["CEP-001: CEP não encontrado."], "date": {{ iso(__now, ''America/Sao_Paulo'') | json }}, "method": "GET", "path": {{ __path | json }}}'
+  - name: unavailable
+    status: 503
+    note: exists only to be forced
+    sentence: "Correios unavailable (503)"
+    body: '{"msgs": ["GTW-503: Serviço indisponível no momento. Tente novamente mais tarde."], "date": {{ iso(__now, ''America/Sao_Paulo'') | json }}, "method": "GET", "path": {{ __path | json }}}'
+data:
+  settings:
+    - {cnpj: '11222333000181', contrato: '9912345678', dr: 74}
+  # Price in cents: base, extra per kg above the first, surcharge outside the origin's CEP region.
+  products:
+    - {code: '03220', name: SEDEX, base: 2390, per_kg: 450, far: 1800, days_local: 1, days_far: 4, max_g: 30000}
+    - {code: '03298', name: PAC, base: 1890, per_kg: 280, far: 1100, days_local: 4, days_far: 9, max_g: 30000}
+    - {code: '04227', name: Mini Envios, base: 1150, per_kg: 0, far: 400, days_local: 6, days_far: 12, max_g: 300}
+  addresses:
+    - {cep: '01310100', uf: SP, numeroLocalidade: 96681, localidade: São Paulo, logradouro: Rua das Palmeiras, tipoLogradouro: Rua, nomeLogradouro: das Palmeiras, complemento: '', abreviatura: R das Palmeiras, bairro: Jardim Exemplo, tipoCEP: 2, lado: '', numeroInicial: null, numeroFinal: null}
+    - {cep: '04538000', uf: SP, numeroLocalidade: 96681, localidade: São Paulo, logradouro: Avenida dos Testes, tipoLogradouro: Avenida, nomeLogradouro: dos Testes, complemento: 'até 1998 - lado par', abreviatura: Av dos Testes, bairro: Vila Simulada, tipoCEP: 2, lado: P, numeroInicial: 2, numeroFinal: 1998}
+    - {cep: '20040002', uf: RJ, numeroLocalidade: 7043, localidade: Rio de Janeiro, logradouro: Rua Gama, tipoLogradouro: Rua, nomeLogradouro: Gama, complemento: '', abreviatura: R Gama, bairro: Centro, tipoCEP: 2, lado: '', numeroInicial: null, numeroFinal: null}
+    - {cep: '80010000', uf: PR, numeroLocalidade: 6015, localidade: Curitiba, logradouro: Rua Delta, tipoLogradouro: Rua, nomeLogradouro: Delta, complemento: '', abreviatura: R Delta, bairro: Centro, tipoCEP: 2, lado: '', numeroInicial: null, numeroFinal: null}
+  # Tracked objects (S10 codes with valid check digits), events newest first.
+  objects:
+    - codObjeto: AA123456785BR
+      tipoPostal: {sigla: AA, descricao: ETIQUETA LOGICA SEDEX, categoria: SEDEX}
+      dtPrevista: '2026-11-13T23:59:59'
+      eventos:
+        - {codigo: BDE, tipo: '01', dtHrCriado: '2026-11-12T14:21:09', descricao: Objeto entregue ao destinatário, unidade: {endereco: {cidade: RIO DE JANEIRO, uf: RJ}, tipo: Unidade de Distribuição}, urlIcone: /public-resources/img/smile.png}
+        - {codigo: OEC, tipo: '01', dtHrCriado: '2026-11-12T08:02:44', descricao: Objeto saiu para entrega ao destinatário, unidade: {endereco: {cidade: RIO DE JANEIRO, uf: RJ}, tipo: Unidade de Distribuição}, urlIcone: /public-resources/img/pre-atendimento-cor.png}
+        - {codigo: RO, tipo: '01', dtHrCriado: '2026-11-11T22:40:17', descricao: Objeto em transferência - por favor aguarde, unidade: {endereco: {cidade: RIO DE JANEIRO, uf: RJ}, tipo: Unidade de Tratamento}, unidadeDestino: {endereco: {cidade: RIO DE JANEIRO, uf: RJ}, tipo: Unidade de Distribuição}, urlIcone: /public-resources/img/caminhao-cor.png}
+        - {codigo: RO, tipo: '01', dtHrCriado: '2026-11-11T03:15:52', descricao: Objeto em transferência - por favor aguarde, unidade: {endereco: {cidade: SAO PAULO, uf: SP}, tipo: Unidade de Tratamento}, unidadeDestino: {endereco: {cidade: RIO DE JANEIRO, uf: RJ}, tipo: Unidade de Tratamento}, urlIcone: /public-resources/img/caminhao-cor.png}
+        - {codigo: PO, tipo: '01', dtHrCriado: '2026-11-10T16:48:30', descricao: Objeto postado, unidade: {endereco: {cidade: SAO PAULO, uf: SP}, tipo: Agência dos Correios}, urlIcone: /public-resources/img/agencia-cor.png}
+    - codObjeto: AB987654326BR
+      tipoPostal: {sigla: AB, descricao: ETIQUETA LOGICA PAC, categoria: PAC}
+      dtPrevista: '2026-11-21T23:59:59'
+      eventos:
+        - {codigo: RO, tipo: '01', dtHrCriado: '2026-11-14T19:05:11', descricao: Objeto em transferência - por favor aguarde, unidade: {endereco: {cidade: CAJAMAR, uf: SP}, tipo: Unidade de Tratamento}, unidadeDestino: {endereco: {cidade: CURITIBA, uf: PR}, tipo: Unidade de Tratamento}, urlIcone: /public-resources/img/caminhao-cor.png}
+        - {codigo: PO, tipo: '01', dtHrCriado: '2026-11-14T11:32:08', descricao: Objeto postado, unidade: {endereco: {cidade: SAO PAULO, uf: SP}, tipo: Agência dos Correios}, urlIcone: /public-resources/img/agencia-cor.png}

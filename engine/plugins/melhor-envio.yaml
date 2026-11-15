@@ -1,0 +1,325 @@
+# Melhor Envio API v2 (sandbox): OAuth2 authorization code (GET /oauth/authorize redirects back with a
+# code; POST /oauth/token trades it, or a refresh token), quotes (POST /api/v2/me/shipment/calculate),
+# the cart, checkout, label generation and printing, and tracking. Webhooks go to settings.webhook_url
+# with X-ME-Signature: the base64 HMAC-SHA256 of the body with the application's secret
+# (settings.client_secret), as the docs say. Events: order.created, order.released (paid),
+# order.generated, order.posted (2 h after generating) and order.delivered (48 h after), on the
+# environment's clock. One order per call: shipment endpoints read orders[0].
+# Point the app at http://localhost:8028/melhor-envio (or resolve sandbox.melhorenvio.com.br).
+service:
+  name: melhor-envio
+  title: Melhor Envio
+  origin: community
+  region: BR
+  description: Shipping quotes, labels and tracking across carriers, with signed webhooks
+  base_url: https://sandbox.melhorenvio.com.br
+  real_host: sandbox.melhorenvio.com.br
+  limits:
+    latency: 200ms..700ms
+routes:
+  # ---------------------------------------------------------------- OAuth2
+  - route: GET /oauth/authorize
+    let:
+      code: "'def50200' + replace(uuid(), '-', '') + replace(uuid(), '-', '')"
+    keep:
+      state: codes
+      key: code
+    decide:
+      - when: "!has(query.client_id) || !has(query.redirect_uri) || query.response_type != 'code'"
+        answer: authorize_invalid
+      - answer: authorize_redirect
+  - route: POST /oauth/token
+    let:
+      access: "base64url(json({'typ': 'JWT', 'alg': 'RS256'})) + '.' + base64url(json({'aud': default(body.client_id, ''), 'jti': uuid(), 'scopes': split(default(state.codes[body.code].body.scope, 'cart-read cart-write orders-read shipping-calculate shipping-checkout shipping-generate shipping-print shipping-tracking'), ' ')})) + '.' + base64url(uuid())"
+    keep:
+      state: tokens
+      key: access
+    decide:
+      - when: "!(body.grant_type in ['authorization_code', 'refresh_token'])"
+        answer: unsupported_grant
+      - when: "!has(body.client_id) || !has(body.client_secret)"
+        answer: invalid_client
+      - when: "body.grant_type == 'authorization_code' && !(default(body.code, '') in state.codes)"
+        answer: invalid_grant
+      - when: "body.grant_type == 'refresh_token' && !default(body.refresh_token, '').startsWith('def50200')"
+        answer: invalid_grant
+      - answer: token
+
+  # ---------------------------------------------------------------- quotes
+  - route: POST /api/v2/me/shipment/calculate
+    let:
+      bearer: "substring(default(headers.authorization, ''), 7)"
+      authed: "bearer in state.tokens"
+      orig: "digits(default(body.from.postal_code, ''))"
+      dest: "digits(default(body.to.postal_code, ''))"
+      far: "substring(orig, 0, 1) != substring(dest, 0, 1)"
+      weight: "double(default(body.package.weight, double(default(body.products[0].weight, 0)) * int(default(body.products[0].quantity, 1))))"
+      kg: "int(weight + 0.999)"
+      dims: "{'height': int(default(body.package.height, default(body.products[0].height, 2))), 'width': int(default(body.package.width, default(body.products[0].width, 11))), 'length': int(default(body.package.length, default(body.products[0].length, 16)))}"
+      quotes: >-
+        [data.services[0], data.services[1], data.services[2], data.services[3], data.services[4]]
+      c0: "int(data.services[0].base) + int(data.services[0].per_kg) * (kg > 1 ? kg - 1 : 0) + (far ? int(data.services[0].far) : 0)"
+      c1: "int(data.services[1].base) + int(data.services[1].per_kg) * (kg > 1 ? kg - 1 : 0) + (far ? int(data.services[1].far) : 0)"
+      c2: "int(data.services[2].base) + int(data.services[2].per_kg) * (kg > 1 ? kg - 1 : 0) + (far ? int(data.services[2].far) : 0)"
+      c3: "int(data.services[3].base) + int(data.services[3].per_kg) * (kg > 1 ? kg - 1 : 0) + (far ? int(data.services[3].far) : 0)"
+      c4: "int(data.services[4].base) + int(data.services[4].per_kg) * (kg > 1 ? kg - 1 : 0) + (far ? int(data.services[4].far) : 0)"
+      p0: "string(int(c0 / 100)) + '.' + (c0 % 100 < 10 ? '0' : '') + string(c0 % 100)"
+      p1: "string(int(c1 / 100)) + '.' + (c1 % 100 < 10 ? '0' : '') + string(c1 % 100)"
+      p2: "string(int(c2 / 100)) + '.' + (c2 % 100 < 10 ? '0' : '') + string(c2 % 100)"
+      p3: "string(int(c3 / 100)) + '.' + (c3 % 100 < 10 ? '0' : '') + string(c3 % 100)"
+      p4: "string(int(c4 / 100)) + '.' + (c4 % 100 < 10 ? '0' : '') + string(c4 % 100)"
+      q: >-
+        [{"id": int(quotes[0].id), "name": quotes[0].name, "price": p0, "custom_price": p0, "discount": "0.00", "currency": "R$", "delivery_time": int(far ? quotes[0].days_far : quotes[0].days_local), "delivery_range": {"min": int((far ? quotes[0].days_far : quotes[0].days_local) - 1), "max": int(far ? quotes[0].days_far : quotes[0].days_local)}, "custom_delivery_time": int(far ? quotes[0].days_far : quotes[0].days_local), "custom_delivery_range": {"min": int((far ? quotes[0].days_far : quotes[0].days_local) - 1), "max": int(far ? quotes[0].days_far : quotes[0].days_local)}, "packages": [{"price": p0, "discount": "0.00", "format": "box", "dimensions": dims, "weight": string(weight), "insurance_value": "0.00"}], "additional_services": {"receipt": false, "own_hand": false, "collect": false}, "company": {"id": int(quotes[0].company_id), "name": quotes[0].company, "picture": quotes[0].picture}},
+        {"id": int(quotes[1].id), "name": quotes[1].name, "price": p1, "custom_price": p1, "discount": "0.00", "currency": "R$", "delivery_time": int(far ? quotes[1].days_far : quotes[1].days_local), "delivery_range": {"min": int((far ? quotes[1].days_far : quotes[1].days_local) - 1), "max": int(far ? quotes[1].days_far : quotes[1].days_local)}, "custom_delivery_time": int(far ? quotes[1].days_far : quotes[1].days_local), "custom_delivery_range": {"min": int((far ? quotes[1].days_far : quotes[1].days_local) - 1), "max": int(far ? quotes[1].days_far : quotes[1].days_local)}, "packages": [{"price": p1, "discount": "0.00", "format": "box", "dimensions": dims, "weight": string(weight), "insurance_value": "0.00"}], "additional_services": {"receipt": false, "own_hand": false, "collect": false}, "company": {"id": int(quotes[1].company_id), "name": quotes[1].company, "picture": quotes[1].picture}},
+        {"id": int(quotes[2].id), "name": quotes[2].name, "price": p2, "custom_price": p2, "discount": "0.00", "currency": "R$", "delivery_time": int(far ? quotes[2].days_far : quotes[2].days_local), "delivery_range": {"min": int((far ? quotes[2].days_far : quotes[2].days_local) - 1), "max": int(far ? quotes[2].days_far : quotes[2].days_local)}, "custom_delivery_time": int(far ? quotes[2].days_far : quotes[2].days_local), "custom_delivery_range": {"min": int((far ? quotes[2].days_far : quotes[2].days_local) - 1), "max": int(far ? quotes[2].days_far : quotes[2].days_local)}, "packages": [{"price": p2, "discount": "0.00", "format": "box", "dimensions": dims, "weight": string(weight), "insurance_value": "0.00"}], "additional_services": {"receipt": false, "own_hand": false, "collect": false}, "company": {"id": int(quotes[2].company_id), "name": quotes[2].company, "picture": quotes[2].picture}},
+        far ? {"id": int(quotes[3].id), "name": quotes[3].name, "error": "Transportadora não atende este trecho.", "company": {"id": int(quotes[3].company_id), "name": quotes[3].company, "picture": quotes[3].picture}}
+          : {"id": int(quotes[3].id), "name": quotes[3].name, "price": p3, "custom_price": p3, "discount": "0.00", "currency": "R$", "delivery_time": int(quotes[3].days_local), "delivery_range": {"min": int((quotes[3].days_local) - 1), "max": int(quotes[3].days_local)}, "custom_delivery_time": int(quotes[3].days_local), "custom_delivery_range": {"min": int((quotes[3].days_local) - 1), "max": int(quotes[3].days_local)}, "packages": [{"price": p3, "discount": "0.00", "format": "box", "dimensions": dims, "weight": string(weight), "insurance_value": "0.00"}], "additional_services": {"receipt": false, "own_hand": false, "collect": false}, "company": {"id": int(quotes[3].company_id), "name": quotes[3].company, "picture": quotes[3].picture}},
+        weight > 0.3 ? {"id": int(quotes[4].id), "name": quotes[4].name, "error": "Peso excedido.", "company": {"id": int(quotes[4].company_id), "name": quotes[4].company, "picture": quotes[4].picture}}
+          : {"id": int(quotes[4].id), "name": quotes[4].name, "price": p4, "custom_price": p4, "discount": "0.00", "currency": "R$", "delivery_time": int(far ? quotes[4].days_far : quotes[4].days_local), "delivery_range": {"min": int((far ? quotes[4].days_far : quotes[4].days_local) - 1), "max": int(far ? quotes[4].days_far : quotes[4].days_local)}, "custom_delivery_time": int(far ? quotes[4].days_far : quotes[4].days_local), "custom_delivery_range": {"min": int((far ? quotes[4].days_far : quotes[4].days_local) - 1), "max": int(far ? quotes[4].days_far : quotes[4].days_local)}, "packages": [{"price": p4, "discount": "0.00", "format": "box", "dimensions": dims, "weight": string(weight), "insurance_value": "0.00"}], "additional_services": {"receipt": false, "own_hand": false, "collect": false}, "company": {"id": int(quotes[4].company_id), "name": quotes[4].company, "picture": quotes[4].picture}}]
+      problem: >-
+        size(orig) != 8 ? ['from.postal_code', 'O campo from.postal code é obrigatório.']
+        : size(dest) != 8 ? ['to.postal_code', 'O campo to.postal code é obrigatório.']
+        : weight <= 0 ? ['package.weight', 'O campo package.weight é obrigatório quando products não está presente.']
+        : null
+    decide:
+      - when: "!authed"
+        answer: unauthenticated
+      - when: has(problem)
+        answer: invalid_data
+      - answer: quotes
+
+  # ---------------------------------------------------------------- cart, checkout, labels, tracking
+  - route: POST /api/v2/me/cart
+    let: &order_lets
+      bearer: "substring(default(headers.authorization, ''), 7)"
+      authed: "bearer in state.tokens"
+      oid: "default(path.id, default(body.orders[0], uuid()))"
+      rec: "state.orders[oid]"
+      src: "__path == '/api/v2/me/cart' ? body : rec.body"
+      t0: "__path == '/api/v2/me/cart' ? __now : rec.at"
+      svc: "lookup('services', 'id', int(default(src.service, 0)))"
+      ow: "double(default(src.volumes[0].weight, 0.3))"
+      okg: "int(ow + 0.999)"
+      ofar: "substring(digits(default(src.from.postal_code, '')), 0, 1) != substring(digits(default(src.to.postal_code, '')), 0, 1)"
+      ocents: "int(svc.base) + int(svc.per_kg) * (okg > 1 ? okg - 1 : 0) + (ofar ? int(svc.far) : 0)"
+      oprice: "double(ocents) / 100"
+      paid: "state.paid[oid]"
+      gen: "state.generated[oid]"
+      paid_at: "__path.endsWith('/checkout') ? __now : paid.at"
+      gen_at: "__path.endsWith('/generate') ? __now : gen.at"
+      ostatus: >-
+        has(gen_at) ? (__now >= gen_at + 172800000 ? 'delivered' : __now >= gen_at + 7200000 ? 'posted' : 'generated')
+        : has(paid_at) ? 'released' : 'pending'
+      d_paid: "has(paid_at) ? replace(substring(iso(paid_at, 'America/Sao_Paulo'), 0, 19), 'T', ' ') : null"
+      d_gen: "has(gen_at) ? replace(substring(iso(gen_at, 'America/Sao_Paulo'), 0, 19), 'T', ' ') : null"
+      d_post: "ostatus == 'posted' || ostatus == 'delivered' ? replace(substring(iso(gen_at + 7200000, 'America/Sao_Paulo'), 0, 19), 'T', ' ') : null"
+      d_deliv: "ostatus == 'delivered' ? replace(substring(iso(gen_at + 172800000, 'America/Sao_Paulo'), 0, 19), 'T', ' ') : null"
+      d_created: "replace(substring(iso(t0, 'America/Sao_Paulo'), 0, 19), 'T', ' ')"
+      protocol: "'ORD-' + substring(digits(iso(t0)), 0, 6) + substring(digits(oid.sha256()), 0, 8)"
+      self_tracking: "'ME' + substring(digits(iso(t0)), 2, 6) + upper(substring(oid.sha256(), 0, 7))"
+      tracking: "has(gen_at) ? self_tracking : null"
+      order_view: >-
+        {"id": oid, "protocol": protocol, "service_id": int(src.service), "agency_id": src.agency, "contract": null, "service_code": null,
+        "quote": oprice, "price": oprice, "coupon": null, "discount": 0, "delivery_min": int((ofar ? svc.days_far : svc.days_local) - 1), "delivery_max": int(ofar ? svc.days_far : svc.days_local),
+        "status": ostatus, "reminder": null, "insurance_value": double(default(src.options.insurance_value, 0)), "weight": ow,
+        "width": src.volumes[0].width, "height": src.volumes[0].height, "length": src.volumes[0].length, "diameter": 0, "format": "box", "billed_weight": double(okg),
+        "receipt": default(src.options.receipt, false), "own_hand": default(src.options.own_hand, false), "collect": false, "collect_scheduled_at": null,
+        "reverse": default(src.options.reverse, false), "non_commercial": default(src.options.non_commercial, false), "authorization_code": null,
+        "tracking": tracking, "self_tracking": self_tracking, "delivery_receipt": null, "additional_info": null, "cte_key": null,
+        "paid_at": d_paid, "generated_at": d_gen, "posted_at": d_post, "delivered_at": d_deliv, "canceled_at": null, "suspended_at": null, "expired_at": null,
+        "created_at": d_created, "updated_at": d_created, "parse_pi_at": null,
+        "from": src.from, "to": src.to, "service": {"id": int(svc.id), "name": svc.name, "company": {"id": int(svc.company_id), "name": svc.company}}}
+      hook_data: "{'id': oid, 'protocol': protocol, 'status': ostatus, 'tracking': tracking, 'self_tracking': self_tracking, 'user_id': data.settings[0].user_id, 'tags': default(src.tags, []), 'created_at': d_created, 'paid_at': d_paid, 'generated_at': d_gen, 'posted_at': d_post, 'delivered_at': d_deliv, 'canceled_at': null, 'expired_at': null, 'tracking_url': 'https://melhorrastreio.com.br/rastreio/' + self_tracking}"
+      posted_data: "{'id': oid, 'protocol': protocol, 'status': 'posted', 'tracking': self_tracking, 'self_tracking': self_tracking, 'user_id': data.settings[0].user_id, 'tags': default(src.tags, []), 'created_at': d_created, 'paid_at': d_paid, 'generated_at': d_gen, 'posted_at': replace(substring(iso(__now + 7200000, 'America/Sao_Paulo'), 0, 19), 'T', ' '), 'delivered_at': null, 'canceled_at': null, 'expired_at': null, 'tracking_url': 'https://melhorrastreio.com.br/rastreio/' + self_tracking}"
+      delivered_data: "{'id': oid, 'protocol': protocol, 'status': 'delivered', 'tracking': self_tracking, 'self_tracking': self_tracking, 'user_id': data.settings[0].user_id, 'tags': default(src.tags, []), 'created_at': d_created, 'paid_at': d_paid, 'generated_at': d_gen, 'posted_at': replace(substring(iso(__now + 7200000, 'America/Sao_Paulo'), 0, 19), 'T', ' '), 'delivered_at': replace(substring(iso(__now + 172800000, 'America/Sao_Paulo'), 0, 19), 'T', ' '), 'canceled_at': null, 'expired_at': null, 'tracking_url': 'https://melhorrastreio.com.br/rastreio/' + self_tracking}"
+      hb_now: "json({'event': 'order.' + (ostatus == 'pending' ? 'created' : ostatus), 'data': hook_data})"
+      hb_posted: "json({'event': 'order.posted', 'data': posted_data})"
+      hb_delivered: "json({'event': 'order.delivered', 'data': delivered_data})"
+      problem: >-
+        !has(svc) ? ['service', 'O serviço selecionado é inválido.']
+        : !has(src.from.postal_code) ? ['from.postal_code', 'O campo from.postal code é obrigatório.']
+        : !has(src.to.postal_code) ? ['to.postal_code', 'O campo to.postal code é obrigatório.']
+        : !has(src.volumes) ? ['volumes', 'O campo volumes é obrigatório para o serviço ' + svc.name + '.']
+        : null
+    keep:
+      state: orders
+      key: oid
+    decide:
+      - when: "!authed"
+        answer: unauthenticated
+      - when: has(problem)
+        answer: invalid_data
+      - answer: cart_order
+    send:
+      - url: &me_hook "{{ answer in ['cart_order', 'checkout', 'generate'] ? data.settings[0].webhook_url : '' }}"
+        event: order.created
+        headers: &me_sig
+          X-ME-Signature: "{{ hmac('sha256', data.settings[0].client_secret, hb_now, 'base64') }}"
+        body: '{{ hb_now }}'
+  - route: GET /api/v2/me/orders/{id}
+    let: *order_lets
+    decide:
+      - when: "!authed"
+        answer: unauthenticated
+      - when: "!has(rec)"
+        answer: order_not_found
+      - answer: order
+  - route: POST /api/v2/me/shipment/checkout
+    let: *order_lets
+    keep:
+      state: paid
+      key: oid
+    decide:
+      - when: "!authed"
+        answer: unauthenticated
+      - when: "!has(rec)"
+        answer: order_not_found
+      - when: has(paid)
+        answer: already_paid
+      - answer: checkout
+    send:
+      - url: *me_hook
+        event: order.released
+        headers: *me_sig
+        body: '{{ hb_now }}'
+  - route: POST /api/v2/me/shipment/generate
+    let: *order_lets
+    keep:
+      state: generated
+      key: oid
+    decide:
+      - when: "!authed"
+        answer: unauthenticated
+      - when: "!has(rec)"
+        answer: order_not_found
+      - when: "!has(paid) || has(gen)"
+        answer: generate_refused
+      - answer: generate
+    send:
+      - url: *me_hook
+        event: order.generated
+        headers: *me_sig
+        body: '{{ hb_now }}'
+      - url: *me_hook
+        delay: 2h
+        event: order.posted
+        headers:
+          X-ME-Signature: "{{ hmac('sha256', data.settings[0].client_secret, hb_posted, 'base64') }}"
+        body: '{{ hb_posted }}'
+      - url: *me_hook
+        delay: 48h
+        event: order.delivered
+        headers:
+          X-ME-Signature: "{{ hmac('sha256', data.settings[0].client_secret, hb_delivered, 'base64') }}"
+        body: '{{ hb_delivered }}'
+  - route: POST /api/v2/me/shipment/print
+    let: *order_lets
+    decide:
+      - when: "!authed"
+        answer: unauthenticated
+      - when: "!has(rec)"
+        answer: order_not_found
+      - when: "!has(gen)"
+        answer: print_refused
+      - answer: print
+  - route: POST /api/v2/me/shipment/tracking
+    let: *order_lets
+    decide:
+      - when: "!authed"
+        answer: unauthenticated
+      - when: "!has(rec)"
+        answer: order_not_found
+      - answer: tracking
+answers:
+  - name: authorize_redirect
+    status: 302
+    note: the user allowed the app; back to redirect_uri with the code
+    sentence: "Authorized {{ query.client_id }}: code sent to {{ query.redirect_uri }}"
+    headers:
+      Location: "{{ query.redirect_uri + (query.redirect_uri.contains('?') ? '&' : '?') + 'code=' + code + (has(query.state) ? '&state=' + query.state : '') }}"
+    body: ''
+  - name: authorize_invalid
+    status: 400
+    sentence: "Authorize refused: client_id, redirect_uri or response_type missing"
+    body: '{"error": "unsupported_response_type", "error_description": "The authorization server does not support obtaining an authorization code using this method.", "message": "The authorization server does not support obtaining an authorization code using this method."}'
+  - name: token
+    sentence: "Token issued to {{ body.client_id }} ({{ body.grant_type }})"
+    body: '{"token_type": "Bearer", "expires_in": 2592000, "access_token": {{ access | json }}, "refresh_token": "def50200{{ replace(uuid(), ''-'', '''') }}{{ replace(uuid(), ''-'', '''') }}"}'
+  - name: unsupported_grant
+    status: 400
+    sentence: "Token refused: grant_type {{ body.grant_type }}"
+    body: '{"error": "unsupported_grant_type", "error_description": "The authorization grant type is not supported by the authorization server.", "hint": "Check that all required parameters have been provided", "message": "The authorization grant type is not supported by the authorization server."}'
+  - name: invalid_client
+    status: 401
+    sentence: "Token refused: client authentication failed"
+    body: '{"error": "invalid_client", "error_description": "Client authentication failed", "message": "Client authentication failed"}'
+  - name: invalid_grant
+    status: 400
+    note: an unknown or reused authorization code, or a malformed refresh token
+    sentence: "Token refused: invalid grant"
+    body: '{"error": "invalid_grant", "error_description": "The provided authorization grant (e.g., authorization code, resource owner credentials) or refresh token is invalid, expired, revoked, does not match the redirection URI used in the authorization request, or was issued to another client.", "hint": "Authorization code has been revoked", "message": "The provided authorization grant (e.g., authorization code, resource owner credentials) or refresh token is invalid, expired, revoked, does not match the redirection URI used in the authorization request, or was issued to another client."}'
+  - name: quotes
+    note: one quote per service; .Com does not serve other regions and Mini Envios takes up to 300 g
+    sentence: "Quote {{ orig }} → {{ dest }}, {{ weight }} kg: PAC R$ {{ p0 }}, SEDEX R$ {{ p1 }}"
+    body: '{{ q | json }}'
+  - name: cart_order
+    status: 201
+    sentence: "Order {{ oid }} in the cart: {{ svc.name }} R$ {{ oprice }}"
+    body: '{{ order_view | json }}'
+  - name: order
+    sentence: "Order {{ oid }}: {{ ostatus }}"
+    body: '{{ order_view | json }}'
+  - name: checkout
+    sentence: "Paid order {{ oid }}: R$ {{ oprice }}"
+    body: '{"purchase": {"id": {{ uuid() | json }}, "protocol": "PUR-{{ substring(digits(oid.sha256()), 0, 14) }}", "total": {{ oprice }}, "discount": 0, "status": "paid", "paid_at": {{ d_paid | json }}, "canceled_at": null, "created_at": {{ d_paid | json }}, "updated_at": {{ d_paid | json }}, "payment": null, "transactions": [], "orders": [{{ order_view | json }}], "paypal_discounts": []}, "digitable": null, "redirect": null, "message": null, "token": null, "payment_id": null}'
+  - name: generate
+    sentence: "Label generated for {{ oid }}: {{ self_tracking }}"
+    body: '{"{{ oid }}": {"status": true, "message": "Envio gerado com sucesso"}}'
+  - name: print
+    sentence: "Label of {{ oid }} ready to print"
+    body: '{"url": "https://sandbox.melhorenvio.com.br/imprimir/{{ substring(oid.sha256(), 0, 32) }}"}'
+  - name: tracking
+    sentence: "Tracking {{ oid }}: {{ ostatus }}"
+    body: '{"{{ oid }}": {"id": {{ oid | json }}, "protocol": {{ protocol | json }}, "status": {{ ostatus | json }}, "tracking": {{ tracking | json }}, "melhorenvio_tracking": {{ self_tracking | json }}, "created_at": {{ d_created | json }}, "paid_at": {{ d_paid | json }}, "generated_at": {{ d_gen | json }}, "posted_at": {{ d_post | json }}, "delivered_at": {{ d_deliv | json }}, "canceled_at": null, "expired_at": null}}'
+  # ---- errors (Laravel's shapes, as Melhor Envio sends them)
+  - name: unauthenticated
+    status: 401
+    sentence: "Refused: unauthenticated"
+    body: '{"message": "Unauthenticated."}'
+  - name: invalid_data
+    status: 422
+    note: a required field is missing (postal codes, weight, service, volumes)
+    sentence: "Refused: {{ problem[1] }}"
+    body: '{"message": "The given data was invalid.", "errors": {"{{ problem[0] }}": [{{ problem[1] | json }}]}}'
+  - name: order_not_found
+    status: 404
+    sentence: "No order {{ oid }}"
+    body: '{"message": "No query results for model [App\\Models\\Order]."}'
+  - name: already_paid
+    status: 422
+    sentence: "Checkout refused: {{ oid }} already paid"
+    body: '{"message": "The given data was invalid.", "errors": {"orders.0": ["O envio {{ oid }} já foi pago."]}}'
+  - name: generate_refused
+    status: 422
+    sentence: "Generate refused: {{ oid }} is {{ ostatus }}"
+    body: '{"message": "The given data was invalid.", "errors": {"orders.0": ["O envio {{ oid }} não está liberado para geração de etiqueta."]}}'
+  - name: print_refused
+    status: 422
+    sentence: "Print refused: {{ oid }} has no label yet"
+    body: '{"message": "The given data was invalid.", "errors": {"orders.0": ["O envio {{ oid }} ainda não teve sua etiqueta gerada."]}}'
+  - name: too_many_requests
+    status: 429
+    note: exists only to be forced
+    sentence: "Too many requests (429)"
+    body: '{"message": "Too Many Attempts."}'
+data:
+  # Where webhooks go and the app's secret that signs them (X-ME-Signature).
+  settings:
+    - {webhook_url: 'http://localhost:3000/api/webhooks/melhor-envio', client_secret: me-acme-client-secret, user_id: 'a1b2c3d4-0000-4000-8000-acme00000001'}
+  # Prices in cents: base, per kg above the first, surcharge outside the origin's CEP region.
+  services:
+    - {id: 1, name: PAC, company_id: 1, company: Correios, picture: 'https://sandbox.melhorenvio.com.br/images/shipping-companies/correios.png', base: 1790, per_kg: 260, far: 1050, days_local: 5, days_far: 9}
+    - {id: 2, name: SEDEX, company_id: 1, company: Correios, picture: 'https://sandbox.melhorenvio.com.br/images/shipping-companies/correios.png', base: 2290, per_kg: 430, far: 1700, days_local: 1, days_far: 4}
+    - {id: 3, name: .Package, company_id: 2, company: Jadlog, picture: 'https://sandbox.melhorenvio.com.br/images/shipping-companies/jadlog.png', base: 1650, per_kg: 240, far: 900, days_local: 3, days_far: 7}
+    - {id: 4, name: .Com, company_id: 2, company: Jadlog, picture: 'https://sandbox.melhorenvio.com.br/images/shipping-companies/jadlog.png', base: 1990, per_kg: 300, far: 0, days_local: 2, days_far: 2}
+    - {id: 17, name: Mini Envios, company_id: 1, company: Correios, picture: 'https://sandbox.melhorenvio.com.br/images/shipping-companies/correios.png', base: 1090, per_kg: 0, far: 380, days_local: 6, days_far: 11}

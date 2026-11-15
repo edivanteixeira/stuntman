@@ -1,0 +1,278 @@
+# Mercado Pago (Brazil, test credentials): card tokens, payments with Pix and cards (POST /v1/payments,
+# X-Idempotency-Key replays), GET /v1/payments/{id}, refunds and Checkout Pro preferences. Webhooks go to
+# the payment's notification_url (or settings.webhook_url) as ?data.id=…&type=payment, signed the way
+# the docs say: x-signature "ts=<seconds>,v1=<hex>" = HMAC-SHA256 of "id:<data.id>;request-id:<x-request-id>;ts:<ts>;"
+# with the application's secret signature (settings.webhook_secret), plus x-request-id. The official
+# SDK's WebhookSignatureValidator accepts them.
+#
+# Cards follow Mercado Pago's test cardholder names (APRO approved, OTHE rejected, CONT in process,
+# CALL, FUND, SECU, EXPI, FORM rejected for that reason): the name goes in the card token.
+# A Pix payment is pending with its QR code (BR Code with CRC16); it is approved when the environment's
+# clock passes settings.pix_paid_after (30 s), and payment.updated is sent then (advance the clock).
+# Point the SDK at it: api_base_url = http://localhost:8028/mercado-pago (or resolve api.mercadopago.com).
+service:
+  name: mercado-pago
+  title: Mercado Pago
+  origin: community
+  region: BR
+  description: Payments with Pix and cards, refunds and Checkout Pro, with signed webhooks (x-signature)
+  base_url: https://api.mercadopago.com
+  real_host: api.mercadopago.com
+  limits:
+    latency: 150ms..500ms
+  idempotency:
+    header: X-Idempotency-Key
+routes:
+  # ---------------------------------------------------------------- card tokens (what the JS SDK makes)
+  - route: POST /v1/card_tokens
+    let:
+      tok: "replace(uuid(), '-', '')"
+      digits_card: "digits(default(body.card_number, ''))"
+    keep:
+      state: card_tokens
+      key: tok
+    decide:
+      - when: "!has(query.public_key) && !has(headers.authorization)"
+        answer: unauthorized
+      - when: "size(digits_card) < 13 || size(digits_card) > 19"
+        answer: invalid_card_number
+      - answer: card_token
+  # ---------------------------------------------------------------- payments
+  - route: POST /v1/payments
+    let: &pay_lets
+      pid: "has(path.id) ? path.id : '1' + substring(digits(uuid() + uuid()), 0, 10)"
+      rec: "state.payments[pid]"
+      src: "has(path.id) ? rec.body : body"
+      t0: "has(path.id) ? rec.at : __now"
+      method: "lower(default(src.payment_method_id, ''))"
+      is_pix: "method == 'pix'"
+      ctok: "state.card_tokens[src.token]"
+      holder: "upper(default(ctok.body.cardholder.name, 'APRO'))"
+      outcome: "is_pix ? null : default(lookup('cardholders', 'name', holder), lookup('cardholders', 'name', 'APRO'))"
+      pix_paid: "is_pix && __now - t0 >= int(data.settings[0].pix_paid_after_ms)"
+      refund: "state.refunds[pid]"
+      amount: "double(src.transaction_amount)"
+      refunded: "has(refund) ? double(default(refund.body.amount, amount)) : 0"
+      status: >-
+        has(refund) && refunded >= amount ? 'refunded'
+        : is_pix ? (pix_paid ? 'approved' : 'pending')
+        : outcome.status
+      status_detail: >-
+        status == 'refunded' ? 'refunded'
+        : is_pix ? (pix_paid ? 'accredited' : 'pending_waiting_transfer')
+        : outcome.status_detail
+      cents: "int(amount * 100 + 0.5)"
+      amount_txt: "string(int(cents / 100)) + '.' + (cents % 100 < 10 ? '0' : '') + string(cents % 100)"
+      txid: "'mpqrinter' + pid"
+      gui: "'0014br.gov.bcb.pix0136' + data.settings[0].pix_key"
+      payload: >-
+        '000201' + '26' + string(size(gui)) + gui + '52040000' + '5303986'
+        + '54' + (size(amount_txt) < 10 ? '0' : '') + string(size(amount_txt)) + amount_txt
+        + '5802BR' + '59' + (size(data.settings[0].name) < 10 ? '0' : '') + string(size(data.settings[0].name)) + data.settings[0].name
+        + '60' + (size(data.settings[0].city) < 10 ? '0' : '') + string(size(data.settings[0].city)) + data.settings[0].city
+        + '62' + string(size(txid) + 4) + '05' + string(size(txid)) + txid + '6304'
+      qr: "payload + crc16(payload)"
+      approved_at: "status == 'approved' || status == 'refunded' ? iso(is_pix ? t0 + int(data.settings[0].pix_paid_after_ms) : t0) : null"
+      view: >-
+        {"id": int(pid), "date_created": iso(t0), "date_approved": approved_at, "date_last_updated": iso(has(refund) ? refund.at : t0),
+        "date_of_expiration": is_pix ? iso(t0 + 86400000) : null, "money_release_date": approved_at,
+        "operation_type": "regular_payment", "issuer_id": src.issuer_id, "payment_method_id": method,
+        "payment_type_id": is_pix ? 'bank_transfer' : 'credit_card', "status": status, "status_detail": status_detail,
+        "currency_id": "BRL", "description": src.description, "live_mode": false, "collector_id": int(data.settings[0].user_id),
+        "payer": {"id": null, "email": src.payer.email, "identification": src.payer.identification, "type": null, "first_name": src.payer.first_name, "last_name": src.payer.last_name},
+        "metadata": default(src.metadata, {}), "additional_info": default(src.additional_info, {}), "external_reference": src.external_reference,
+        "transaction_amount": amount, "transaction_amount_refunded": refunded, "coupon_amount": int(0),
+        "transaction_details": {"net_received_amount": amount, "total_paid_amount": amount, "overpaid_amount": int(0), "installment_amount": is_pix ? int(0) : amount / int(default(src.installments, 1)), "external_resource_url": null, "financial_institution": null, "payment_method_reference_id": null},
+        "fee_details": [], "captured": true, "binary_mode": default(src.binary_mode, false), "installments": int(default(src.installments, 1)),
+        "notification_url": src.notification_url, "refunds": has(refund) ? [{"id": int(refund_id), "payment_id": int(pid), "amount": refunded, "status": "approved", "date_created": iso(refund.at)}] : [],
+        "card": is_pix ? {} : {"first_six_digits": substring(digits(default(ctok.body.card_number, '503143')), 0, 6), "last_four_digits": substring(digits(default(ctok.body.card_number, '0000')), -4), "expiration_month": int(default(ctok.body.expiration_month, 11)), "expiration_year": int(default(ctok.body.expiration_year, 2030)), "cardholder": {"name": holder, "identification": ctok.body.cardholder.identification}},
+        "point_of_interaction": is_pix ? {"type": "OPENPLATFORM", "sub_type": null, "application_data": {"name": null, "version": null},
+          "transaction_data": {"qr_code": qr, "qr_code_base64": data.settings[0].qr_png, "ticket_url": 'https://www.mercadopago.com.br/payments/' + pid + '/ticket?caller_id=' + data.settings[0].user_id + '&hash=' + pid.sha256(),
+          "transaction_id": null, "bank_transfer_id": null, "financial_institution": null, "bank_info": {"payer": {"id": null, "account_id": null, "long_name": null}, "collector": {"account_id": null, "long_name": "MERCADO PAGO INSTITUIÇÃO DE PAGAMENTO LTDA.", "account_holder_name": data.settings[0].name}}}} : {"type": "UNSPECIFIED", "business_info": {"unit": "online_payments", "sub_unit": "default"}}}
+      refund_id: "'2' + substring(digits(pid.sha256() + pid.sha256()), 0, 9)"
+      request_id: "uuid()"
+      ts: "string(int(__now / 1000))"
+      hook_url: "default(src.notification_url, data.settings[0].webhook_url)"
+      hook_sep: "hook_url.contains('?') ? '&' : '?'"
+      signature: "'ts=' + ts + ',v1=' + hmac('sha256', data.settings[0].webhook_secret, 'id:' + pid + ';request-id:' + request_id + ';ts:' + ts + ';')"
+      problem: >-
+        !has(body.transaction_amount) || double(body.transaction_amount) <= 0 ? [4037, 'Invalid transaction_amount']
+        : !has(body.payment_method_id) ? [4020, 'payment_method_id attribute can not be null']
+        : !has(body.payer.email) || !body.payer.email.contains('@') ? [4050, 'payer.email must be a valid email']
+        : !is_pix && !has(body.token) ? [2006, 'Card Token not found']
+        : null
+    keep:
+      state: payments
+      key: pid
+    decide:
+      - when: "!has(headers.authorization) || !headers.authorization.startsWith('Bearer ') || headers.authorization == 'Bearer invalid'"
+        answer: unauthorized
+      - when: has(problem)
+        answer: bad_request
+      - answer: payment_created
+    send:
+      - url: "{{ answer == 'payment_created' ? hook_url + hook_sep + 'data.id=' + pid + '&type=payment' : '' }}"
+        event: payment.created
+        headers: &mp_headers
+          x-signature: "{{ signature }}"
+          x-request-id: "{{ request_id }}"
+        body: '{"action": "payment.created", "api_version": "v1", "data": {"id": {{ pid | json }}}, "date_created": {{ iso(t0) | json }}, "id": {{ int(substring(digits(request_id.sha256()), 0, 11)) }}, "live_mode": false, "type": "payment", "user_id": {{ data.settings[0].user_id | json }}}'
+      - url: "{{ answer == 'payment_created' && is_pix ? hook_url + hook_sep + 'data.id=' + pid + '&type=payment' : '' }}"
+        delay: 30s
+        event: payment.updated
+        headers: *mp_headers
+        body: '{"action": "payment.updated", "api_version": "v1", "data": {"id": {{ pid | json }}}, "date_created": {{ iso(t0) | json }}, "id": {{ int(substring(digits(request_id.sha256()), 1, 12)) }}, "live_mode": false, "type": "payment", "user_id": {{ data.settings[0].user_id | json }}}'
+  - route: GET /v1/payments/{id}
+    let: *pay_lets
+    decide:
+      - when: "!has(headers.authorization) || !headers.authorization.startsWith('Bearer ') || headers.authorization == 'Bearer invalid'"
+        answer: unauthorized
+      - when: "!has(rec)"
+        answer: payment_not_found
+      - answer: payment
+  # One refund per payment is kept (the last one): a full refund makes the payment "refunded".
+  - route: POST /v1/payments/{id}/refunds
+    let: *pay_lets
+    keep:
+      state: refunds
+      key: path.id
+    decide:
+      - when: "!has(headers.authorization) || !headers.authorization.startsWith('Bearer ') || headers.authorization == 'Bearer invalid'"
+        answer: unauthorized
+      - when: "!has(rec)"
+        answer: payment_not_found
+      - when: status != 'approved'
+        answer: refund_invalid_status
+      - when: has(body.amount) && double(body.amount) > amount
+        answer: refund_too_large
+      - answer: refund
+    send:
+      - url: "{{ answer == 'refund' ? hook_url + hook_sep + 'data.id=' + pid + '&type=payment' : '' }}"
+        event: payment.updated
+        headers: *mp_headers
+        body: '{"action": "payment.updated", "api_version": "v1", "data": {"id": {{ pid | json }}}, "date_created": {{ iso(t0) | json }}, "id": {{ int(substring(digits(request_id.sha256()), 0, 11)) }}, "live_mode": false, "type": "payment", "user_id": {{ data.settings[0].user_id | json }}}'
+
+  # ---------------------------------------------------------------- Checkout Pro
+  - route: POST /checkout/preferences
+    let: &pref_lets
+      pref_id: "has(path.id) ? path.id : data.settings[0].user_id + '-' + uuid()"
+      prec: "state.preferences[pref_id]"
+      psrc: "has(path.id) ? prec.body : body"
+      pview: >-
+        {"id": pref_id, "collector_id": int(data.settings[0].user_id), "client_id": data.settings[0].client_id, "date_created": iso(has(path.id) ? prec.at : __now),
+        "items": psrc.items, "payer": default(psrc.payer, {}), "back_urls": default(psrc.back_urls, {"success": "", "pending": "", "failure": ""}), "auto_return": default(psrc.auto_return, ''),
+        "notification_url": psrc.notification_url, "external_reference": default(psrc.external_reference, ''), "expires": default(psrc.expires, false),
+        "payment_methods": default(psrc.payment_methods, {}), "operation_type": "regular_payment", "marketplace": "NONE", "site_id": "MLB",
+        "init_point": 'https://www.mercadopago.com.br/checkout/v1/redirect?pref_id=' + pref_id,
+        "sandbox_init_point": 'https://sandbox.mercadopago.com.br/checkout/v1/redirect?pref_id=' + pref_id}
+    keep:
+      state: preferences
+      key: pref_id
+    decide:
+      - when: "!has(headers.authorization) || !headers.authorization.startsWith('Bearer ') || headers.authorization == 'Bearer invalid'"
+        answer: unauthorized
+      - when: "!has(body.items) || size(body.items) == 0"
+        answer: preference_no_items
+      - answer: preference_created
+  - route: GET /checkout/preferences/{id}
+    let: *pref_lets
+    decide:
+      - when: "!has(headers.authorization) || !headers.authorization.startsWith('Bearer ') || headers.authorization == 'Bearer invalid'"
+        answer: unauthorized
+      - when: "!has(prec)"
+        answer: preference_not_found
+      - answer: preference
+answers:
+  - name: card_token
+    status: 201
+    note: a card token; the cardholder name (APRO, OTHE, FUND…) decides the payment made with it
+    sentence: "Card token for {{ default(body.cardholder.name, 'a card') }} ending {{ substring(digits_card, -4) }}"
+    body: '{"id": {{ tok | json }}, "public_key": {{ query.public_key | json }}, "first_six_digits": {{ substring(digits_card, 0, 6) | json }}, "last_four_digits": {{ substring(digits_card, -4) | json }}, "expiration_month": {{ int(body.expiration_month) }}, "expiration_year": {{ int(body.expiration_year) }}, "cardholder": {{ body.cardholder | json }}, "status": "active", "date_created": {{ now() | json }}, "date_last_updated": {{ now() | json }}, "date_due": {{ iso(__now + 604800000) | json }}, "luhn_validation": true, "live_mode": false, "require_esc": false, "card_number_length": {{ size(digits_card) }}, "security_code_length": 3}'
+  - name: payment_created
+    status: 201
+    note: the payment; Pix is pending with its QR code, cards follow the cardholder name
+    sentence: "Payment {{ pid }} of R$ {{ amount_txt }} by {{ method }}: {{ status }} ({{ status_detail }})"
+    body: '{{ view | json }}'
+  - name: payment
+    note: the payment as it is now (a Pix turns approved after settings.pix_paid_after_ms)
+    sentence: "Payment {{ pid }}: {{ status }} ({{ status_detail }})"
+    body: '{{ view | json }}'
+  - name: refund
+    status: 201
+    sentence: "Refund of R$ {{ default(body.amount, amount) }} on payment {{ pid }}"
+    body: '{"id": {{ int(refund_id) }}, "payment_id": {{ int(pid) }}, "amount": {{ double(default(body.amount, amount)) }}, "metadata": {}, "source": {"id": {{ data.settings[0].user_id | json }}, "name": "Acme", "type": "collector"}, "date_created": {{ now() | json }}, "unique_sequence_number": null, "refund_mode": "standard", "adjustment_amount": 0, "status": "approved", "reason": null, "labels": [], "amount_refunded_to_payer": {{ double(default(body.amount, amount)) }}, "partition_details": []}'
+  - name: preference_created
+    status: 201
+    sentence: "Checkout Pro preference {{ pref_id }} ({{ size(body.items) }} items)"
+    body: '{{ pview | json }}'
+  - name: preference
+    sentence: "Preference {{ pref_id }}"
+    body: '{{ pview | json }}'
+  # ---- errors in Mercado Pago's shape
+  - name: unauthorized
+    status: 401
+    note: no Authorization header, or the token "invalid" (any other Bearer token works)
+    sentence: "Refused: invalid access token"
+    body: '{"message": "invalid access token", "error": "unauthorized", "status": 401, "cause": []}'
+  - name: bad_request
+    status: 400
+    note: a required field is missing or wrong (amount, payment_method_id, payer.email, card token)
+    sentence: "Payment refused: {{ problem[1] }}"
+    body: '{"message": {{ problem[1] | json }}, "error": "bad_request", "status": 400, "cause": [{"code": {{ problem[0] }}, "description": {{ problem[1] | json }}, "data": {{ now() | json }}}]}'
+  - name: invalid_card_number
+    status: 400
+    sentence: "Card token refused: invalid card number"
+    body: '{"message": "invalid parameters", "error": "bad_request", "status": 400, "cause": [{"code": "E205", "description": "parameter cardNumber can not be null/empty"}]}'
+  - name: payment_not_found
+    status: 404
+    sentence: "No payment {{ path.id }}"
+    body: '{"message": "Payment not found", "error": "not_found", "status": 404, "cause": [{"code": 2000, "description": "Payment not found", "data": {{ now() | json }}}]}'
+  - name: refund_invalid_status
+    status: 400
+    note: only an approved payment can be refunded
+    sentence: "Refund refused: payment {{ pid }} is {{ status }}"
+    body: '{"message": "Invalid payment status", "error": "bad_request", "status": 400, "cause": [{"code": 2063, "description": "Invalid payment status", "data": {{ now() | json }}}]}'
+  - name: refund_too_large
+    status: 400
+    sentence: "Refund refused: R$ {{ body.amount }} is more than R$ {{ amount }}"
+    body: '{"message": "Invalid refund amount", "error": "bad_request", "status": 400, "cause": [{"code": 2085, "description": "Invalid refund amount, must be less than or equal to the payment amount", "data": {{ now() | json }}}]}'
+  - name: preference_no_items
+    status: 400
+    sentence: "Preference refused: no items"
+    body: '{"message": "items needed", "error": "invalid_items", "status": 400, "cause": []}'
+  - name: preference_not_found
+    status: 404
+    sentence: "No preference {{ path.id }}"
+    body: '{"message": "The preference with identifier {{ path.id }} was not found", "error": "not_found", "status": 404, "cause": []}'
+  - name: too_many_requests
+    status: 429
+    note: exists only to be forced
+    sentence: "Too many requests (429)"
+    body: '{"message": "Too many requests", "error": "too_many_requests", "status": 429, "cause": []}'
+  - name: internal_error
+    status: 500
+    note: exists only to be forced
+    sentence: "Mercado Pago internal error (500)"
+    body: '{"message": "Internal server error", "error": "internal_server_error", "status": 500, "cause": []}'
+data:
+  # The seller: where webhooks go, the secret signature that signs them, the Pix key and name in the QR codes.
+  settings:
+    - webhook_url: http://localhost:3000/api/webhooks/mercadopago
+      webhook_secret: mp-acme-secret-signature
+      user_id: '2009873441'
+      client_id: '6712093848273641'
+      name: ACME TECNOLOGIA LTDA
+      city: SAO PAULO
+      pix_key: 6a1b3c5d-7e9f-4a2b-8c4d-1e3f5a7b9c0d
+      pix_paid_after_ms: 30000
+      qr_png: iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==
+  # Mercado Pago's test cardholder names.
+  cardholders:
+    - {name: APRO, status: approved, status_detail: accredited}
+    - {name: OTHE, status: rejected, status_detail: cc_rejected_other_reason}
+    - {name: CONT, status: in_process, status_detail: pending_contingency}
+    - {name: CALL, status: rejected, status_detail: cc_rejected_call_for_authorize}
+    - {name: FUND, status: rejected, status_detail: cc_rejected_insufficient_amount}
+    - {name: SECU, status: rejected, status_detail: cc_rejected_bad_filled_security_code}
+    - {name: EXPI, status: rejected, status_detail: cc_rejected_bad_filled_date}
+    - {name: FORM, status: rejected, status_detail: cc_rejected_bad_filled_other}

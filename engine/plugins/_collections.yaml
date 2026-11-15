@@ -15,3 +15,6 @@ collections:
   - name: Global · payments, commerce and SaaS
     description: "Twilio SMS and Verify, PayPal, Adyen, Shopify, Slack, HubSpot, GitHub, Sentry and Auth0, each with its real auth, errors and webhook signatures. Accounts at acme and globex."
     plugins: [twilio, paypal, adyen, shopify, slack, hubspot, github, sentry, auth0]
+  - name: Brazil · payments, tax and shipping
+    description: "Pix, Mercado Pago, Pagar.me and Asaas charges with their webhooks, NFS-e (national and ABRASF), Correios and Melhor Envio shipping, and CEP/CNPJ lookups. Synthetic CPFs, CNPJs and addresses."
+    plugins: [pix, mercado-pago, pagarme, asaas, nfse, nfse-abrasf, correios, melhor-envio, viacep, brasilapi]

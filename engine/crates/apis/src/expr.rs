@@ -451,6 +451,25 @@ fn call(name: &str, a: &[Value], sc: &Scope) -> Result<Value, String> {
         "jwt" => json!(crate::people::jwt(a.first().unwrap_or(&Value::Null), &a.get(1).map(text).unwrap_or_default())?),
         "jwks" => crate::people::jwks(&s0())?,
         "sign_raw" => json!(crate::people::sign_raw(a.first().unwrap_or(&Value::Null), &a.get(1).map(text).unwrap_or_default(), &a.get(2).map(text).unwrap_or("hex".into()))?),
+        // iso(ms, zone?): a kept timestamp as ISO 8601, UTC with Z, or local time in a zone of tz() without the offset.
+        "iso" => {
+            let ms = a.first().and_then(num).map(|x| x as i64).unwrap_or_else(|| clock(sc));
+            match a.get(1).map(text) { Some(z) => json!(iso(ms, Some(tz_offset(&z).ok_or_else(|| format!("unknown time zone {z}"))?))), None => json!(iso(ms, None)) }
+        }
+        // crc16(payload): CRC-16/CCITT-FALSE as 4 upper-case hex digits, the last field of a Pix BR Code.
+        "crc16" => json!(format!("{:04X}", s0().bytes().fold(0xFFFFu16, |c, b| (0..8).fold(c ^ ((b as u16) << 8), |c, _| if c & 0x8000 != 0 { (c << 1) ^ 0x1021 } else { c << 1 })))),
+        // gzip_base64(text) and gunzip_base64(b64): documents sent gzipped in base64 (NFS-e Nacional's
+        // dpsXmlGZipB64); gunzip_base64 is null when the input is not that.
+        "gzip_base64" => {
+            let mut e = flate2::write::GzEncoder::new(vec![], flate2::Compression::default());
+            std::io::Write::write_all(&mut e, s0().as_bytes()).map_err(|e| e.to_string())?;
+            json!(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, e.finish().map_err(|e| e.to_string())?))
+        }
+        "gunzip_base64" => {
+            let raw = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, s0().trim()).unwrap_or_default();
+            let mut out = String::new();
+            match std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&raw[..]), &mut out) { Ok(_) if !raw.is_empty() => json!(out), _ => Value::Null }
+        }
         _ => return Err(format!("no function “{name}”")),
     })
 }
@@ -726,6 +745,17 @@ mod t {
         let lets: std::collections::BTreeMap<String, String> = [("a".into(), "b + 1".into()), ("b".into(), "2".into())].into();
         assert_eq!(let_order(&lets).iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), vec!["b", "a"]);
         assert_eq!(paths("selfie.tag != person.tg && size(body.cpf) > 3"), vec!["selfie.tag", "person.tg", "body.cpf"]);
+    }
+
+    #[test]
+    fn brazil_functions() {
+        let s = sc();
+        // The BR Code example of the Pix manual (Banco Central), CRC 1D3D.
+        let br = "00020126580014br.gov.bcb.pix0136123e4567-e12b-12d1-a456-4266554400005204000053039865802BR5913Fulano de Tal6008BRASILIA62070503***6304";
+        assert_eq!(eval(&format!("crc16('{br}')"), &s).unwrap(), json!("1D3D"));
+        assert_eq!(eval("gunzip_base64(gzip_base64('<DPS>ação</DPS>'))", &s).unwrap(), json!("<DPS>ação</DPS>"));
+        assert_eq!(eval("gunzip_base64('bm90IGd6aXA=')", &s).unwrap(), Value::Null);
+        assert_eq!(eval("iso(1763208000000) + ' ' + iso(1763208000000, 'America/Sao_Paulo')", &s).unwrap(), json!("2025-11-15T12:00:00Z 2025-11-15T09:00:00"));
     }
 
     #[test]

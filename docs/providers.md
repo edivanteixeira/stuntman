@@ -45,6 +45,7 @@ The catalog, by collection:
 | Logistics & fiscal | `osrm`, `google-maps`, `nominatim`, `ocr-space`, `receitaws`, `sefaz-nfe`, `comtele` |
 | Payments & notifications | `stripe`, `resend`, `onesignal` |
 | Workplace & dev tools | `microsoft-graph`, `google-drive`, `calendly`, `lemlist`, `azure-devops`, `newrelic` |
+| Brazil · payments, tax and shipping | `pix`, `mercado-pago`, `pagarme`, `asaas`, `nfse`, `nfse-abrasf`, `correios`, `melhor-envio`, `viacep`, `brasilapi` |
 | Global · payments, commerce and SaaS | `twilio`, `paypal`, `adyen`, `shopify`, `slack`, `hubspot`, `github`, `sentry`, `auth0` |
 
 `install_collection` installs a whole row. Writing your own: [Plugins](plugins.md).

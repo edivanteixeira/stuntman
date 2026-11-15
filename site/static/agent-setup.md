@@ -168,7 +168,7 @@ hosts, SDK packages and setting names. Do not print secret values you come acros
 | **AI models** | `api.openai.com`, `*.openai.azure.com`, `api.anthropic.com`, `generativelanguage.googleapis.com`, `openrouter.ai`, `api.deepseek.com`; `openai`, `anthropic`, `@google/genai` SDKs |
 | **Product analytics** | PostHog, Segment, Mixpanel, GA4 Measurement Protocol (`google-analytics.com/mp/collect`) |
 | **Webhook inboxes** | URLs the app **sends** webhooks to (partner callbacks, notification targets) |
-| **HTTP API plugins** | reCAPTCHA, Turnstile, Stripe, Resend, OneSignal, Microsoft Graph, Google Drive, Google Maps, Calendly, lemlist, Azure DevOps, New Relic, Twilio, PayPal, Adyen, Shopify, Slack, HubSpot, GitHub, Sentry, Auth0 and the others in `list_plugins`, and **any other external base URL**; a WireMock `mappings/` folder in the repository |
+| **HTTP API plugins** | reCAPTCHA, Turnstile, Stripe, Resend, OneSignal, Microsoft Graph, Google Drive, Google Maps, Calendly, lemlist, Azure DevOps, New Relic, Twilio, PayPal, Adyen, Shopify, Slack, HubSpot, GitHub, Sentry, Auth0, Pix (BCB), Mercado Pago, Pagar.me, Asaas, NFS-e (national and ABRASF), Correios, Melhor Envio, ViaCEP, BrasilAPI and the others in `list_plugins`, and **any other external base URL**; a WireMock `mappings/` folder in the repository |
 
 Call `list_plugins` to see which HTTP providers already have a plugin in the catalog.
 

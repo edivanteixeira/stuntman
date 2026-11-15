@@ -33,7 +33,7 @@ fn modules() -> Vec<Box<dyn Module>> {
         Box::new(stuntman_sms::Sms),
         Box::new(stuntman_ai::Ai),
         Box::new(stuntman_events::Events),
-        Box::new(stuntman_identity::Identity),
+        Box::new(stuntman_identity::Identity { ldap_port: env("STUNTMAN_LDAP_PORT", "3389").parse().unwrap_or(3389) }),
         Box::new(stuntman_keyvault::KeyVault { port: env("STUNTMAN_KEYVAULT_PORT", "8444").parse().unwrap_or(8444) }),
         Box::new(stuntman_messaging::Messaging { port: env("STUNTMAN_AMQP_PORT", "5673").parse().unwrap_or(5673), tls_port: env("STUNTMAN_AMQPS_PORT", "5671").parse().unwrap_or(5671) }),
         Box::new(stuntman_storage::Storage { blob_port: env("STUNTMAN_BLOB_PORT", "10000").parse().unwrap_or(10000), s3_port: env("STUNTMAN_S3_PORT", "9000").parse().unwrap_or(9000) }),

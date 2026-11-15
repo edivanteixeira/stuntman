@@ -135,6 +135,53 @@ impl Ca {
         Ok(c.der().to_vec())
     }
 
+    /// An RSA certificate in the ICP-Brasil style (A18): the holder's name as CN and, as SAN otherNames,
+    /// the CNPJ (2.16.76.1.3.3) of an e-CNPJ or the CPF (in 2.16.76.1.3.1) of an e-CPF. Signed by the
+    /// Stuntman Test CA (or, with `untrusted`, by an unknown one). Returns the key PEM (PKCS#8) and the
+    /// certificate DER.
+    pub fn icp(&self, holder: &str, cnpj: Option<&str>, cpf: Option<&str>, not_before: i64, not_after: i64, untrusted: bool) -> Result<(String, Vec<u8>), String> {
+        use rsa::pkcs8::EncodePrivateKey;
+        let k = rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048).map_err(|e| e.to_string())?;
+        let der = k.to_pkcs8_der().map_err(|e| e.to_string())?;
+        let pem = k.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).map_err(|e| e.to_string())?.to_string();
+        let subject = KeyPair::from_pkcs8_der_and_sign_algo(&rustls::pki_types::PrivatePkcs8KeyDer::from(der.as_bytes().to_vec()), &rcgen::PKCS_RSA_SHA256).map_err(|e| e.to_string())?;
+        let mut p = CertificateParams::new(Vec::<String>::new()).map_err(|e| e.to_string())?;
+        let cn = match (cnpj, cpf) {
+            (Some(c), _) => format!("{holder}:{}", c.chars().filter(|x| x.is_ascii_digit()).collect::<String>()),
+            (None, Some(c)) => format!("{holder}:{}", c.chars().filter(|x| x.is_ascii_digit()).collect::<String>()),
+            _ => holder.to_string(),
+        };
+        p.distinguished_name.push(DnType::CommonName, cn);
+        p.distinguished_name.push(DnType::OrganizationName, "ICP-Brasil (Stuntman test)");
+        p.distinguished_name.push(DnType::CountryName, "BR");
+        if let Some(c) = cnpj {
+            let d: String = c.chars().filter(|x| x.is_ascii_digit()).collect();
+            p.subject_alt_names.push(rcgen::SanType::OtherName((vec![2, 16, 76, 1, 3, 3], rcgen::OtherNameValue::Utf8String(d))));
+            p.subject_alt_names.push(rcgen::SanType::OtherName((vec![2, 16, 76, 1, 3, 2], rcgen::OtherNameValue::Utf8String(holder.to_uppercase()))));
+        }
+        if let Some(c) = cpf {
+            let d: String = c.chars().filter(|x| x.is_ascii_digit()).collect();
+            p.subject_alt_names.push(rcgen::SanType::OtherName((vec![2, 16, 76, 1, 3, 1], rcgen::OtherNameValue::Utf8String(format!("01011990{d}00000000000000000000000000")))));
+        }
+        p.not_before = time_of(not_before);
+        p.not_after = time_of(not_after);
+        p.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth, ExtendedKeyUsagePurpose::EmailProtection];
+        p.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature, rcgen::KeyUsagePurpose::ContentCommitment, rcgen::KeyUsagePurpose::KeyEncipherment];
+        p.use_authority_key_identifier_extension = true;
+        let c = if untrusted {
+            let ok = KeyPair::generate().map_err(|e| e.to_string())?;
+            let mut cp = params();
+            cp.distinguished_name = DistinguishedName::new();
+            cp.distinguished_name.push(DnType::CommonName, "Unknown Test CA");
+            let other = cp.self_signed(&ok).map_err(|e| e.to_string())?;
+            p.signed_by(&subject, &other, &ok)
+        } else {
+            p.signed_by(&subject, &self.cert, &self.key)
+        }
+        .map_err(|e| e.to_string())?;
+        Ok((pem, c.der().to_vec()))
+    }
+
     pub fn roots(&self) -> rustls::RootCertStore {
         let mut r = rustls::RootCertStore::empty();
         for d in der_of(&self.pem) {

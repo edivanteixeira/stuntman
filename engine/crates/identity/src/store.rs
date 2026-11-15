@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS id_signins(
   kind TEXT NOT NULL DEFAULT 'sign-in', result TEXT NOT NULL, code TEXT NOT NULL DEFAULT '', sentence TEXT NOT NULL, flow TEXT NOT NULL DEFAULT '',
   steps TEXT NOT NULL DEFAULT '[]', claims TEXT NOT NULL DEFAULT '{}', tokens TEXT NOT NULL DEFAULT '{}', by TEXT NOT NULL DEFAULT '', pending TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS id_signins_at ON id_signins(provider, at);
+CREATE TABLE IF NOT EXISTS id_bot(seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, dir TEXT NOT NULL, conversation TEXT NOT NULL, activity TEXT NOT NULL, status INTEGER NOT NULL DEFAULT 0, bot TEXT NOT NULL DEFAULT '');
 ";
 
 // ---------------------------------------------------------------- keys

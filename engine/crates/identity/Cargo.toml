@@ -6,6 +6,12 @@ edition = "2021"
 [dependencies]
 stuntman-core.workspace = true
 stuntman-keyvault.workspace = true
+stuntman-apis.workspace = true
+flate2 = "1"
+roxmltree = "0.20"
+ldap3_proto = "0.9"
+tokio-util = { version = "0.7", features = ["codec"] }
+futures.workspace = true
 axum.workspace = true
 tokio.workspace = true
 rusqlite.workspace = true

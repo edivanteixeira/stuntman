@@ -93,7 +93,16 @@ async fn refuse(ctx: &Ctx, p: &Provider, pid: &str, d: &Value, user: &str, error
     let desc = if code.is_empty() { sentence.clone() } else { format!("{code}: {sentence}") };
     steps.push(step("Redirect with an error", &format!("error={error}")));
     let _ = store::use_once(ctx, "pending", pid).await;
-    let (url, form) = back_with(d, vec![("error".into(), error.into()), ("error_description".into(), desc)]);
+    let (url, form) = if s(d, "response_type") == "saml" {
+        let mut pp = p.clone();
+        let app = p.app(&s(d, "client_id")).cloned().unwrap_or_default();
+        let r = crate::saml::response(ctx, &mut pp, d, None, &app, "").await.unwrap_or_default();
+        let mut f = vec![("SAMLResponse".to_string(), r)];
+        if !s(d, "state").is_empty() { f.push(("RelayState".into(), s(d, "state"))); }
+        (s(d, "redirect_uri"), Some(f))
+    } else {
+        back_with(d, vec![("error".into(), error.into()), ("error_description".into(), desc)])
+    };
     let id = store::sign_in(ctx, store::SignIn { provider: p.name.clone(), user: user.into(), app: s(d, "client_id"), result: if error == "access_denied" { "cancelled".into() } else { "refused".into() },
         code: if code.is_empty() { error.into() } else { code.into() }, sentence, steps, by: by.into(), pending: pid.into(), ..Default::default() }).await.unwrap_or(0);
     Next::Back { url, form, sign_in: id }
@@ -251,6 +260,18 @@ async fn finish(ctx: &Ctx, p: &mut Provider, pid: &str, d: Value, user: &User) -
         return Next::Error { code: "AADSTS50058".into(), message: "This sign-in was already completed.".into(), back: None };
     }
     let app = p.app(&s(&d, "client_id")).cloned().unwrap_or_default();
+    if s(&d, "response_type") == "saml" {
+        let mut steps: Vec<Value> = d["steps"].as_array().cloned().unwrap_or_default();
+        steps.push(step("POST SAMLResponse", &format!("to {}", s(&d, "redirect_uri"))));
+        let twist = s(&d, "provoked");
+        let r = match crate::saml::response(ctx, p, &d, Some(user), &app, &twist).await { Ok(r) => r, Err(e) => return Next::Error { code: "server_error".into(), message: e.message, back: None } };
+        let result = match twist.as_str() { "expired" => "signed in  ·  assertion already expired (provoked)", "bad_signature" => "signed in  ·  assertion with a bad signature (provoked)", "wrong_audience" => "signed in  ·  assertion for another audience (provoked)", _ => "signed in" };
+        let id = store::sign_in(ctx, store::SignIn { provider: p.name.clone(), user: user.id.clone(), app: app.client_id.clone(), result: result.into(), sentence: format!("{} signed in to {} (SAML)", user.name, app.name),
+            flow: "SAML 2.0  ·  SP-initiated, HTTP-POST".into(), steps, claims: json!({"NameID": user.email, "groups": user.groups, "roles": user.roles}), tokens: json!({"SAMLResponse": r}), by: s(&d, "by"), pending: pid.into(), ..Default::default() }).await.unwrap_or(0);
+        let mut f = vec![("SAMLResponse".to_string(), r)];
+        if !s(&d, "state").is_empty() { f.push(("RelayState".into(), s(&d, "state"))); }
+        return Next::Back { url: s(&d, "redirect_uri"), form: Some(f), sign_in: id };
+    }
     let code = format!("1.{}", rand_id(32));
     let mut steps: Vec<Value> = d["steps"].as_array().cloned().unwrap_or_default();
     steps.push(step("Redirect with a code", &format!("to {}", s(&d, "redirect_uri"))));
@@ -415,6 +436,38 @@ pub async fn token(ctx: &Ctx, p: &mut Provider, f: std::collections::HashMap<Str
                 sentence: format!("{} got an app token for {}", app.name, atc["aud"].as_str().unwrap_or("")), flow: "client credentials".into(),
                 steps: vec![step(&format!("POST /token by {}", app.name), &format!("grant_type=client_credentials  ·  {scope}"))], claims: atc.clone(), tokens: json!({"access_token": at}), ..Default::default() }).await;
             Ok(json!({"token_type": "Bearer", "expires_in": lt(&p.lifetimes.access, 3600), "ext_expires_in": lt(&p.lifetimes.access, 3600), "access_token": at}))
+        }
+        "password" if p.password_grant => {
+            let who = f.get("username").cloned().unwrap_or_default();
+            let pw = f.get("password").cloned().unwrap_or_default();
+            let Some(user) = p.user(&who).cloned() else { return Err(terr(400, "invalid_grant", "AADSTS50034", &format!("The user account {who} does not exist in the {} directory.", p.tenant))) };
+            let refuse = |code: &'static str, msg: String| TokenError { status: 400, error: "invalid_grant".into(), code: code.into(), message: msg };
+            let err = if !user.enabled { Some(refuse("AADSTS50057", "The user account is disabled.".into())) }
+                else if user.locked { Some(refuse("AADSTS50053", "The account is locked: too many sign-in attempts with a wrong password.".into())) }
+                else if !p.password_ok(ctx, &user, &pw) { Some(refuse("AADSTS50126", "Error validating credentials due to invalid username or password.".into())) }
+                else if user.mfa { Some(TokenError { status: 400, error: "interaction_required".into(), code: "AADSTS50076".into(), message: "Due to a configuration change made by your administrator, or because you moved to a new location, you must use multi-factor authentication to access the resource.".into() }) }
+                else { None };
+            if let Some(e) = err {
+                let _ = store::sign_in(ctx, store::SignIn { provider: p.name.clone(), user: user.id.clone(), app: app.client_id.clone(), kind: "password".into(), result: "refused".into(), code: e.code.clone(),
+                    sentence: format!("Password grant refused for {}", user.name), flow: "ROPC (grant_type=password)".into(), steps: vec![step(&format!("POST /token by {}", app.name), "grant_type=password")], ..Default::default() }).await;
+                return Err(e);
+            }
+            let scope = f.get("scope").cloned().unwrap_or("openid profile".into());
+            let scopes: Vec<String> = scope.split_whitespace().map(String::from).collect();
+            let idc = token::id_claims(ctx, p, &user, &app, None, false, Twist::default());
+            let atc = token::access_claims(ctx, p, Some(&user), &app, &scopes, Twist::default());
+            let mut body = json!({"token_type": "Bearer", "scope": scope, "expires_in": lt(&p.lifetimes.access, 3600), "ext_expires_in": lt(&p.lifetimes.access, 3600),
+                "access_token": token::issue(ctx, p, &atc, Twist::default()).await.map_err(|e| terr(500, "server_error", "", &e.message))?,
+                "id_token": token::issue(ctx, p, &idc, Twist::default()).await.map_err(|e| terr(500, "server_error", "", &e.message))?});
+            if scopes.iter().any(|x| x == "offline_access") {
+                let rt = format!("1.{}", rand_id(48));
+                let _ = store::put(ctx, "refresh", &rt, &p.name, &json!({"client_id": app.client_id, "user": user.id, "scope": scope})).await;
+                body["refresh_token"] = json!(rt);
+            }
+            let _ = store::sign_in(ctx, store::SignIn { provider: p.name.clone(), user: user.id.clone(), app: app.client_id.clone(), kind: "password".into(), result: "signed in".into(),
+                sentence: format!("{} signed in to {} with a password (ROPC)", user.name, app.name), flow: "ROPC (grant_type=password)".into(), steps: vec![step(&format!("POST /token by {}", app.name), "grant_type=password")],
+                claims: idc, tokens: json!({"access_token": body["access_token"], "id_token": body["id_token"]}), ..Default::default() }).await;
+            Ok(body)
         }
         g => Err(terr(400, "unsupported_grant_type", "AADSTS70003", &format!("The app requested an unsupported grant type '{g}'."))),
     }

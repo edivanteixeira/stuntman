@@ -72,11 +72,29 @@ pub fn all() -> Vec<Tool> {
             if p.tenant_id.is_empty() { p.tenant_id = config::guid(&format!("tenant:{}", p.tenant)); }
             if let Some(f) = a.str("flavour") { if !config::FLAVOURS.iter().any(|(k, _)| *k == f) { return Err(ApiError::bad("flavour: entra-v2, google, okta or oidc")); } p.flavour = f; }
             if let Some(o) = a.get("other_tenants").and_then(list_of) { p.other_tenants = o; }
+            if let Some(x) = a.bool("saml") { p.saml = if x { Some(p.saml.clone().unwrap_or_default()) } else { None }; }
+            if let Some(sm) = p.saml.as_mut() {
+                if let Some(x) = a.bool("saml_sign_response") { sm.sign_response = x; }
+                if let Some(x) = a.bool("saml_sign_assertion") { sm.sign_assertion = x; }
+                if let Some(x) = a.str("saml_name_id") { if !["email", "oid", "upn"].contains(&x.as_str()) { return Err(ApiError::bad("saml_name_id: email | oid | upn")); } sm.name_id = x; }
+            }
+            if let Some(x) = a.bool("ldap") { p.ldap = if x { Some(p.ldap.clone().unwrap_or_default()) } else { None }; }
+            if let Some(l) = p.ldap.as_mut() {
+                if let Some(x) = a.str("ldap_base_dn") { l.base_dn = x; }
+                if let Some(x) = a.str("ldap_provoke") { if !["", "normal", "busy", "unavailable", "timeout"].contains(&x.as_str()) { return Err(ApiError::bad("ldap_provoke: normal | busy | unavailable | timeout")); } l.provoke = if x == "normal" { String::new() } else { x }; }
+            }
+            if let Some(x) = a.bool("password_grant") { p.password_grant = x; }
             config::save(&ctx, &p)?;
             token::ensure_keys(&ctx, &mut p).await?;
             changed(&ctx, &p, "provider");
-            Ok(json!({"created": created, "authority": token::issuer(&ctx, &p), "provider": p.name}))
-        }).req("name", "provider id, e.g. entra").param("tenant", "contoso-stg").param("flavour", "entra-v2 | google | okta | oidc").param("other_tenants", "[fabrikam-stg]").route("PUT", "/identity/providers/{name}"),
+            let b = token::base(&ctx, &p);
+            Ok(json!({"created": created, "authority": token::issuer(&ctx, &p), "provider": p.name,
+                "saml": p.saml.as_ref().map(|_| json!({"metadata": format!("{b}/saml/metadata"), "sso": format!("{b}/saml/sso"), "entityId": crate::saml::entity_id(&ctx, &p)})),
+                "ldap": p.ldap.as_ref().map(|_| json!({"url": format!("ldap://localhost:{}", std::env::var("STUNTMAN_LDAP_PORT").unwrap_or("3389".into())), "baseDn": p.base_dn(), "bindDn": format!("uid=<user>,ou=people,{}", p.base_dn())})),
+                "passwordGrant": p.password_grant}))
+        }).req("name", "provider id, e.g. entra").param("tenant", "contoso-stg").param("flavour", "entra-v2 | google | okta | oidc").param("other_tenants", "[fabrikam-stg]")
+          .param("saml", "bool: SAML 2.0 IdP").param("saml_sign_response", "bool").param("saml_sign_assertion", "bool (default true)").param("saml_name_id", "email | oid | upn")
+          .param("ldap", "bool: LDAP directory").param("ldap_base_dn", "dc=acme,dc=example").param("ldap_provoke", "normal | busy | unavailable | timeout").param("password_grant", "bool: grant_type=password").route("PUT", "/identity/providers/{name}"),
         Tool::new("remove_provider", "Removes an identity provider: its file (users, apps, tenant) and its sign-ins, keys and provocations. Apps pointed at its Authority get 404.", |ctx, a| async move {
             let _w = crate::WRITE.lock().await;
             let name = a.need("name")?;
@@ -113,8 +131,8 @@ pub fn all() -> Vec<Tool> {
         Tool::new("provoke_sign_in", "The next sign-ins: mfa_required, mfa_fails, consent_required, user_cancels, wrong_tenant, expired (tokens already expired), bad_signature, idp_down; normal stops it.", |ctx, a| async move {
             let p = provider(&ctx, &a).await?;
             let ans = a.need("answer")?;
-            if !["normal", "mfa_required", "mfa_fails", "consent_required", "user_cancels", "wrong_tenant", "expired", "bad_signature", "idp_down"].contains(&ans.as_str()) {
-                return Err(ApiError::bad("answer: normal, mfa_required, mfa_fails, consent_required, user_cancels, wrong_tenant, expired, bad_signature or idp_down"));
+            if !["normal", "mfa_required", "mfa_fails", "consent_required", "user_cancels", "wrong_tenant", "expired", "bad_signature", "wrong_audience", "idp_down"].contains(&ans.as_str()) {
+                return Err(ApiError::bad("answer: normal, mfa_required, mfa_fails, consent_required, user_cancels, wrong_tenant, expired, bad_signature, wrong_audience (SAML) or idp_down"));
             }
             let until = match a.str("for") { Some(f) => Some(util::now_ms() + util::parse_ms(&f).ok_or_else(|| ApiError::bad("for: 10m, 1h"))? as i64), None => None };
             store::provoke(&ctx, &p.name, &ans, until, a.u64("count").map(|c| c as i64), &by(&a)).await?;
@@ -158,6 +176,8 @@ pub fn all() -> Vec<Tool> {
             if let Some(x) = a.bool("mfa") { u.mfa = x; }
             if let Some(x) = a.bool("phone_lost") { u.phone_lost = x; }
             if let Some(x) = a.bool("enabled") { u.enabled = x; }
+            if let Some(x) = a.str("password") { u.password = x; }
+            if let Some(x) = a.bool("locked") { u.locked = x; }
             if let Some(Value::Object(m)) = a.get("extra") { u.extra = m.clone(); }
             if u.oid.is_empty() { u.oid = config::guid(&format!("{}:{}", p.tenant, u.id)); }
             let created = existing.is_none();
@@ -167,7 +187,7 @@ pub fn all() -> Vec<Tool> {
             changed(&ctx, &p, "user");
             Ok(json!({"created": created, "user": user_json(&p, &u)}))
         }).req("user", "id or name").param("name", "display name").param("email", "synthetic email").param("tenant", "home tenant").param("guest", "true/false").param("groups", "list, or a number")
-          .param("roles", "list").param("mfa", "true/false").param("phone_lost", "true/false").param("enabled", "true/false").param("extra", "{employeeId: E-10442}").param("provider", "provider")
+          .param("roles", "list").param("mfa", "true/false").param("phone_lost", "true/false").param("enabled", "true/false").param("password", "for LDAP and the password grant (secret://name or a synthetic literal; empty: any but \"wrong\")").param("locked", "true/false").param("extra", "{employeeId: E-10442}").param("provider", "provider")
           .route("PUT", "/identity/{provider}/users/{user}"),
         Tool::new("remove_user", "Removes a user from the provider (their refresh tokens stop).", |ctx, a| async move {
             let _w = crate::WRITE.lock().await;

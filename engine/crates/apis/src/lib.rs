@@ -20,6 +20,7 @@ pub mod plugin;
 pub mod store;
 pub mod tls;
 pub mod tools;
+pub mod xmldsig;
 
 use std::sync::{
     atomic::{AtomicU16, Ordering},

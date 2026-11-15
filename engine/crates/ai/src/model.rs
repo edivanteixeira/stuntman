@@ -471,7 +471,7 @@ async fn handle(ctx: Ctx, provider: &'static str, rest: String, method: Method, 
     let created = util::now_ms() / 1000;
     let model = p.model.clone();
     let response: Response;
-    let mut raw = String::new();
+    let raw: String;
     match (provider, api) {
         ("anthropic", _) => {
             let stop = match (&out.tool, out.stop.as_str()) { (Some(_), _) => "tool_use", (_, "length") => "max_tokens", (_, "filter") => "refusal", _ => "end_turn" };

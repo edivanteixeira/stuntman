@@ -27,6 +27,38 @@ pub struct Provider {
     pub provoke: Provoke,
     pub users: Vec<User>,
     pub apps: Vec<App>,
+    /// A14: SAML 2.0 identity provider (metadata, SSO by redirect and POST, signed assertions).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub saml: Option<Saml>,
+    /// A14: an LDAP directory of these users (bind, search, compare).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ldap: Option<Ldap>,
+    /// A14: grant_type=password (ROPC) on the token endpoint.
+    pub password_grant: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct Saml {
+    /// The assertion is signed (RSA-SHA256, exclusive c14n); the whole response too when sign_response.
+    pub sign_assertion: bool,
+    pub sign_response: bool,
+    /// email | oid | upn: what NameID carries.
+    pub name_id: String,
+}
+impl Default for Saml {
+    fn default() -> Self {
+        Self { sign_assertion: true, sign_response: false, name_id: "email".into() }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct Ldap {
+    /// dc=acme,dc=example (empty: from the tenant).
+    pub base_dn: String,
+    /// "" | busy (51) | unavailable (52) | timeout: the directory's own failures.
+    pub provoke: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
@@ -74,6 +106,12 @@ pub struct User {
     pub enabled: bool,
     /// Apps the user consented to.
     pub consented: Vec<String>,
+    /// The password for LDAP binds and the password grant: secret://name or a synthetic literal.
+    /// Empty: any password works except "wrong".
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub password: String,
+    /// Too many wrong passwords: binds answer 49 (data 775) and the password grant AADSTS50053.
+    pub locked: bool,
     /// Extra claims (employeeId, ctry…).
     #[serde(skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, Value>,
@@ -111,7 +149,7 @@ pub struct App {
 impl Default for Provider {
     fn default() -> Self {
         Self { kind: "identity-provider".into(), name: String::new(), environment: String::new(), tenant: String::new(), tenant_id: String::new(), flavour: "entra-v2".into(),
-            other_tenants: vec![], keys: Keys::default(), lifetimes: Lifetimes::default(), provoke: Provoke::default(), users: vec![], apps: vec![] }
+            other_tenants: vec![], keys: Keys::default(), lifetimes: Lifetimes::default(), provoke: Provoke::default(), users: vec![], apps: vec![], saml: None, ldap: None, password_grant: false }
     }
 }
 impl Default for Lifetimes {
@@ -138,6 +176,21 @@ impl Lifetimes {
 }
 
 impl Provider {
+    /// dc=<tenant parts>: the LDAP base of this provider.
+    pub fn base_dn(&self) -> String {
+        match self.ldap.as_ref().map(|l| l.base_dn.clone()).filter(|b| !b.is_empty()) {
+            Some(b) => b,
+            None => self.tenant.split(['.', '-']).filter(|x| !x.is_empty()).map(|x| format!("dc={x}")).collect::<Vec<_>>().join(","),
+        }
+    }
+    /// The user's password matches (empty password: anything but "wrong").
+    pub fn password_ok(&self, ctx: &Ctx, u: &User, pw: &str) -> bool {
+        if u.password.is_empty() {
+            !pw.is_empty() && pw != "wrong"
+        } else {
+            util::resolve_secret(&u.password, &ctx.data_dir) == pw
+        }
+    }
     pub fn user(&self, who: &str) -> Option<&User> {
         let w = who.trim().to_lowercase();
         self.users.iter().find(|u| u.id.to_lowercase() == w || u.name.to_lowercase() == w || u.email.to_lowercase() == w || u.oid == w)
@@ -183,7 +236,7 @@ pub fn pick(ctx: &Ctx, name: Option<String>) -> Result<Provider, ApiError> {
 pub fn by_tenant(ctx: &Ctx, tenant: &str) -> Option<Provider> {
     let all = list(ctx);
     all.iter().find(|p| p.tenant == tenant || p.tenant_id == tenant || p.name == tenant).cloned()
-        .or_else(|| (["common", "organizations", "consumers"].contains(&tenant)).then(|| all.first().cloned()).flatten())
+        .or_else(|| (["common", "organizations", "consumers", "botframework.com"].contains(&tenant)).then(|| all.first().cloned()).flatten())
 }
 
 pub fn file_name(name: &str) -> String {

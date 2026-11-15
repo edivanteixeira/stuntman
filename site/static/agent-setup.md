@@ -45,8 +45,8 @@ Then greet the developer in that language with this plan (translated), as a chec
 ```text
 Here is what I will do — about five minutes, and I will ask before changing any file:
 ☐ 1  Language
-☐ 2  Start Stuntman on this machine
-☐ 3  Connect myself to it
+☐ 2  Start Stuntman on this machine (or use the one already running)
+☐ 3  Give this project its own environment and connect myself to it, for this project only
 ☐ 4  Find every provider this project calls
 ☐ 5  Set Stuntman up for each one
 ☐ 6  Point your local / staging configuration at Stuntman (I will show you first)
@@ -59,7 +59,8 @@ Update and reprint the checklist (☑ done, ▶ now, ☐ next) at the start of e
 ## Step 2 of 8 — Start Stuntman
 
 1. Check whether it is already running: `curl -s -o /dev/null -w "%{http_code}" http://localhost:8025/api/env`.
-   `200` means yes: skip to Step 3.
+   `200` means yes: **do not start another one** (other projects on this machine may already use it). Skip to
+   Step 3: this project gets its own environment inside the Stuntman that is running.
 2. Check Docker: `docker info`. If Docker is missing or stopped, tell the developer in one sentence what to do
    (install or start Docker Desktop / OrbStack / Colima) and wait.
 3. Start Stuntman (all ports bound to this machine only):
@@ -86,33 +87,49 @@ docker run -d --name stuntman --restart unless-stopped \
 Tell the developer: *"Stuntman is running. Its web UI is at http://localhost:8025 — you can open it any time to
 watch what your app does."*
 
-## Step 3 of 8 — Connect yourself
+## Step 3 of 8 — Your project's environment, and connect yourself
 
-Prefer MCP; fall back to HTTP. MCP runs over streamable HTTP at `http://localhost:8025/mcp`, with no key.
+One Stuntman serves every project on this machine; **each project works in its own environment**, and its MCP
+connection is saved **in the project**, never globally, so another project's agent never lands here.
 
-| Agent | How to add the server |
+**1. Look for an earlier setup.** If the project already has a Stuntman MCP entry (`.mcp.json`, `.cursor/mcp.json`,
+`.vscode/mcp.json`, `.gemini/settings.json`, `opencode.json`, `.codex/config.toml`) whose URL is
+`…/e/<name>/mcp`, and `GET http://localhost:8025/api/environments/<name>` answers `200`, that is this project's
+environment: tell the developer and reuse it. Skip to part 3.
+
+**2. Create the environment** (over HTTP, before MCP is connected). The name is the project and branch in lowercase
+letters, numbers and dashes, for example `acme-api-checkout`:
+
+```sh
+curl -s -X POST http://localhost:8025/api/environments -H 'content-type: application/json' \
+  -d '{"name": "acme-api-checkout", "from": "empty", "expires": "7d", "by": "<your name>"}'
+```
+
+Use `expires: "never"` if the developer wants to keep it. If an environment with that name already exists and is
+not this project's, pick another name; if it is, ask before reusing or replacing it. The default environment (the one
+`GET /api/environments` marks as default) may be shared with other people, agents and apps: **never configure,
+reset or provoke failures in it.**
+
+**3. Connect yourself, for this project only.** MCP runs over streamable HTTP at
+`http://localhost:8025/e/<name>/mcp`, with no key. Use the project-level file or scope:
+
+| Agent | How to add the server for this project |
 |---|---|
-| Claude Code | `claude mcp add --transport http stuntman http://localhost:8025/mcp` |
-| Codex | `codex mcp add stuntman --url http://localhost:8025/mcp` |
-| Gemini CLI | `mcpServers.stuntman.httpUrl = "http://localhost:8025/mcp"` in `.gemini/settings.json` |
-| OpenCode | `mcp.stuntman = { "type": "remote", "url": "http://localhost:8025/mcp" }` in `opencode.json` |
-| Cursor | `mcpServers.stuntman.url = "http://localhost:8025/mcp"` in `.cursor/mcp.json` |
-| GitHub Copilot (VS Code) | `servers.stuntman = { "type": "http", "url": "http://localhost:8025/mcp" }` in `.vscode/mcp.json` |
+| Claude Code | `claude mcp add --scope project --transport http stuntman http://localhost:8025/e/<name>/mcp` (writes `.mcp.json`) |
+| Codex | `[mcp_servers.stuntman]` `url = "http://localhost:8025/e/<name>/mcp"` in the project's `.codex/config.toml`; if your Codex only reads `~/.codex/config.toml`, name the server `stuntman-<name>` so projects don't overwrite each other |
+| Gemini CLI | `mcpServers.stuntman.httpUrl = "http://localhost:8025/e/<name>/mcp"` in the project's `.gemini/settings.json` |
+| OpenCode | `mcp.stuntman = { "type": "remote", "url": "http://localhost:8025/e/<name>/mcp" }` in the project's `opencode.json` |
+| Cursor | `mcpServers.stuntman.url = "http://localhost:8025/e/<name>/mcp"` in the project's `.cursor/mcp.json` |
+| GitHub Copilot (VS Code) | `servers.stuntman = { "type": "http", "url": "http://localhost:8025/e/<name>/mcp" }` in the project's `.vscode/mcp.json` |
 
-If your client needs a restart to load a new MCP server, **do not stop the setup**: use the HTTP API for the rest of
-this session. Every tool is a route under `/api`; `GET http://localhost:8025/api/tools` lists each tool with its
-`http` route and parameters. Send JSON with `content-type: application/json`, and pass `"by": "<your name>"` so the
-timeline names you.
+Show the developer the file you are about to change first. If your client needs a restart to load a new MCP server,
+**do not stop the setup**: use the HTTP API for the rest of this session. Every tool is a route under
+`http://localhost:8025/e/<name>/api`; `GET http://localhost:8025/api/tools` lists each tool with its `http` route and
+parameters. Send JSON with `content-type: application/json`, and pass `"by": "<your name>"` so the timeline names you.
+Check the connection by calling `get_environment` for `<name>`.
 
-Check the connection by calling `list_environments`.
+**4. Addresses for the app.** For the rest of this setup:
 
-**Create an environment for this project, and work only in it.** The default environment (the one `list_environments` marks as default) may be
-shared with other people, agents and apps: never configure, reset or provoke failures in it. Call
-`create_environment` with `name` = the project and branch in lowercase letters, numbers and dashes (for example
-`acme-api-checkout`), `from: "empty"` and `expires: "7d"` unless the developer wants it kept. If one with that name
-already exists, ask before reusing or replacing it. Then, for the rest of this setup:
-
-- Reconnect MCP to `http://localhost:8025/e/<name>/mcp` (or, over HTTP, call `http://localhost:8025/e/<name>/api/...`).
 - Every HTTP address you give the app carries the prefix: `http://localhost:8028/e/<name>/<service>`,
   `http://localhost:8027/e/<name>/in/<inbox>`, `http://localhost:4318/e/<name>/v1/traces`, and so on.
   `get_environment` lists them.

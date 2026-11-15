@@ -50,6 +50,10 @@ pub fn port() -> u16 {
     PORT.load(Ordering::Relaxed)
 }
 
+fn file(kind: &'static str, name: &str, body: Vec<u8>) -> axum::response::Response {
+    ([(header::CONTENT_TYPE, kind.to_string()), (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}\""))], body).into_response()
+}
+
 pub struct Apis {
     pub port: u16,
     /// HTTPS with the Stuntman Test CA (real host names, mTLS).
@@ -71,8 +75,19 @@ impl Module for Apis {
     }
 
     fn extra_routes(&self) -> Router<Ctx> {
-        let ca = || async { ([(header::CONTENT_TYPE, "application/x-pem-file"), (header::CONTENT_DISPOSITION, "attachment; filename=\"stuntman-test-ca.pem\"")], ca::get().pem.clone()).into_response() };
-        Router::new().route("/api/keyvault/test-ca.pem", get(ca)).route("/api/test-ca.pem", get(ca)).route("/api/plugins/{service}/yaml", get(|State(ctx): State<Ctx>, Path(s): Path<String>| async move {
+        let ca = || async { file("application/x-pem-file", "stuntman-test-ca.pem", ca::get().pem.clone().into_bytes()) };
+        // DER: what macOS Keychain, the Windows store and Android take; .crt and .der are the same bytes.
+        let der = |name: &'static str| move || async move { file("application/pkix-cert", name, ca::der_of(&ca::get().pem).first().map(|d| d.to_vec()).unwrap_or_default()) };
+        // PKCS#12 with the CA only, password changeit: a Java truststore and a certificate-only PFX.
+        let p12 = |name: &'static str| move || async move {
+            match ca::get().truststore() {
+                Ok(b) => file("application/x-pkcs12", name, b),
+                Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+            }
+        };
+        Router::new().route("/api/keyvault/test-ca.pem", get(ca)).route("/api/test-ca.pem", get(ca))
+            .route("/api/test-ca.crt", get(der("stuntman-test-ca.crt"))).route("/api/test-ca.der", get(der("stuntman-test-ca.der")))
+            .route("/api/test-ca.p12", get(p12("stuntman-test-ca.p12"))).route("/api/test-ca.pfx", get(p12("stuntman-test-ca.pfx"))).route("/api/plugins/{service}/yaml", get(|State(ctx): State<Ctx>, Path(s): Path<String>| async move {
             ([(header::CONTENT_TYPE, "application/yaml")], plugin::text(&ctx, &s)).into_response()
         }))
     }

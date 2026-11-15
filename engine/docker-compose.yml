@@ -23,6 +23,9 @@ services:
       - "${BIND:-127.0.0.1}:8444:8444"   # Key Vault (TLS)
       - "${BIND:-127.0.0.1}:5673:5673"   # AMQP (Service Bus / RabbitMQ)
       - "${BIND:-127.0.0.1}:5671:5671"   # AMQPS
+      - "${BIND:-127.0.0.1}:5300:5300"   # Service Bus management (HTTP/HTTPS) + AMQP, as the official emulator
+      # An admin client whose connection string has no port calls :80 (.NET, JS) or :443 (Python, Java):
+      # - "${BIND:-127.0.0.1}:80:5300"
       - "${BIND:-127.0.0.1}:10000:10000" # Azure Blob
       - "${BIND:-127.0.0.1}:9000:9000"   # S3
       - "${BIND:-127.0.0.1}:4317:4317"   # OTLP gRPC

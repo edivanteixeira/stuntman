@@ -9,3 +9,5 @@ __pycache__/
 *.pyc
 engine/tests/kinesis_node/node_modules/
 engine/tests/kinesis_java/target/
+engine/tests/*/bin/
+engine/tests/*/obj/

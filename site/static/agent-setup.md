@@ -69,6 +69,7 @@ Update and reprint the checklist (☑ done, ▶ now, ☐ next) at the start of e
 docker run -d --name stuntman --restart unless-stopped \
   -p 127.0.0.1:8025:8025 -p 127.0.0.1:2525:2525 -p 127.0.0.1:8027:8027 -p 127.0.0.1:8028:8028 \
   -p 127.0.0.1:8443:8443 -p 127.0.0.1:8444:8444 -p 127.0.0.1:5673:5673 -p 127.0.0.1:5671:5671 \
+  -p 127.0.0.1:5300:5300 \
   -p 127.0.0.1:10000:10000 -p 127.0.0.1:9000:9000 -p 127.0.0.1:4317:4317 -p 127.0.0.1:4318:4318 \
   -p 127.0.0.1:3389:3389 -p 127.0.0.1:2121:2121 -p 127.0.0.1:30000-30009:30000-30009 -p 127.0.0.1:2222:2222 \
   -p 127.0.0.1:1143:1143 -p 127.0.0.1:1110:1110 -p 127.0.0.1:9092:9092 -p 127.0.0.1:8081:8081 \
@@ -224,8 +225,9 @@ Change **base URLs only**; the app keeps its code and SDKs.
 | Azure Blob | `DefaultEndpointsProtocol=http;AccountName=<account>;AccountKey=<key from get_account>;BlobEndpoint=http://127.0.0.1:10000/<account>;` (Azure SDKs need `127.0.0.1`, not `localhost`) |
 | S3 / R2 | endpoint `http://127.0.0.1:9000`, path-style addressing, keys from `get_account` |
 | Service Bus | `Endpoint=sb://<namespace>.<base domain>:5673;SharedAccessKeyName=any;SharedAccessKey=any` — Service Bus and Key Vault find the namespace or vault by host name: set the environment's base domain first (`set_environment`) and make it resolve to this machine; see the [environments guide](https://github.com/edivanteixeira/stuntman/blob/main/docs/environments.md#how-a-request-finds-its-environment) |
+| Service Bus administration client | the same string with port `5300` and `;UseDevelopmentEmulator=true` (the namespace's `managementConnection`): `:5300` answers management over HTTP and HTTPS **and** AMQP, so one string serves `ServiceBusAdministrationClient` and `ServiceBusClient`. A string without a port sends .NET/JS management to `:80` and Python/Java to `:443`: add `:5300`, or publish `-p 127.0.0.1:80:5300` (`443:5300` for Java). Never add a socat sidecar |
 | RabbitMQ | `amqp://any:any@localhost:5673/<name>%2F<namespace>` (the vhost is `<env>/<namespace>`, URL-encoded) |
-| Key Vault | `https://<vault>.vault.<base domain>:8444`, trusting the Test CA from `http://localhost:8025/api/test-ca.pem` |
+| Key Vault | `https://<vault>.vault.<base domain>:8444`, trusting the Test CA (see below) |
 | Identity | the authority returned by `list_providers` |
 | OpenTelemetry | `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` |
 | GELF / StatsD | `localhost:12201` (UDP) / `localhost:8125` (UDP) |
@@ -244,6 +246,27 @@ Change **base URLs only**; the app keeps its code and SDKs.
 | Amazon Kinesis | `AWS_ENDPOINT_URL_KINESIS=http://localhost:4567` (or the client's endpoint override), any access key and secret, any region |
 | SAML 2.0 | IdP metadata `http://localhost:8025/login/<tenant>/saml/metadata` |
 | LDAP | `ldap://localhost:3389`, base DN from `set_provider` |
+
+### Trusting the Stuntman Test CA (HTTPS: Key Vault, `:8443`, AMQPS, FTPS)
+
+Call `get_test_ca` (or `GET http://localhost:8025/api/apis/test-ca`): it returns the download URLs, the CA's name
+and these options. Downloads: `/api/test-ca.pem` (PEM), `/api/test-ca.crt` (DER), `/api/test-ca.p12` (PKCS#12
+truststore, CA only, password `changeit`). Save the file inside the project (git-ignored) and trust it **for the
+app's test process only**:
+
+| Runtime | Setting |
+|---|---|
+| Node | `NODE_EXTRA_CA_CERTS=<path>/stuntman-test-ca.pem` |
+| Python | `REQUESTS_CA_BUNDLE=<pem>` and `SSL_CERT_FILE=<pem>` |
+| Java | `-Djavax.net.ssl.trustStore=<path>/stuntman-test-ca.p12 -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword=changeit` |
+| Go | Linux: `SSL_CERT_FILE=<pem>`; macOS/Windows: add the PEM to `tls.Config.RootCAs` in test config |
+| curl | `--cacert <pem>` |
+| .NET on Linux | `SSL_CERT_FILE=<pem>` |
+| .NET on macOS/Windows | `SSL_CERT_FILE` is ignored. In test config: a `SocketsHttpHandler` whose `RemoteCertificateValidationCallback` builds an `X509Chain` with `TrustMode = CustomRootTrust` and the CA in `CustomTrustStore`; Azure clients take it as `options.Transport = new HttpClientTransport(handler)`, Service Bus/Event Hubs AMQPS as `CertificateValidationCallback`. Full snippet: [configuration guide](https://github.com/edivanteixeira/stuntman/blob/main/docs/configuration.md#the-stuntman-test-ca) |
+
+Adding the CA to the OS trust store (macOS Keychain `security add-trusted-cert`, Windows `certutil -user -addstore Root`,
+Linux `update-ca-certificates`) changes the developer's machine for every process. **Ask the developer first and run
+it only if they say yes; never do it silently.** Show them the command and the undo command `get_test_ca` gives.
 
 How to write it, in this order of preference:
 
@@ -312,7 +335,8 @@ Keep the frame, translate the words, fill in the real values and list only what 
 | Pub/Sub client calls the real Google API or asks for credentials | `PUBSUB_EMULATOR_HOST` is not set in the app's process (or, in .NET, `EmulatorDetection` is missing). The project id must match `set_pubsub`'s `project` for short names in tools. |
 | ActiveMQ client fails with a SecurityException | `set_activemq` has users and the app logs in with another one, or `refuse_login` is on: `set_activemq {"reset": true}`. |
 | FTP listings hang | Passive mode needs ports `30000-30009` published as well as `2121`. |
-| TLS errors (Key Vault, `:8443`, AMQPS, FTPS) | Trust the Stuntman Test CA (`/api/test-ca.pem`) for the app's process only — never system-wide on a machine that talks to real providers. |
+| TLS errors (Key Vault, `:8443`, AMQPS, FTPS) | Trust the Stuntman Test CA for the app's process only ([Step 6](#trusting-the-stuntman-test-ca-https-key-vault-8443-amqps-ftps)); .NET on macOS/Windows ignores `SSL_CERT_FILE`. An OS store only after the developer agrees — never on a machine that talks to real providers. |
+| `ServiceBusAdministrationClient`: connection refused on `:80` or `:443` | The connection string has no port: use `:5300` in it, or publish `-p 127.0.0.1:80:5300`. |
 | A call shows up in `list_unmatched` | The plugin has no route for it: add the route with `put_plugin`. |
 | The MCP server does not appear | Continue over HTTP (`/api`); tell the developer to restart their agent later to get MCP. |
 

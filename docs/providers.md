@@ -171,7 +171,7 @@ Tools: `list_file_servers`, `set_file_server`, `list_files`, `get_file`, `put_fi
 | | |
 |---|---|
 | **Speaks** | AMQP for Azure Service Bus, Azure Event Hubs ([below](#azure-event-hubs)) and RabbitMQ, on `:5673` (and `:5671` with TLS); ActiveMQ over OpenWire on `:61616` ([below](#activemq-openwire)) |
-| **Point your app at** | Service Bus: `Endpoint=sb://<namespace>.<env base domain>:5673;…` (any key); RabbitMQ: `<host>:5673`, vhost `<env>/<namespace>` |
+| **Point your app at** | Service Bus: `Endpoint=sb://<namespace>.<env base domain>:5673;…` (any key), or `:5300` for the [administration client](#management-administration-client) too; RabbitMQ: `<host>:5673`, vhost `<env>/<namespace>` |
 | **It keeps** | namespaces, queues, topics, subscriptions, every message with its deliveries, consumers and their locks |
 | **You can provoke** | lost locks, duplicates, held, dropped, dead-lettered or out-of-order messages; a namespace that refuses, times out, rejects the key or is busy |
 
@@ -182,6 +182,39 @@ are the RabbitMQ namespaces of the default environment, so what a script creates
 
 Service Bus finds the namespace by host name: give the environment a base domain under a wildcard DNS name that
 points at Stuntman. See [Environments](environments.md#how-a-request-finds-its-environment).
+
+### Management (administration client)
+
+`ServiceBusAdministrationClient` (create, get, list and delete queues, topics, subscriptions and rules) speaks Atom
+XML over HTTP. Stuntman answers it on `:5300`, the official emulator's management port
+(`STUNTMAN_SERVICEBUS_MGMT_PORT`), and on the AMQP ports. `:5300` takes plain HTTP, HTTPS (Test CA) and AMQP, so
+**one connection string with `:5300` works for the admin client and the messaging client**:
+
+```text
+Endpoint=sb://<namespace>.localhost:5300;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=<any>;UseDevelopmentEmulator=true
+```
+
+The namespace page and the namespace tool show it as `managementConnection`. Where each SDK sends management calls
+in emulator mode, read from its source:
+
+| SDK | Scheme | Port |
+|---|---|---|
+| .NET `Azure.Messaging.ServiceBus` | `http` (`UseDevelopmentEmulator=true` turns TLS off) | the connection string's port; **`80` when it has none** |
+| JavaScript `@azure/service-bus` | `http` with the emulator flag | the connection string's port; `80` when it has none |
+| Python `azure-servicebus` | always `https` (the flag only turns TLS off for AMQP) | the connection string's port; `443` when it has none. Trust the [Test CA](configuration.md#the-stuntman-test-ca) (`REQUESTS_CA_BUNDLE`) |
+| Java `azure-messaging-servicebus` | always `https` | always `443`: the builder keeps only the host |
+
+So an app whose connection string has no port (`Endpoint=sb://localhost;…`, as the official emulator's docs give for
+messaging) calls management on `:80`. Either add `:5300` to the string the admin client uses (what the official
+emulator asks for), or map the port, with no sidecar:
+
+```sh
+docker run … -p 127.0.0.1:80:5300 …     # .NET / JS admin client without a port
+docker run … -p 127.0.0.1:443:5300 …    # Java admin client (and Python without a port), Test CA trusted
+```
+
+In `docker-compose.yml` the line is there, commented. Running Stuntman natively, `STUNTMAN_SERVICEBUS_MGMT_PORT=80`
+does the same (on Linux, binding below 1024 needs root or `CAP_NET_BIND_SERVICE`).
 
 ### ActiveMQ (OpenWire)
 

@@ -26,7 +26,16 @@ To set Stuntman up for a project, read and follow the agent setup guide step by 
 - [The clock: move an environment's time; scheduled webhooks](https://github.com/edivanteixeira/stuntman/blob/main/docs/clock.md)
 - [Environments](https://github.com/edivanteixeira/stuntman/blob/main/docs/environments.md)
 - [Configuration and ports](https://github.com/edivanteixeira/stuntman/blob/main/docs/configuration.md)
+- [Trusting the Test CA per runtime and OS (PEM, DER, PKCS#12 downloads)](https://github.com/edivanteixeira/stuntman/blob/main/docs/configuration.md#the-stuntman-test-ca)
 - [Tool reference: all tools, routes and arguments](https://github.com/edivanteixeira/stuntman/blob/main/docs/reference/tools.md)
+
+## Notes for agents
+
+- Service Bus: AMQP on :5673 (TLS :5671); the administration client (management over HTTP/HTTPS) and AMQP on :5300,
+  as the official emulator. Without a port in the connection string, .NET/JS management goes to :80: publish
+  `-p 127.0.0.1:80:5300` or add `:5300` to the string.
+- Test CA: `get_test_ca`, or `/api/test-ca.pem`, `.crt`, `.p12` (password changeit). Trust it per process; ask the
+  developer before adding it to an OS trust store.
 
 ## Image
 

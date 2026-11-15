@@ -19,6 +19,18 @@ run next to your app in development, CI and staging.
 3. **Never point production at it,** and never trust the Stuntman Test CA on a machine that talks to real providers.
 4. **Use synthetic data.** Seeds and plugins use `example.com` addresses and made-up people; keep it that way.
 
+## The Test CA
+
+Stuntman's TLS endpoints use certificates from the Stuntman Test CA. Its private key stays in `data/keys`; the
+downloads (`/api/test-ca.pem`, `.crt`, `.p12`) hold only the certificate. Anyone who has the key can make certificates
+your machine accepts for **any** host name once the CA is trusted, so:
+
+- Trust it per process (`NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, a Java truststore, a .NET validation callback in
+  test config): see [Configuration › The Stuntman Test CA](configuration.md#the-stuntman-test-ca).
+- Add it to an OS trust store (macOS Keychain, Windows store, `update-ca-certificates`) only when the developer chooses
+  to, and remove it when done. Coding agents must ask before doing it, never do it silently.
+- Never trust it on a machine or image that also talks to real providers, and never copy `data/keys` anywhere shared.
+
 ## What it does to keep you safe
 
 - **Plugins are sandboxed by design.** A plugin cannot reach the network or the disk unless it declares it, and

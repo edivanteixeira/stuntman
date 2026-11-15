@@ -1,5 +1,6 @@
 //! Azure Service Bus management (what ServiceBusAdministrationClient calls): queues, topics and
-//! subscriptions as Atom XML over plain HTTP, on the same host and port as AMQP in emulator mode.
+//! subscriptions as Atom XML over HTTP, on the management port (5300, as the official emulator)
+//! and also on the AMQP ports, since a client in emulator mode calls the port its string names.
 //! GET answers 404 for a missing entity; PUT creates (201) or says 409; DELETE removes.
 
 use std::{

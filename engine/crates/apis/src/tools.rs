@@ -728,10 +728,30 @@ fn service_tools() -> Vec<Tool> {
         })
         .req("service", "plugin").req("name", "tool name").param("description", "what it does").param("input_schema", "JSON Schema of the arguments").param("decide", "[{when, answer}]")
         .route("PUT", "/plugins/{service}/mcp-tools"),
-        Tool::new("get_test_ca", "The Stuntman Test CA (PEM): trust it in the app's machine or container and the providers' real host names work over HTTPS against Stuntman.", |_ctx, _a| async move {
+        Tool::new("get_test_ca", "The Stuntman Test CA: download URLs (PEM, DER .crt, PKCS#12 truststore/PFX without a key), its file on disk, and how to trust it per runtime and OS (Linux, macOS, Windows; .NET, Node, Python, Java, Go, curl). Prefer the per-process options; ask the developer before adding it to an OS trust store.", |_ctx, _a| async move {
             let c = crate::ca::get();
-            Ok(json!({"pem": c.pem, "fingerprint": crate::tls::fingerprint(crate::ca::der_of(&c.pem).first().map(|d| d.as_ref()).unwrap_or(&[])), "httpsPort": crate::tls_port(),
-                "how": "Linux: copy to /usr/local/share/ca-certificates/stuntman-test-ca.crt and run update-ca-certificates. .NET and Node use the system store (Node: NODE_EXTRA_CA_CERTS)."}))
+            let base = format!("http://localhost:{}/api", std::env::var("STUNTMAN_PORT").unwrap_or("8025".into()));
+            let pem = crate::ca::keys_dir().join("test-ca.pem");
+            let der = crate::ca::der_of(&c.pem).first().map(|d| d.to_vec()).unwrap_or_default();
+            // The subject name, for the undo commands (older data folders keep the CA they made).
+            let cn = x509_parser::parse_x509_certificate(&der).ok().and_then(|(_, x)| x.subject().iter_common_name().next().and_then(|n| n.as_str().ok().map(String::from))).unwrap_or("Stuntman Test CA".into());
+            Ok(json!({"pem": c.pem, "name": cn, "fingerprint": crate::tls::fingerprint(crate::ca::der_of(&c.pem).first().map(|d| d.as_ref()).unwrap_or(&[])), "httpsPort": crate::tls_port(),
+                "urls": {"pem": format!("{base}/test-ca.pem"), "crt": format!("{base}/test-ca.crt"), "der": format!("{base}/test-ca.der"), "p12": format!("{base}/test-ca.p12"), "pfx": format!("{base}/test-ca.pfx")},
+                "path": pem.to_string_lossy(), "pathNote": "the file on the machine Stuntman runs on; in Docker it is inside the container, so download it from a URL instead",
+                "truststorePassword": crate::ca::TRUSTSTORE_PASSWORD,
+                "rule": "Trust it for the app's test process only (env var or test config). Adding it to an OS trust store (keychain, Windows store, update-ca-certificates) changes the developer's machine: ask first, never do it silently, and never on a machine that talks to real providers.",
+                "runtimes": {
+                    "node": "NODE_EXTRA_CA_CERTS=stuntman-test-ca.pem (every OS)",
+                    "python": "REQUESTS_CA_BUNDLE=stuntman-test-ca.pem for requests (and the Azure SDKs), SSL_CERT_FILE=stuntman-test-ca.pem for ssl/httpx/aiohttp; certifi users: the same two variables (every OS)",
+                    "java": "-Djavax.net.ssl.trustStore=stuntman-test-ca.p12 -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword=changeit (every OS; replaces the default truststore for that JVM)",
+                    "go": "SSL_CERT_FILE=stuntman-test-ca.pem (Linux; on macOS and Windows Go uses the OS verifier: load the PEM into tls.Config.RootCAs in test config)",
+                    "curl": "curl --cacert stuntman-test-ca.pem (or CURL_CA_BUNDLE=stuntman-test-ca.pem)",
+                    "dotnetLinux": "SSL_CERT_FILE=stuntman-test-ca.pem (OpenSSL reads it), or the system store below",
+                    "dotnetMacOsWindows": ".NET ignores SSL_CERT_FILE there. In test config: a SocketsHttpHandler whose SslOptions.RemoteCertificateValidationCallback builds an X509Chain with TrustMode = CustomRootTrust and the CA in CustomTrustStore; pass it to Azure clients as options.Transport = new HttpClientTransport(handler), and to ServiceBusClientOptions/EventHubConnectionOptions as CertificateValidationCallback. Or, after asking, the user store below.",
+                    "macOsKeychain": format!("security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db stuntman-test-ca.crt (user keychain; the developer confirms with a password or Touch ID). Undo: security delete-certificate -c \"{cn}\" ~/Library/Keychains/login.keychain-db"),
+                    "windowsStore": format!("certutil -user -addstore Root stuntman-test-ca.crt, or PowerShell Import-Certificate -FilePath stuntman-test-ca.crt -CertStoreLocation Cert:\\CurrentUser\\Root (current user; Windows shows a confirmation dialog). Undo: certutil -user -delstore Root \"{cn}\""),
+                    "linuxSystem": "sudo cp stuntman-test-ca.pem /usr/local/share/ca-certificates/stuntman-test-ca.crt && sudo update-ca-certificates (Debian/Ubuntu; in a container image this is the usual way)"
+                }}))
         })
         .route("GET", "/apis/test-ca"),
         Tool::new("issue_client_certificate", "A client certificate signed by the Stuntman Test CA, for an app calling a provider that requires mTLS. Returns certificate and key PEM.", |_ctx, a| async move {

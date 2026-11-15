@@ -40,6 +40,13 @@ pub fn tls_port() -> u16 {
     TLS_PORT.load(Ordering::Relaxed)
 }
 
+static MGMT_PORT: AtomicU16 = AtomicU16::new(5300);
+
+/// Service Bus management (and AMQP), where the official emulator has it.
+pub fn mgmt_port() -> u16 {
+    MGMT_PORT.load(Ordering::Relaxed)
+}
+
 impl Module for Messaging {
     fn id(&self) -> &'static str {
         "messaging"
@@ -87,6 +94,8 @@ impl Module for Messaging {
         TLS_PORT.store(self.tls_port, Ordering::Relaxed);
         tokio::spawn(amqp::serve(envs.clone(), self.port));
         tokio::spawn(amqp::serve_tls(envs.clone(), self.tls_port));
+        MGMT_PORT.store(std::env::var("STUNTMAN_SERVICEBUS_MGMT_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(5300), Ordering::Relaxed);
+        tokio::spawn(amqp::serve_mgmt(envs.clone(), mgmt_port()));
         tokio::spawn(openwire::serve(envs.clone(), std::env::var("STUNTMAN_ACTIVEMQ_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(61616)));
         rabbit_mgmt::serve(envs, std::env::var("STUNTMAN_RABBITMQ_MGMT_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(15672));
     }

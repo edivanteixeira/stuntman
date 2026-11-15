@@ -20,6 +20,7 @@ default; most setups change nothing.
 | `STUNTMAN_KEYVAULT_PORT` | `8444` | Key Vault (TLS) |
 | `STUNTMAN_AMQP_PORT` | `5673` | AMQP (Service Bus, Event Hubs, RabbitMQ) |
 | `STUNTMAN_AMQPS_PORT` | `5671` | AMQP over TLS |
+| `STUNTMAN_SERVICEBUS_MGMT_PORT` | `5300` | Service Bus management (what `ServiceBusAdministrationClient` calls), plain HTTP and HTTPS, plus AMQP; the official emulator's port |
 | `STUNTMAN_BLOB_PORT` | `10000` | Azure Blob |
 | `STUNTMAN_S3_PORT` | `9000` | Amazon S3 |
 | `STUNTMAN_OTLP_HTTP_PORT` | `4318` | OpenTelemetry over HTTP |
@@ -53,6 +54,7 @@ The project was first called Dublê: `DUBLE_*` variables still work when the `ST
 | `8028` / `8443` | HTTP API plugins / over TLS |
 | `8444` | Key Vault (TLS) |
 | `5673` / `5671` | AMQP / over TLS |
+| `5300` | Service Bus management over HTTP or HTTPS, and AMQP ([Providers › Messaging](providers.md#management-administration-client)) |
 | `10000` | Azure Blob |
 | `9000` | Amazon S3 |
 | `4318` / `4317` | OTLP HTTP / gRPC |
@@ -102,14 +104,59 @@ in git and start Stuntman from it.
 
 ## The Stuntman Test CA
 
-TLS endpoints (Key Vault, HTTP plugins on `:8443`, AMQPS, FTPS) use certificates signed by the Stuntman Test CA, created
-on first start. Trust it on the machine or container that runs your app:
+TLS endpoints (Key Vault, HTTP plugins on `:8443`, AMQPS, the HTTPS side of `:5300`, FTPS) use certificates signed by
+the Stuntman Test CA, created on first start in `data/keys/test-ca.pem`. Download it in the format your platform
+takes (none of them holds the private key):
 
-```sh
-curl -s http://localhost:8025/api/test-ca.pem -o stuntman-test-ca.pem
+| URL | Format | For |
+|---|---|---|
+| `http://localhost:8025/api/test-ca.pem` | PEM | Node, Python, Go, curl, Linux system store, `SSL_CERT_FILE` |
+| `http://localhost:8025/api/test-ca.crt` (same as `.der`) | DER | macOS Keychain, Windows certificate store |
+| `http://localhost:8025/api/test-ca.p12` (same as `.pfx`) | PKCS#12, CA only, password `changeit` | Java truststore, certificate-only PFX |
+
+The `get_test_ca` tool returns the same URLs, the file path and the options below.
+
+Trust it **for the app's test process** whenever the runtime allows it; that changes nothing else on the machine:
+
+| Runtime | Per process (prefer) |
+|---|---|
+| Node | `NODE_EXTRA_CA_CERTS=stuntman-test-ca.pem` |
+| Python | `REQUESTS_CA_BUNDLE=stuntman-test-ca.pem` (requests, the Azure SDKs) and `SSL_CERT_FILE=stuntman-test-ca.pem` (`ssl`, httpx, aiohttp); code that passes `certifi.where()` explicitly needs `verify=` / `cafile=` pointed at the file instead |
+| Java | `-Djavax.net.ssl.trustStore=stuntman-test-ca.p12 -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword=changeit` (replaces the JVM's default truststore for that run) |
+| Go | Linux: `SSL_CERT_FILE=stuntman-test-ca.pem`. macOS and Windows use the OS verifier and ignore it: add the PEM to `tls.Config.RootCAs` in test config, or the OS store below |
+| curl | `curl --cacert stuntman-test-ca.pem` or `CURL_CA_BUNDLE=stuntman-test-ca.pem` |
+| .NET on Linux | `SSL_CERT_FILE=stuntman-test-ca.pem` (OpenSSL reads it) |
+| .NET on macOS and Windows | `SSL_CERT_FILE` is ignored. Validate against the CA in test configuration (below), or use the OS store |
+
+.NET on macOS and Windows, in the test configuration only:
+
+```csharp
+var ca = X509Certificate2.CreateFromPem(File.ReadAllText("stuntman-test-ca.pem"));
+var handler = new SocketsHttpHandler();
+handler.SslOptions.RemoteCertificateValidationCallback = (_, cert, _, errors) =>
+{
+    if (errors == SslPolicyErrors.None) return true;
+    using var chain = new X509Chain();
+    chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+    chain.ChainPolicy.CustomTrustStore.Add(ca);
+    chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+    return cert is X509Certificate2 c && chain.Build(c);
+};
+// HttpClient: new HttpClient(handler). Azure SDK clients (Key Vault, Blob, admin clients):
+var options = new SecretClientOptions { Transport = new HttpClientTransport(handler) };
+// Service Bus / Event Hubs over AMQPS: ServiceBusClientOptions.CertificateValidationCallback (same check).
 ```
 
-Never trust it anywhere that also talks to real providers.
+Or trust it in the OS store, which every process of that user then trusts. **It changes the developer's machine:
+ask them first** (coding agents: never do this silently), and never on a machine that also talks to real providers.
+
+| OS | Trust (current user) | Undo |
+|---|---|---|
+| macOS | `security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db stuntman-test-ca.crt` (asks for the password or Touch ID) | `security delete-certificate -c "<CA name>" ~/Library/Keychains/login.keychain-db` |
+| Windows | `certutil -user -addstore Root stuntman-test-ca.crt`, or PowerShell `Import-Certificate -FilePath stuntman-test-ca.crt -CertStoreLocation Cert:\CurrentUser\Root` (Windows asks to confirm) | `certutil -user -delstore Root "<CA name>"` |
+| Linux, containers | `cp stuntman-test-ca.pem /usr/local/share/ca-certificates/stuntman-test-ca.crt && update-ca-certificates` (Debian, Ubuntu; as root) | remove the file, `update-ca-certificates --fresh` |
+
+`<CA name>` is the certificate's common name; `get_test_ca` returns it as `name` and fills in the undo commands.
 
 STARTTLS on SMTP, IMAP and POP3 uses a self-signed certificate for `localhost` instead, made at each start: turn
 certificate checks off in the app's mail client for those.

@@ -24,6 +24,9 @@ static CA: OnceLock<Ca> = OnceLock::new();
 static DIR: OnceLock<PathBuf> = OnceLock::new();
 
 /// The keys folder (data/keys), set when the APIs port starts.
+/// Java's default keystore password, so `-Djavax.net.ssl.trustStorePassword=changeit` reads as usual.
+pub const TRUSTSTORE_PASSWORD: &str = "changeit";
+
 pub fn set_dir(p: &Path) {
     let _ = DIR.set(p.to_path_buf());
 }
@@ -217,6 +220,19 @@ impl Ca {
         let id = sha2::Sha256::digest(cert_der)[..20].to_vec();
         ks.add_entry("certificate", KeyStoreEntry::PrivateKeyChain(PrivateKeyChain::new(id, key, std::iter::once(cert).chain(ca))));
         ks.writer(password).write().map_err(|e| e.to_string())
+    }
+
+    /// The CA alone as a PKCS#12 truststore (no private key), password `changeit`: Java's
+    /// `javax.net.ssl.trustStore` (the bag carries Java's trusted-certificate attribute) and a
+    /// certificate-only PFX for the Windows certificate store.
+    pub fn truststore(&self) -> Result<Vec<u8>, String> {
+        use p12_keystore::{Certificate, KeyStore, KeyStoreEntry};
+        let mut ks = KeyStore::new();
+        for (i, d) in der_of(&self.pem).iter().enumerate() {
+            let c = Certificate::from_der(d.as_ref()).map_err(|e| e.to_string())?;
+            ks.add_entry(if i == 0 { "stuntman-test-ca" } else { "stuntman-test-ca-2" }, KeyStoreEntry::Certificate(c));
+        }
+        ks.writer(TRUSTSTORE_PASSWORD).write().map_err(|e| e.to_string())
     }
 
     pub fn roots(&self) -> rustls::RootCertStore {

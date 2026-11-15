@@ -77,7 +77,9 @@ pub async fn ns_view(ctx: &Ctx, n: &config::Namespace) -> Value {
         "queues": n.queues(), "topics": n.topics(), "entities": entities, "connection": connection(ctx, n), "keys": keys,
         "behaviour": n.behaviour, "access": {"anyKey": n.access.any_key, "managedIdentity": n.access.managed_identity},
         "file": config::rel_file(&n.namespace), "yaml": config::text(ctx, &n.namespace), "settings": n, "port": crate::port(),
-        "bindError": crate::amqp::BIND_ERROR.lock().unwrap().clone()})
+        "managementConnection": if n.kind == config::SB { json!(connection(ctx, n).replace(&format!(":{};", crate::port()), &format!(":{};", crate::mgmt_port()))) } else { Value::Null },
+        "managementPort": if n.kind == config::SB { json!(crate::mgmt_port()) } else { Value::Null },
+        "bindError": crate::amqp::BIND_ERROR.lock().unwrap().clone(), "managementBindError": crate::amqp::MGMT_BIND_ERROR.lock().unwrap().clone()})
 }
 
 fn service(a: &Args) -> Result<String, ApiError> {

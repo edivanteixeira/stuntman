@@ -190,7 +190,7 @@ points at Stuntman. See [Environments](environments.md#how-a-request-finds-its-e
 | **Speaks** | ActiveMQ "Classic" OpenWire on `:61616`, version 10 (Apache.NMS.ActiveMQ 1.8 and 2.x and the Java `activemq-client` negotiate down to it), loose or tight encoding, with or without the marshal cache (what the client asks for) |
 | **Point your app at** | `activemq:tcp://localhost:61616` (NMS) or `tcp://localhost:61616` (Java), with the user and password you set |
 | **It keeps** | queues and topics (the dead-letter queues too), every message with its state (scheduled, pending, delivered, acked, dead_letter, expired, rolled_back, discarded) and redelivery count, the connections with their wire format, the consumers connected now with their selectors, durable subscriptions (online or offline), local and XA transactions |
-| **You can provoke** | `set_activemq`: `refuse_login` (a SecurityException for everyone), `drop_after` (close the connection after N dispatched messages), `slow_dispatch` (a delay before each dispatch), `redeliver` (the next N acks are lost and those messages come again), `fail_commits` (the next N commits fail and roll back), `max_redeliveries` (default 6) and `individual_dlq` |
+| **You can provoke** | `set_activemq`: `refuse_login` (a SecurityException for everyone), `drop_after` (close the connection after N dispatched messages), `slow_dispatch` (a delay before each dispatch), `redeliver` (the next N acks are lost and those messages come again), `fail_commits` (the next N commits fail and roll back), `max_redeliveries` (default 6) and `individual_dlq`; `advisory_delivered` / `advisory_consumed` turn on those advisories |
 
 Connections, sessions, producers and consumers work as on a real broker: prefetch, `MessagePull` when the prefetch is 0
 (so `Receive(timeout)` returns null on time), auto, client and individual acks, poison acks (to dead_letter), queue
@@ -217,21 +217,31 @@ ack; what the app had already seen comes again as redelivered.
   expired non-persistent message is only dropped. The app consumes the DLQ like any queue.
 - **Scheduler.** `AMQ_SCHEDULED_DELAY`, `AMQ_SCHEDULED_PERIOD` with `AMQ_SCHEDULED_REPEAT` (repeat N: N+1 deliveries)
   and `AMQ_SCHEDULED_CRON` (5 fields, UTC; each firing delivers once plus the repeats), on the environment's clock:
-  `advance_clock` brings them forward. `cancel_activemq_scheduled` stops one (a cron entry repeats until then).
+  `advance_clock` brings them forward. The app manages them over JMS as on ActiveMQ: a message to
+  `topic://ActiveMQ.Scheduler.Management` with `AMQ_SCHEDULER_ACTION` `BROWSE` (each job comes to its `JMSReplyTo`
+  with `scheduledJobId`), `REMOVE` (`scheduledJobId`) or `REMOVEALL`, the last two and BROWSE limited by
+  `ACTION_START_TIME` / `ACTION_END_TIME` (next delivery, ms). `cancel_activemq_scheduled` does the same from a tool.
 - **Consumers.** `noLocal` (a consumer does not get what its own connection sent), exclusive consumers
   (`queue://orders?consumer.exclusive=true`: the first one takes the queue, the next one takes over when it leaves),
-  dispatch by `JMSPriority` (9 first) and message groups (`JMSXGroupID` sticks to one consumer until it leaves or
+  consumer priority (`consumer.priority=9`: higher-priority consumers get queue messages first while they have
+  prefetch room), topic wildcards (`*` one segment, `>` the rest), dispatch by `JMSPriority` (9 first) and message groups (`JMSXGroupID` sticks to one consumer until it leaves or
   `JMSXGroupSeq` is -1).
+- **Advisories.** On `ActiveMQ.Advisory.*` topics, with the real payloads as the message's data structure (type
+  `Advisory`): `Connection` (ConnectionInfo without the password, RemoveInfo), `Consumer.Queue|Topic.<name>`
+  (ConsumerInfo, RemoveInfo, `consumerCount`), `Producer.Queue|Topic.<name>` (ProducerInfo, RemoveInfo,
+  `producerCount`), `Queue` and `Topic` (DestinationInfo, added or removed), `Expired.*` and `MessageDLQd.*` (the
+  message without its body, `orignalMessageId`), and `MessageDelivered.*` / `MessageConsumed.*` when turned on. An
+  advisory is only made while someone listens; advisory topics stay out of the destination list.
 - **Also:** expiration (`JMSExpiration`), a `ProducerAck` per async send when the producer has a `producerWindowSize`,
   compressed bodies inflated on arrival (zlib from Java, gzip from NMS 1.x; kept and dispatched as plain text or
   bytes), blob messages (`ActiveMQBlobMessage`: the URL and MIME type are kept and delivered as they are; the broker
   does not fetch nor store the blob), and the tight encoding and marshal cache when the client asks for them (the Java
   client does by default).
 
-With no users set, any user name and password log in. Not implemented: the scheduler's management destination
-(`ActiveMQ.Scheduler.Management`: browse and remove jobs over JMS; use `cancel_activemq_scheduled`), consumer
-priority, and advisory messages (consumers on `ActiveMQ.Advisory.*` topics connect but get nothing). One port serves
-every environment: the default one answers.
+With no users set, any user name and password log in. Not made: the advisories a broker network or memory limits
+produce (`TempQueue`/`TempTopic`, `SlowConsumer`, `FastProducer`, `FULL`, `MasterBroker`, `NetworkBridge`); a
+consumer subscribed to a composite destination (the clients' own `TempQueue,TempTopic` watch) gets nothing. One port
+serves every environment: the default one answers.
 
 ```text
 set_activemq            {"users": {"acme": "s3cret"}}
@@ -350,14 +360,14 @@ as Vertex takes Gemini MaaS requests). The data becomes `{"original_message": â€
 failure fails the publish: a 429 answers RESOURCE_EXHAUSTED and a 5xx UNAVAILABLE (the clients retry both), anything
 else INVALID_ARGUMENT. On a subscription the message is retried by the retry policy and, past
 `max_delivery_attempts`, the original goes to the dead-letter topic with `CloudPubSubDeadLetterSourceSMTErrorMessage`.
-`force_ai_failure` (provider `openai`, `gemini` or `anthropic`) provokes it. Compression transforms run with zlib
-(compress or decompress the data); zstd is refused (no zstd codec in Stuntman).
+`force_ai_failure` (provider `openai`, `gemini` or `anthropic`) provokes it. Compression transforms compress or
+decompress the data with zlib or zstd (pure-Rust codecs: flate2, ruzstd).
 
 Import topics: a topic with `ingestion_data_source_settings` keeps them and shows the source's state. Cloud Storage
 reads the objects of the Stuntman storage container named like the bucket (`match_glob`, `minimum_object_create_time`;
-text split at the delimiter, gzip objects read decompressed, Avro records as their JSON, Pub/Sub Avro records as
-data and attributes with `original_message_ordering_key`; Avro codecs null, deflate and snappy), each object version
-once; with no such container the state is `BUCKET_NOT_FOUND`.
+text split at the delimiter, Avro records as their JSON, Pub/Sub Avro records as data and attributes with
+`original_message_ordering_key`; objects compressed with gzip, zstandard, bzip2 or xz are read decompressed, known by
+their first bytes; Avro codecs null, deflate, snappy, zstandard, bzip2 and xz), each object version once; with no such container the state is `BUCKET_NOT_FOUND`.
 Amazon MSK and Confluent Cloud read the Streams (Kafka) topic of that name from the earliest offset, then follow it;
 with no such topic the state is `TOPIC_NOT_FOUND`. Every source can be fed with `pubsub_ingest`. Ingested messages go
 through the topic's transforms and schema. Google documents no attribute mapping for Kafka, Kinesis or Event Hubs;
@@ -383,8 +393,7 @@ expiry, snapshots, schemas, BigQuery tables), `list_pubsub_messages`, `pubsub_pu
 name, else use the `project` of `set_pubsub` (`acme-stg`).
 
 Limits: Kinesis and Event Hubs have no Stuntman backend, so those import topics only get what `pubsub_ingest` feeds;
-Cloud Storage ingestion reads Avro with the null, deflate and snappy codecs (zstd, bzip2 and xz have no decoder in
-Stuntman). Compression transforms take zlib only. AI inference has no 60-second timeout to hit: the simulator answers
+AI inference has no 60-second timeout to hit: the simulator answers
 in process (force `slow` for a slow model). The KMS key and message storage policy have no effect. The minimums Pub/Sub
 sets on Cloud Storage `max_messages` and `max_duration` are not enforced, so tests can use small batches.
 

@@ -791,21 +791,38 @@ def the_last_items(s, pub, sub):
     av = f"{P}/topics/orders-from-avro"
     pub.create_topic(request={"name": av, "ingestion_data_source_settings": {"cloud_storage": {"bucket": "acme-stg-drops", "avro_format": {}, "match_glob": "**.avro"}}})
     tx = f"{P}/topics/orders-from-gzip"
-    pub.create_topic(request={"name": tx, "ingestion_data_source_settings": {"cloud_storage": {"bucket": "acme-stg-drops", "text_format": {}, "match_glob": "**.txt.gz"}}})
+    pub.create_topic(request={"name": tx, "ingestion_data_source_settings": {"cloud_storage": {"bucket": "acme-stg-drops", "text_format": {}, "match_glob": "**.txt.*"}}})
     for n in (av, tx):
         sub.create_subscription(request={"name": n.replace("/topics/", "/subscriptions/") + "-app", "topic": n})
     sch = fastavro.parse_schema({"type": "record", "name": "Order", "fields": [{"name": "order", "type": "string"}, {"name": "total", "type": "double"}]})
-    for codec in ("deflate", "snappy"):
+    codecs = ("deflate", "snappy", "zstandard", "bzip2", "xz")
+    for codec in codecs:
         buf = io.BytesIO()
         fastavro.writer(buf, sch, [{"order": f"ORD-{codec}-{i}", "total": 10.0 + i} for i in range(3)], codec=codec)
         s.call("PUT", f"/storage/acme-stg-drops/acme-stg-drops/objects/in/{codec}.avro", {"content_base64": base64.b64encode(buf.getvalue()).decode()})
-    s.call("PUT", "/storage/acme-stg-drops/acme-stg-drops/objects/in/daily.txt.gz", {"content_base64": base64.b64encode(gzip.compress(b"ORD-1 placed\nORD-2 placed\n")).decode()})
+    import bz2, lzma, zstandard
+    packers = {"gz": gzip.compress, "zst": zstandard.ZstdCompressor().compress, "bz2": bz2.compress, "xz": lzma.compress}
+    for ext, pack in packers.items():
+        s.call("PUT", f"/storage/acme-stg-drops/acme-stg-drops/objects/in/daily.txt.{ext}", {"content_base64": base64.b64encode(pack(f"ORD-{ext}-1 placed\nORD-{ext}-2 placed\n".encode())).decode()})
     got = []
-    wait(lambda: got.extend(pull_ack(av.replace("/topics/", "/subscriptions/") + "-app", 20)) or len(got) >= 6, "6 Avro records (deflate and snappy)")
-    assert sorted(json.loads(m.message.data)["order"] for m in got) == sorted(f"ORD-{c}-{i}" for c in ("deflate", "snappy") for i in range(3)), got
-    lines = wait(lambda: pull_ack(tx.replace("/topics/", "/subscriptions/") + "-app"), "gzip text lines")
-    assert sorted(m.message.data for m in lines) == [b"ORD-1 placed", b"ORD-2 placed"], lines
-    print("ok   Cloud Storage ingestion: deflate and snappy Avro (written by fastavro), gzip text")
+    wait(lambda: got.extend(pull_ack(av.replace("/topics/", "/subscriptions/") + "-app", 50)) or len(got) >= 15, "15 Avro records (5 codecs)")
+    assert sorted(json.loads(m.message.data)["order"] for m in got) == sorted(f"ORD-{c}-{i}" for c in codecs for i in range(3)), got
+    lines = []
+    wait(lambda: lines.extend(pull_ack(tx.replace("/topics/", "/subscriptions/") + "-app", 50)) or len(lines) >= 8, "8 compressed text lines")
+    assert sorted(m.message.data for m in lines) == sorted(f"ORD-{e}-{i} placed".encode() for e in packers for i in (1, 2)), lines
+    print("ok   Cloud Storage ingestion: deflate, snappy, zstandard, bzip2 and xz Avro (written by fastavro); gzip, zstd, bzip2 and xz text")
+
+    # ---- Compression transforms: the topic compresses with zstd, a subscription decompresses.
+    zt = f"{P}/topics/orders-zstd"
+    pub.create_topic(request={"name": zt, "message_transforms": [{"compression": {"compression_algorithm": "ZSTD", "compression_mode": "COMPRESS"}}]})
+    sub.create_subscription(request={"name": f"{P}/subscriptions/orders-zstd-raw", "topic": zt})
+    sub.create_subscription(request={"name": f"{P}/subscriptions/orders-zstd-plain", "topic": zt, "message_transforms": [{"compression": {"compression_algorithm": "ZSTD", "compression_mode": "DECOMPRESS"}}]})
+    body = b'{"order": "ORD-5500", "lines": ' + json.dumps(["SKU-1"] * 50).encode() + b"}"
+    plain.publish(zt, body).result(10)
+    raw = pull_ack(f"{P}/subscriptions/orders-zstd-raw")[0].message.data
+    assert raw[:4] == b"\x28\xb5\x2f\xfd" and zstandard.ZstdDecompressor().decompressobj().decompress(raw) == body, raw[:8]
+    assert pull_ack(f"{P}/subscriptions/orders-zstd-plain")[0].message.data == body
+    print("ok   Compression transform: zstd on the topic (python-zstandard reads it), decompressed on a subscription")
 
     # ---- Bigtable row key schema.
     table = "projects/acme-stg/instances/ops/tables/orders-by-region"

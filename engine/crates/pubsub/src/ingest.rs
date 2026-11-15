@@ -1,8 +1,8 @@
 //! Import topics: a topic with ingestion settings (Amazon Kinesis, Cloud Storage, Azure Event Hubs,
 //! Amazon MSK, Confluent Cloud) gets messages from its source. Where Stuntman has the source, it
 //! reads it for real: Cloud Storage from a storage account holding a container of the bucket's name
-//! (text split at the delimiter, gzip too; Avro and Pub/Sub Avro object container files, codecs null,
-//! deflate and snappy), MSK and Confluent
+//! (text split at the delimiter, gzip/zstandard/bzip2/xz too; Avro and Pub/Sub Avro object container
+//! files, codecs null, deflate, snappy, zstandard, bzip2 and xz), MSK and Confluent
 //! Cloud from the Kafka topic of that name in Streams, from the earliest offset. Every source can be
 //! fed with the pubsub_ingest tool. Ingested messages go through the topic's transforms and schema.
 //!
@@ -142,15 +142,40 @@ pub fn unsnappy(b: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-fn inflate(b: &[u8], gzip: bool) -> Result<Vec<u8>, String> {
+/// Decompresses with a pure-Rust codec: gzip, deflate (raw), zstandard, bzip2, xz.
+pub fn decompress(codec: &str, b: &[u8]) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let mut out = vec![];
-    if gzip { flate2::read::MultiGzDecoder::new(b).read_to_end(&mut out) } else { flate2::read::DeflateDecoder::new(b).read_to_end(&mut out) }.map_err(|e| e.to_string())?;
+    match codec {
+        "gzip" => flate2::read::MultiGzDecoder::new(b).read_to_end(&mut out).map(|_| ()).map_err(|e| e.to_string()),
+        "deflate" => flate2::read::DeflateDecoder::new(b).read_to_end(&mut out).map(|_| ()).map_err(|e| e.to_string()),
+        "zstandard" => {
+            // One or more frames, one after another.
+            let mut src = b;
+            while !src.is_empty() {
+                let mut d = ruzstd::decoding::StreamingDecoder::new(&mut src).map_err(|e| format!("zstandard: {e}"))?;
+                d.read_to_end(&mut out).map_err(|e| format!("zstandard: {e}"))?;
+            }
+            Ok(())
+        }
+        "bzip2" => bzip2_rs::DecoderReader::new(b).read_to_end(&mut out).map(|_| ()).map_err(|e| format!("bzip2: {e}")),
+        "xz" => lzma_rs::xz_decompress(&mut std::io::BufReader::new(b), &mut out).map_err(|e| format!("xz: {e:?}")),
+        c => Err(format!("codec {c} is not read")),
+    }?;
     Ok(out)
 }
 
-/// The records of an Avro object container file: codec null, deflate or snappy (zstd, bzip2 and
-/// xz have no decoder in Stuntman).
+/// The compression an object's first bytes show (gzip, zstandard, bzip2, xz).
+pub fn sniff(b: &[u8]) -> Option<&'static str> {
+    if b.starts_with(&[0x1f, 0x8b]) { Some("gzip") }
+    else if b.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) { Some("zstandard") }
+    else if b.starts_with(b"BZh") { Some("bzip2") }
+    else if b.starts_with(&[0xfd, b'7', b'z', b'X', b'Z', 0]) { Some("xz") }
+    else { None }
+}
+
+/// The records of an Avro object container file: codecs null, deflate, snappy, zstandard, bzip2
+/// and xz.
 pub fn avro_records(b: &[u8]) -> Result<Vec<Value>, String> {
     if !b.starts_with(b"Obj\x01") { return Err("not an Avro object container file".into()) }
     let mut p = 4;
@@ -166,7 +191,7 @@ pub fn avro_records(b: &[u8]) -> Result<Vec<Value>, String> {
             if k == "avro.codec" { codec = String::from_utf8_lossy(v).to_string() }
         }
     }
-    if !["null", "deflate", "snappy"].contains(&codec.as_str()) { return Err(format!("Avro codec {codec} is not read (null, deflate and snappy are)")) }
+    if !["null", "deflate", "snappy", "zstandard", "bzip2", "xz"].contains(&codec.as_str()) { return Err(format!("Avro codec {codec} is not read")) }
     let schema = schema.ok_or("the Avro file has no schema")?;
     p += 16;
     let mut out = vec![];
@@ -174,7 +199,7 @@ pub fn avro_records(b: &[u8]) -> Result<Vec<Value>, String> {
         let n = zz(b, &mut p)? as usize;
         let raw = chunk(b, &mut p)?;
         let block = match codec.as_str() {
-            "deflate" => inflate(raw, false)?,
+            "deflate" | "zstandard" | "bzip2" | "xz" => decompress(&codec, raw)?,
             "snappy" => {
                 let (body, crc) = raw.split_at(raw.len().checked_sub(4).ok_or("snappy block without its CRC")?);
                 let d = unsnappy(body)?;
@@ -191,9 +216,9 @@ pub fn avro_records(b: &[u8]) -> Result<Vec<Value>, String> {
 
 /// The records of one Cloud Storage object, by the topic's input format.
 pub fn object_records(format: Option<&InputFormat>, data: &[u8]) -> Result<Vec<Rec>, String> {
-    // A gzip object (Content-Encoding gzip, or a .gz) is read decompressed.
+    // A compressed object (gzip, zstandard, bzip2 or xz, known by its first bytes) is read decompressed.
     let unzipped;
-    let data = if data.starts_with(&[0x1f, 0x8b]) { unzipped = inflate(data, true)?; unzipped.as_slice() } else { data };
+    let data = match sniff(data) { Some(c) => { unzipped = decompress(c, data)?; unzipped.as_slice() } None => data };
     match format {
         Some(InputFormat::AvroFormat(_)) => Ok(avro_records(data)?.into_iter().map(|v| Rec { data: v.to_string().into_bytes(), ..Default::default() }).collect()),
         Some(InputFormat::PubsubAvroFormat(_)) => Ok(avro_records(data)?.into_iter().map(|v| {
@@ -273,5 +298,9 @@ mod t {
         assert_eq!(object_records(None, &gz.finish().unwrap()).unwrap().len(), 2);
         // Snappy: a literal "abcd" then a copy of 4 at offset 4 → "abcdabcd".
         assert_eq!(unsnappy(&[8, 0x0c, b'a', b'b', b'c', b'd', 0x01, 4]).unwrap(), b"abcdabcd");
+        // zstandard round trip (the Compression transform's encoder).
+        let z = ruzstd::encoding::compress_to_vec(&b"ORD-3\nORD-4\n"[..], ruzstd::encoding::CompressionLevel::Fastest);
+        assert_eq!(sniff(&z), Some("zstandard"));
+        assert_eq!(object_records(None, &z).unwrap().len(), 2);
     }
 }

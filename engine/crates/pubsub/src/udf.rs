@@ -78,14 +78,16 @@ pub fn run(code: &str, func: &str, data: &[u8], attrs: &Labels, meta: &Meta) -> 
 pub enum Step {
     Js(String, String),
     Ai(String, serde_json::Value),
-    /// Compression transform with zlib: true compresses the data, false decompresses it.
+    /// Compression transform: zlib or zstd; true compresses the data, false decompresses it.
     Zlib(bool),
+    Zstd(bool),
 }
 
 impl Step {
     pub fn name(&self) -> String {
         match self { Step::Js(_, f) => format!("{f} (JavaScript)"), Step::Ai(e, _) => format!("{} (AI inference)", e.rsplit('/').next().unwrap_or(e)),
-            Step::Zlib(c) => format!("zlib {}", if *c { "compress" } else { "decompress" }) }
+            Step::Zlib(c) => format!("zlib {}", if *c { "compress" } else { "decompress" }),
+            Step::Zstd(c) => format!("zstd {}", if *c { "compress" } else { "decompress" }) }
     }
 }
 
@@ -113,7 +115,7 @@ pub fn steps(t: &[MessageTransform]) -> Vec<Step> {
             Some(crate::v1::ai_inference::InferenceMode::UnstructuredInference(u)) => u.parameters.as_ref().map(pb_struct).unwrap_or(serde_json::json!({})),
             None => serde_json::json!({}),
         })),
-        Some(Transform::Compression(c)) => Some(Step::Zlib(c.compression_mode != 2)),
+        Some(Transform::Compression(c)) => Some(if c.compression_algorithm == 3 { Step::Zstd(c.compression_mode != 2) } else { Step::Zlib(c.compression_mode != 2) }),
         None => None,
     }).collect()
 }
@@ -160,6 +162,8 @@ pub async fn apply(ctx: &stuntman_core::Ctx, steps: &[Step], data: Vec<u8>, attr
                 match r { Out::Keep(nd, na) => { d = nd; a = na; } Out::Drop => return Ok(Out::Drop) }
             }
             Step::Ai(endpoint, params) => d = infer(ctx, endpoint, params, &d).await?,
+            Step::Zstd(true) => d = ruzstd::encoding::compress_to_vec(d.as_slice(), ruzstd::encoding::CompressionLevel::Fastest),
+            Step::Zstd(false) => d = crate::ingest::decompress("zstandard", &d)?,
             Step::Zlib(compress) => {
                 use std::io::{Read, Write};
                 d = if *compress {
@@ -193,7 +197,7 @@ pub fn check(t: &[MessageTransform]) -> Result<(), String> {
                 })?;
             }
             Some(Transform::Compression(c)) => {
-                if c.compression_algorithm != 1 { return Err("compression: Stuntman has zlib only (no zstd codec in the tree)".into()) }
+                if ![1, 3].contains(&c.compression_algorithm) { return Err("compression: ZLIB or ZSTD".into()) }
             }
             Some(Transform::AiInference(a)) => {
                 let p: Vec<&str> = a.endpoint.split('/').collect();

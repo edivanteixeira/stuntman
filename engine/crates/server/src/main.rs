@@ -213,7 +213,7 @@ async fn main() {
     let root = std::path::PathBuf::from(env("STUNTMAN_DATA", "data"));
     std::fs::create_dir_all(&root).expect("data folder");
     let port: u16 = env("STUNTMAN_PORT", "8025").parse().unwrap_or(8025);
-    let first = env("STUNTMAN_ENV", "stg-a");
+    let first = env("STUNTMAN_ENV", "staging");
     environments::migrate_flat(&root, &first);
     let mods = modules();
     let mut tools = vec![];

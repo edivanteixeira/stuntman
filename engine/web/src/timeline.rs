@@ -10,7 +10,7 @@ use crate::{
     ui,
 };
 
-const SERVICES: [(&str, &str, &str); 9] = [("email", "E-mail", "#F2A900"), ("whatsapp", "WhatsApp", "#1FA855"), ("sms", "SMS", "#00A3A3"), ("storage", "Storage", "#E5243B"), ("messaging", "Queues", "#E8743B"), ("keyvault", "Key Vault", "#5C5C66"),
+const SERVICES: [(&str, &str, &str); 11] = [("ai", "AI models", "#7A5AF8"), ("files", "Files", "#8C5A2E"), ("email", "E-mail", "#F2A900"), ("whatsapp", "WhatsApp", "#1FA855"), ("sms", "SMS", "#00A3A3"), ("storage", "Storage", "#E5243B"), ("messaging", "Queues", "#E8743B"), ("keyvault", "Key Vault", "#5C5C66"),
     ("identity", "Identity", "#6B4FD8"), ("apis", "HTTP APIs", "#0070C9"), ("webhook", "Webhooks", "#12A0A8")];
 const BUCKETS: usize = 60;
 const BAND_KEY: &str = "stuntman.timeline.band";

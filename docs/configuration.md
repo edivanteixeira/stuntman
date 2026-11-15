@@ -8,7 +8,7 @@ default; most setups change nothing.
 | Variable | Default | What it sets |
 |---|---|---|
 | `STUNTMAN_DATA` | `data` (`/data` in Docker) | where environments, YAML, SQLite and keys live |
-| `STUNTMAN_ENV` | `stg-a` | the default environment |
+| `STUNTMAN_ENV` | `staging` | the default environment |
 | `STUNTMAN_HOST` | `localhost:<STUNTMAN_PORT>` | the name apps and people use; shown in base URLs, links and MCP |
 | `STUNTMAN_WEB` | `web/dist` (`/app/web` in Docker) | the built screen |
 | `STUNTMAN_PLUGINS` | `plugins` next to the engine (`/app/plugins` in Docker) | the plugin catalog |

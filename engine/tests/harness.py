@@ -30,7 +30,7 @@ class Stuntman:
         raise AttributeError(k)
 
     def __enter__(self):
-        env = dict(os.environ, STUNTMAN_DATA=self.data, STUNTMAN_WEB="/nonexistent", **{f"STUNTMAN_{k}": str(v) for k, v in self.ports.items()})
+        env = dict(os.environ, STUNTMAN_DATA=self.data, STUNTMAN_WEB="/nonexistent", STUNTMAN_ENV=os.environ.get("STUNTMAN_ENV", "stg-a"), **{f"STUNTMAN_{k}": str(v) for k, v in self.ports.items()})
         self.proc = subprocess.Popen([BIN], env=env, stdout=open(self.log, "w"), stderr=subprocess.STDOUT)
         end = time.time() + 30
         while time.time() < end:

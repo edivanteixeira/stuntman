@@ -12,3 +12,6 @@ collections:
   - name: Workplace & dev tools
     description: "Microsoft 365, Google Drive, scheduling, outreach, Azure DevOps and observability queries. Accounts at acme and globex."
     plugins: [microsoft-graph, google-drive, calendly, lemlist, azure-devops, newrelic]
+  - name: Global · payments, commerce and SaaS
+    description: "Twilio SMS and Verify, PayPal, Adyen, Shopify, Slack, HubSpot, GitHub, Sentry and Auth0, each with its real auth, errors and webhook signatures. Accounts at acme and globex."
+    plugins: [twilio, paypal, adyen, shopify, slack, hubspot, github, sentry, auth0]

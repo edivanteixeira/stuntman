@@ -213,6 +213,11 @@ fn parse_multipart(ct: &str, body: &[u8]) -> (Map<String, Value>, Vec<Value>) {
 }
 
 pub fn read_request(method: &str, path: &str, query: &str, headers: BTreeMap<String, String>, raw: Vec<u8>) -> Req {
+    // A gzip body (Sentry SDKs, many HTTP clients) is read as the provider would: decompressed.
+    let raw = if headers.get("content-encoding").map(|e| e.eq_ignore_ascii_case("gzip")).unwrap_or(false) {
+        let mut out = vec![];
+        match std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(&raw[..]), &mut out) { Ok(_) => out, Err(_) => raw }
+    } else { raw };
     let q: Map<String, Value> = query.split('&').filter(|x| !x.is_empty()).map(|kv| {
         let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
         (netserve_decode(&k.replace('+', " ")), json!(netserve_decode(&v.replace('+', " "))))
@@ -878,9 +883,14 @@ async fn fire(ctx: &Ctx, job: Value) {
             headers.push((k.trim().to_string(), v));
         }
     }
+    // A send that names its own Content-Type (form-encoded callbacks) replaces the JSON default.
+    if headers.iter().skip(1).any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
+        headers.remove(0);
+    }
     let evid = format!("evt_{}", util::uuid().replace('-', "")[..20].to_string());
-    headers.extend(sign_headers(&sign, &header, &secret, &body, stuntman_core::clock::now(ctx) / 1000, tol, &w.provoke, &s.event, job["source"].as_str().unwrap_or(""), &evid));
-    let mut req = ctx.http.request(s.method.parse().unwrap_or(reqwest::Method::POST), &url).body(body.clone());
+    let method = s.method.to_uppercase();
+    headers.extend(sign_headers(&sign, &header, &secret, &body, stuntman_core::clock::now(ctx) / 1000, tol, &w.provoke, &s.event, job["source"].as_str().unwrap_or(""), &evid, &method, &url));
+    let mut req = ctx.http.request(method.parse().unwrap_or(reqwest::Method::POST), &url).body(body.clone());
     for (k, v) in &headers {
         req = req.header(k, v);
     }
@@ -900,7 +910,7 @@ fn hmac256(key: &[u8], msg: &[u8]) -> Vec<u8> {
 
 /// The signature headers of one webhook in a provider's format; `provoke` breaks them on purpose.
 #[allow(clippy::too_many_arguments)]
-pub fn sign_headers(sign: &str, header: &str, secret: &str, body: &str, ts: i64, tolerance: u32, provoke: &[String], event: &str, source: &str, id: &str) -> Vec<(String, String)> {
+pub fn sign_headers(sign: &str, header: &str, secret: &str, body: &str, ts: i64, tolerance: u32, provoke: &[String], event: &str, source: &str, id: &str, method: &str, url: &str) -> Vec<(String, String)> {
     let has = |x: &str| provoke.iter().any(|p| p == x);
     let ts = if has("old_timestamp") { ts - tolerance as i64 - 60 } else { ts };
     let secret = if has("wrong_signature") { format!("{secret}-wrong") } else { secret.to_string() };
@@ -926,6 +936,36 @@ pub fn sign_headers(sign: &str, header: &str, secret: &str, body: &str, ts: i64,
             }
         }
         "github" if !skip => out.push((h("X-Hub-Signature-256"), format!("sha256={}", hex::encode(hmac256(secret.as_bytes(), body.as_bytes()))))),
+        // Twilio: HMAC-SHA1 of the URL followed by every form parameter, sorted, as name+value; base64.
+        "twilio" if !skip => {
+            let mut params: Vec<(String, String)> = body.split('&').filter(|x| !x.is_empty()).map(|kv| {
+                let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
+                (netserve_decode(&k.replace('+', " ")), netserve_decode(&v.replace('+', " ")))
+            }).collect();
+            params.sort();
+            let msg = params.iter().fold(url.to_string(), |acc, (k, v)| acc + k + v);
+            use hmac::Mac;
+            let mut m = hmac::Hmac::<sha1::Sha1>::new_from_slice(secret.as_bytes()).unwrap();
+            m.update(msg.as_bytes());
+            out.push((h("X-Twilio-Signature"), B64.encode(m.finalize().into_bytes())));
+        }
+        // Slack: v0= HMAC-SHA256 of "v0:{timestamp}:{body}", hex, with X-Slack-Request-Timestamp.
+        "slack" => {
+            out.push(("X-Slack-Request-Timestamp".into(), ts.to_string()));
+            if !skip {
+                out.push((h("X-Slack-Signature"), format!("v0={}", hex::encode(hmac256(secret.as_bytes(), format!("v0:{ts}:{body}").as_bytes())))));
+            }
+        }
+        // Shopify: HMAC-SHA256 of the raw body, base64.
+        "shopify" if !skip => out.push((h("X-Shopify-Hmac-Sha256"), B64.encode(hmac256(secret.as_bytes(), body.as_bytes())))),
+        // HubSpot v3: HMAC-SHA256 of method + URL + body + timestamp (milliseconds), base64.
+        "hubspot" => {
+            let ms = ts * 1000;
+            out.push(("X-HubSpot-Request-Timestamp".into(), ms.to_string()));
+            if !skip {
+                out.push((h("X-HubSpot-Signature-v3"), B64.encode(hmac256(secret.as_bytes(), format!("{method}{url}{body}{ms}").as_bytes()))));
+            }
+        }
         "cloudevents" => {
             out.push(("ce-specversion".into(), "1.0".into()));
             out.push(("ce-type".into(), if event.is_empty() { "com.stuntman.event".into() } else { event.to_string() }));
@@ -1249,6 +1289,22 @@ mod t {
         let p: Plugin = serde_yaml::from_str("service: {name: serpro}\nroutes:\n  - route: POST /datavalid/v5/pessoa-fisica/validacao\n").unwrap();
         let c = closest(&[p], "", "POST", "/datavalid/v4/pessoa-fisica/validacao");
         assert_eq!(c["text"], "Differs in one segment: v4 here, v5 in the plugin.");
+    }
+
+    #[test]
+    fn provider_signatures() {
+        let one = |sign: &str, body: &str, provoke: &[String]| sign_headers(sign, "", "k", body, 1_700_000_000, 300, provoke, "", "", "evt_1", "POST", "https://app.example.com/hook?x=1");
+        let get = |v: &[(String, String)], n: &str| v.iter().find(|(k, _)| k == n).map(|(_, v)| v.clone()).unwrap_or_default();
+        // Twilio's documented example: the auth token 12345 over its sample URL and parameters.
+        let t = sign_headers("twilio", "", "12345", "CallSid=CA1234567890ABCDE&Caller=%2B12349013030&Digits=1234&From=%2B12349013030&To=%2B18005551212", 0, 300, &[], "", "", "", "POST", "https://mycompany.com/myapp.php?foo=1&bar=2");
+        assert_eq!(get(&t, "X-Twilio-Signature"), "0/KCTR6DLpKmkAf8muzZqo1nDgQ=");
+        let s = one("slack", "{}", &[]);
+        assert_eq!(get(&s, "X-Slack-Request-Timestamp"), "1700000000");
+        assert_eq!(get(&s, "X-Slack-Signature"), format!("v0={}", hex::encode(hmac256(b"k", b"v0:1700000000:{}"))));
+        assert_eq!(get(&one("shopify", "{}", &[]), "X-Shopify-Hmac-Sha256"), B64.encode(hmac256(b"k", b"{}")));
+        let hs = one("hubspot", "{}", &[]);
+        assert_eq!(get(&hs, "X-HubSpot-Signature-v3"), B64.encode(hmac256(b"k", b"POSThttps://app.example.com/hook?x=1{}1700000000000")));
+        assert!(one("hubspot", "{}", &["no_signature".into()]).iter().all(|(k, _)| k != "X-HubSpot-Signature-v3"));
     }
 
     #[test]

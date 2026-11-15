@@ -1,0 +1,341 @@
+# Auth0 for the acme tenant: the Authentication API (/oauth/token with client credentials and
+# password-realm, /userinfo, the JWKS and OpenID configuration) and the Management API v2 (users create,
+# read, update, delete, by email; roles and role assignments). Access and ID tokens are RS256 JWTs that
+# verify against /.well-known/jwks.json, issued by the address the app called (https://acme.us.auth0.com/
+# when the real host resolves to Stuntman, http://localhost:8028/auth0/ otherwise). Clients, users and
+# roles are in data; users the app creates sign in too. Errors in Auth0's shapes (access_denied,
+# invalid_grant, too_many_requests…).
+#
+# Management API calls need an access token this tenant issued (any client credentials grant with the
+# audience https://acme.us.auth0.com/api/v2/). A user's roles are the ones of its last assignment, up to 3.
+service:
+  name: auth0
+  title: Auth0
+  origin: community
+  description: Tokens signed RS256 with a JWKS, userinfo and the Management API
+  base_url: https://acme.us.auth0.com
+  real_host: acme.us.auth0.com
+  limits:
+    latency: 80ms..250ms
+routes:
+  # ---------------------------------------------------------------- Authentication API
+  - route: POST /oauth/token
+    let:
+      iss: "headers.host == 'acme.us.auth0.com' ? 'https://acme.us.auth0.com/' : 'http://' + headers.host + '/auth0/'"
+      grant: "default(body.grant_type, '')"
+      client: "lookup('clients', 'client_id', body.client_id)"
+      client_ok: "has(client) && (grant != 'client_credentials' || client.client_secret == body.client_secret)"
+      email: "lower(default(body.username, ''))"
+      made_id: "'auth0|' + substring(sha256(email), 0, 24)"
+      user: "has(state.users[made_id]) && !(has(state.deleted[made_id]) && state.deleted[made_id].at >= state.users[made_id].at) ? state.users[made_id].body : lookup('users', 'email', email)"
+      user_id: "has(state.users[made_id]) ? made_id : default(user.user_id, '')"
+      password: "has(state.users[made_id]) ? state.users[made_id].body.password : lookup('passwords', 'email', email).password"
+      iat: "int(now_ms() / 1000)"
+      audience: "default(body.audience, grant == 'client_credentials' ? null : iss + 'userinfo')"
+      scope: "default(body.scope, grant == 'client_credentials' ? 'read:users create:users update:users delete:users read:roles create:role_members' : 'openid profile email')"
+      access_token: >-
+        jwt(grant == 'client_credentials'
+          ? {'iss': iss, 'sub': body.client_id + '@clients', 'aud': audience, 'iat': iat, 'exp': int(iat + 86400), 'scope': scope, 'gty': 'client-credentials', 'azp': body.client_id}
+          : {'iss': iss, 'sub': user_id, 'aud': has(body.audience) ? [body.audience, iss + 'userinfo'] : iss + 'userinfo', 'iat': iat, 'exp': int(iat + 86400), 'scope': scope, 'gty': 'password', 'azp': body.client_id}, 'acme-tenant-2026')
+      id_token: >-
+        jwt({'iss': iss, 'sub': user_id, 'aud': body.client_id, 'iat': iat, 'exp': int(iat + 36000), 'email': user.email, 'email_verified': default(user.email_verified, true),
+          'name': user.name, 'nickname': split(default(user.email, '@'), '@')[0], 'picture': 'https://s.gravatar.com/avatar/' + substring(sha256(default(user.email, '')), 0, 32) + '?s=480&r=pg',
+          'updated_at': now(), 'sid': substring(sha256(access_token), 0, 32)}, 'acme-tenant-2026')
+    keep:
+      state: tokens
+      key: access_token
+    decide:
+      - when: "!(grant in ['client_credentials', 'password', 'http://auth0.com/oauth/grant-type/password-realm'])"
+        answer: unsupported_grant_type
+      - when: "!client_ok"
+        answer: access_denied
+      - when: "grant == 'client_credentials' && !has(body.audience)"
+        answer: no_audience
+      - when: "grant == 'client_credentials' && !(grant in client.grant_types)"
+        answer: unauthorized_client
+      - when: "grant != 'client_credentials' && (!has(user) || password != body.password)"
+        answer: wrong_password
+      - when: "grant != 'client_credentials' && user.blocked == true"
+        answer: blocked_user
+      - answer: token
+  - route: GET /userinfo
+    let:
+      tok: "replace(default(headers.authorization, ''), 'Bearer ', '')"
+      t: "state.tokens[tok]"
+      email: "lower(default(t.body.username, ''))"
+      made_id: "'auth0|' + substring(sha256(email), 0, 24)"
+      user: "has(state.users[made_id]) ? state.users[made_id].body : lookup('users', 'email', email)"
+    decide:
+      - when: "!has(t) || !has(t.body.username)"
+        answer: userinfo_unauthorized
+      - answer: userinfo
+  - route: GET /.well-known/jwks.json
+    decide:
+      - answer: jwks
+  - route: GET /.well-known/openid-configuration
+    let:
+      iss: "headers.host == 'acme.us.auth0.com' ? 'https://acme.us.auth0.com/' : 'http://' + headers.host + '/auth0/'"
+    decide:
+      - answer: openid_configuration
+  # ---------------------------------------------------------------- Management API v2
+  - route: GET /api/v2/users
+    let: &mgmt
+      tok: "replace(default(headers.authorization, ''), 'Bearer ', '')"
+      authed: "has(state.tokens[tok]) && state.tokens[tok].body.grant_type == 'client_credentials'"
+      email: "lower(default(body.email, default(query.email, '')))"
+      id: "default(path.id, 'auth0|' + substring(sha256(email), 0, 24))"
+      kept: "state.users[id]"
+      gone: "has(state.deleted[id]) && has(kept) && state.deleted[id].at >= kept.at"
+      seed: "lookup('users', 'user_id', id)"
+      src: "__method == 'POST' && __path == '/api/v2/users' ? body : has(kept) && !gone ? kept.body : seed"
+      upd: "__method == 'PATCH' ? body : has(state.updates[id]) && has(kept) && state.updates[id].at >= kept.at ? state.updates[id].body : {}"
+      base: >-
+        {"user_id": id, "email": src.email, "email_verified": default(src.email_verified, false), "name": default(src.name, src.email),
+        "nickname": split(default(src.email, '@'), '@')[0], "picture": 'https://s.gravatar.com/avatar/' + substring(sha256(default(src.email, '')), 0, 32) + '?s=480&r=pg',
+        "given_name": default(src.given_name, null), "family_name": default(src.family_name, null), "blocked": default(src.blocked, false),
+        "user_metadata": default(src.user_metadata, {}), "app_metadata": default(src.app_metadata, {}),
+        "identities": [{"connection": default(src.connection, 'Username-Password-Authentication'), "user_id": replace(id, 'auth0|', ''), "provider": "auth0", "isSocial": false}],
+        "created_at": has(seed) ? seed.created_at : now(), "updated_at": now(), "last_login": null, "logins_count": int(0)}
+      user_view: "size(upd) == 0 ? base : parse_json(substring(json(base), 0, -1) + ', ' + substring(json(upd), 1))"
+      roles: "has(state.user_roles[id]) ? default(state.user_roles[id].body.roles, []) : []"
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: missing_authentication
+      - when: "!authed"
+        answer: invalid_token
+      - answer: user_list
+  - route: GET /api/v2/users-by-email
+    let: *mgmt
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: missing_authentication
+      - when: "!authed"
+        answer: invalid_token
+      - when: "!has(query.email)"
+        answer: email_required
+      - answer: users_by_email
+  - route: POST /api/v2/users
+    let: *mgmt
+    keep:
+      state: users
+      key: id
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: missing_authentication
+      - when: "!authed"
+        answer: invalid_token
+      - when: "!has(body.connection)"
+        answer: missing_connection
+      - when: "!has(body.email) || !body.email.contains('@')"
+        answer: invalid_email
+      - when: "(has(kept) && !gone) || has(lookup('users', 'email', email))"
+        answer: user_exists
+      - when: "size(default(body.password, '')) < 8"
+        answer: password_too_weak
+      - answer: user_created
+  - route: GET /api/v2/users/{id}
+    let: *mgmt
+    decide: &userfound
+      - when: "!has(headers.authorization)"
+        answer: missing_authentication
+      - when: "!authed"
+        answer: invalid_token
+      - when: "!has(src) || gone"
+        answer: inexistent_user
+      - answer: user
+  - route: PATCH /api/v2/users/{id}
+    let: *mgmt
+    keep:
+      state: updates
+      key: id
+    decide: *userfound
+  - route: DELETE /api/v2/users/{id}
+    let: *mgmt
+    keep:
+      state: deleted
+      key: id
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: missing_authentication
+      - when: "!authed"
+        answer: invalid_token
+      - answer: user_deleted
+  - route: GET /api/v2/roles
+    let: *mgmt
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: missing_authentication
+      - when: "!authed"
+        answer: invalid_token
+      - answer: role_list
+  - route: POST /api/v2/users/{id}/roles
+    let: *mgmt
+    keep:
+      state: user_roles
+      key: id
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: missing_authentication
+      - when: "!authed"
+        answer: invalid_token
+      - when: "!has(src) || gone"
+        answer: inexistent_user
+      - when: "!has(body.roles) || size(body.roles) == 0"
+        answer: roles_required
+      - when: "!has(lookup('roles', 'id', body.roles[0]))"
+        answer: role_not_found
+      - answer: roles_assigned
+  - route: GET /api/v2/users/{id}/roles
+    let: *mgmt
+    decide: *userfound
+    # (answers user_roles when the user exists; see the answer below)
+answers:
+  - name: token
+    sentence: "Token for {{ grant == 'client_credentials' ? body.client_id + ' (client credentials)' : email + ' (' + grant + ')' }}"
+    headers: {Cache-Control: no-store, Pragma: no-cache}
+    body: '{{ json(grant == ''client_credentials'' ? {"access_token": access_token, "scope": scope, "expires_in": 86400, "token_type": "Bearer"} : scope.contains(''openid'') ? {"access_token": access_token, "id_token": id_token, "scope": scope, "expires_in": 86400, "token_type": "Bearer"} : {"access_token": access_token, "scope": scope, "expires_in": 86400, "token_type": "Bearer"}) }}'
+  - name: userinfo
+    sentence: "Userinfo for {{ email }}"
+    body: '{{ json({"sub": has(state.users[made_id]) ? made_id : user.user_id, "email": user.email, "email_verified": default(user.email_verified, true), "name": user.name, "nickname": split(user.email, ''@'')[0], "picture": ''https://s.gravatar.com/avatar/'' + substring(sha256(user.email), 0, 32) + ''?s=480&r=pg'', "updated_at": now()}) }}'
+  - name: jwks
+    sentence: "JWKS"
+    body: '{{ json(jwks(''acme-tenant-2026'')) }}'
+  - name: openid_configuration
+    sentence: "OpenID configuration"
+    body: '{{ json({"issuer": iss, "authorization_endpoint": iss + "authorize", "token_endpoint": iss + "oauth/token", "device_authorization_endpoint": iss + "oauth/device/code", "userinfo_endpoint": iss + "userinfo", "mfa_challenge_endpoint": iss + "mfa/challenge", "jwks_uri": iss + ".well-known/jwks.json", "registration_endpoint": iss + "oidc/register", "revocation_endpoint": iss + "oauth/revoke", "scopes_supported": ["openid", "profile", "offline_access", "name", "given_name", "family_name", "nickname", "email", "email_verified", "picture", "created_at", "identities", "phone", "address"], "response_types_supported": ["code", "token", "id_token", "code token", "code id_token", "token id_token", "code token id_token"], "subject_types_supported": ["public"], "id_token_signing_alg_values_supported": ["HS256", "RS256", "PS256"], "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "private_key_jwt"], "claims_supported": ["aud", "auth_time", "created_at", "email", "email_verified", "exp", "family_name", "given_name", "iat", "identities", "iss", "name", "nickname", "phone_number", "picture", "sub"], "end_session_endpoint": iss + "oidc/logout"}) }}'
+  - name: user_list
+    note: the users in data (users created by the app are read by id or by email)
+    sentence: "Listed {{ size(data.users) }} users"
+    body: '{{ query.include_totals == ''true'' ? json({"start": 0, "limit": 50, "length": int(default(query.page, ''0'')) == 0 ? size(data.users) : 0, "total": size(data.users), "users": int(default(query.page, ''0'')) == 0 ? data.users : []}) : json(data.users) }}'
+  - name: users_by_email
+    sentence: "Users with {{ query.email }}: {{ has(src) && !gone ? 1 : 0 }}"
+    body: '[{{ has(src) && !gone ? json(user_view) : '''' }}]'
+  - name: user_created
+    status: 201
+    sentence: "User {{ id }} created ({{ email }})"
+    body: '{{ json(user_view) }}'
+  - name: user
+    sentence: "{{ __method == 'PATCH' ? 'Updated' : 'Read' }} user {{ id }}{{ __path.endsWith('/roles') ? ' roles' : '' }}"
+    body: |-
+      {{ __path.endsWith('/roles') ? (query.include_totals == 'true' ? '{"start": 0, "limit": 50, "total": ' + string(size(roles)) + ', "roles": ' : '') + '[' + (int(default(query.page, '0')) > 0 ? '' : (size(roles) > 0 ? json(lookup('roles', 'id', roles[0])) : '') + (size(roles) > 1 ? ',' + json(lookup('roles', 'id', roles[1])) : '') + (size(roles) > 2 ? ',' + json(lookup('roles', 'id', roles[2])) : '')) + ']' + (query.include_totals == 'true' ? '}' : '') : json(user_view) }}
+  - name: user_deleted
+    status: 204
+    sentence: "User {{ id }} deleted"
+    headers: {Content-Type: text/plain}
+    raw: true
+    body: ''
+  - name: role_list
+    sentence: "Listed {{ size(data.roles) }} roles"
+    body: '{{ query.include_totals == ''true'' ? json({"start": int(default(query.page, ''0'')) * 50, "limit": 50, "length": int(default(query.page, ''0'')) == 0 ? size(data.roles) : 0, "total": size(data.roles), "roles": int(default(query.page, ''0'')) == 0 ? data.roles : []}) : json(data.roles) }}'
+  - name: roles_assigned
+    status: 204
+    sentence: "Roles {{ join(body.roles, ', ') }} assigned to {{ id }}"
+    headers: {Content-Type: text/plain}
+    raw: true
+    body: ''
+  # ---- Authentication API errors
+  - name: access_denied
+    status: 401
+    note: unknown client, or a wrong client secret
+    sentence: "Refused: client {{ default(body.client_id, '?') }} unauthorized (access_denied)"
+    body: '{"error": "access_denied", "error_description": "Unauthorized"}'
+  - name: no_audience
+    status: 403
+    sentence: "Refused: no audience"
+    body: '{"error": "access_denied", "error_description": "No audience parameter was provided, and no default audience has been configured"}'
+  - name: unauthorized_client
+    status: 403
+    sentence: "Refused: {{ body.client_id }} may not use {{ grant }}"
+    body: '{"error": "unauthorized_client", "error_description": "Grant type ''{{ grant }}'' not allowed for the client.", "error_uri": "https://auth0.com/docs/clients/client-grant-types"}'
+  - name: unsupported_grant_type
+    status: 403
+    sentence: "Refused: grant {{ grant }}"
+    body: '{"error": "unsupported_grant_type", "error_description": "Unsupported grant type: {{ grant }}"}'
+  - name: wrong_password
+    status: 403
+    sentence: "Refused: wrong email or password for {{ email }}"
+    body: '{"error": "invalid_grant", "error_description": "Wrong email or password."}'
+  - name: blocked_user
+    status: 401
+    sentence: "Refused: {{ email }} is blocked"
+    body: '{"error": "unauthorized", "error_description": "user is blocked"}'
+  - name: too_many_attempts
+    status: 429
+    note: exists only to be forced (brute-force protection)
+    sentence: "Refused: too many attempts"
+    body: '{"error": "too_many_attempts", "error_description": "Your account has been blocked after multiple consecutive login attempts. We''ve sent you an email with instructions on how to unblock it."}'
+  - name: too_many_requests
+    status: 429
+    note: exists only to be forced; the Authentication API rate limit (the wording is a guess)
+    headers: {X-RateLimit-Limit: "30", X-RateLimit-Remaining: "0", X-RateLimit-Reset: "{{ int(now_ms() / 1000) + 60 }}"}
+    sentence: "Rate limited (too_many_requests)"
+    body: '{"error": "too_many_requests", "error_description": "Too many requests. Check the X-RateLimit-Limit, X-RateLimit-Remaining and X-RateLimit-Reset headers."}'
+  - name: userinfo_unauthorized
+    status: 401
+    headers: {Content-Type: text/plain, WWW-Authenticate: 'Bearer error="invalid_token"'}
+    raw: true
+    sentence: "Userinfo refused: no valid user token"
+    body: Unauthorized
+  # ---- Management API errors
+  - name: missing_authentication
+    status: 401
+    sentence: "Refused: no token"
+    body: '{"statusCode": 401, "error": "Unauthorized", "message": "Missing authentication", "errorCode": "undefined"}'
+  - name: invalid_token
+    status: 401
+    note: not an access token this tenant issued by client credentials
+    sentence: "Refused: invalid token"
+    body: '{"statusCode": 401, "error": "Unauthorized", "message": "Invalid token", "attributes": {"error": "Invalid token"}}'
+  - name: missing_connection
+    status: 400
+    sentence: "Refused: connection missing"
+    body: '{"statusCode": 400, "error": "Bad Request", "message": "Payload validation error: ''Missing required property: connection''.", "errorCode": "invalid_body"}'
+  - name: invalid_email
+    status: 400
+    sentence: "Refused: invalid email {{ default(body.email, '') }}"
+    body: '{"statusCode": 400, "error": "Bad Request", "message": "Payload validation error: ''Object didn''t pass validation for format email: {{ default(body.email, '''') }}'' on property email (The user''s email).", "errorCode": "invalid_body"}'
+  - name: password_too_weak
+    status: 400
+    sentence: "Refused: password too weak"
+    body: '{"statusCode": 400, "error": "Bad Request", "message": "PasswordStrengthError: Password is too weak", "errorCode": "invalid_password"}'
+  - name: user_exists
+    status: 409
+    sentence: "Refused: {{ email }} exists"
+    body: '{"statusCode": 409, "error": "Conflict", "message": "The user already exists.", "errorCode": "auth0_idp_error"}'
+  - name: inexistent_user
+    status: 404
+    sentence: "No user {{ id }}"
+    body: '{"statusCode": 404, "error": "Not Found", "message": "The user does not exist.", "errorCode": "inexistent_user"}'
+  - name: email_required
+    status: 400
+    sentence: "Refused: email missing"
+    body: '{"statusCode": 400, "error": "Bad Request", "message": "Query validation error: ''Missing required property: email'' on property email.", "errorCode": "invalid_query_string"}'
+  - name: roles_required
+    status: 400
+    sentence: "Refused: no roles"
+    body: '{"statusCode": 400, "error": "Bad Request", "message": "Payload validation error: ''Missing required property: roles''.", "errorCode": "invalid_body"}'
+  - name: role_not_found
+    status: 404
+    sentence: "No role {{ body.roles[0] }}"
+    body: '{"statusCode": 404, "error": "Not Found", "message": "One or more of the roles do not exist.", "errorCode": "inexistent_role"}'
+  - name: mgmt_rate_limited
+    status: 429
+    note: exists only to be forced; the Management API global limit
+    headers: {X-RateLimit-Limit: "50", X-RateLimit-Remaining: "0", X-RateLimit-Reset: "{{ int(now_ms() / 1000) + 1 }}"}
+    sentence: "Management API rate limited (too_many_requests)"
+    body: '{"statusCode": 429, "error": "Too Many Requests", "message": "Global limit has been reached", "errorCode": "too_many_requests"}'
+data:
+  clients:
+    - {client_id: AcmeWebApp0000000000000000000001, client_secret: acme-web-secret, name: Acme Web, grant_types: [password, 'http://auth0.com/oauth/grant-type/password-realm', authorization_code, refresh_token]}
+    - {client_id: AcmeBackend000000000000000000002, client_secret: acme-backend-secret, name: Acme Backend (M2M), grant_types: [client_credentials]}
+  users:
+    - {user_id: 'auth0|6650a1b2c3d4e5f600000001', email: emma.carter@acme.example.com, name: Emma Carter, given_name: Emma, family_name: Carter, email_verified: true, blocked: false, created_at: '2025-06-01T12:00:00.000Z', updated_at: '2026-11-01T12:00:00.000Z'}
+    - {user_id: 'auth0|6650a1b2c3d4e5f600000002', email: jack.morgan@globex.example.com, name: Jack Morgan, given_name: Jack, family_name: Morgan, email_verified: true, blocked: true, created_at: '2025-07-01T12:00:00.000Z', updated_at: '2026-10-01T12:00:00.000Z'}
+  # Passwords of the users above (never answered).
+  passwords:
+    - {email: emma.carter@acme.example.com, password: Acme-Passw0rd!}
+    - {email: jack.morgan@globex.example.com, password: Globex-Passw0rd!}
+  roles:
+    - {id: rol_AcmeAdmin00000001, name: admin, description: Full access to the Acme dashboard}
+    - {id: rol_AcmeEditor0000002, name: editor, description: Can edit catalog and orders}
+    - {id: rol_AcmeViewer0000003, name: viewer, description: Read-only access}

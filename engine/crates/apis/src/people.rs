@@ -11,8 +11,12 @@ use sha2::Sha256;
 use crate::{ca, expr};
 
 fn key_of(cpf: &str) -> Result<RsaPrivateKey, String> {
-    let dir = ca::keys_dir().join("people");
-    let path = dir.join(format!("{cpf}.key.pem"));
+    key_in("people", cpf)
+}
+
+fn key_in(folder: &str, name: &str) -> Result<RsaPrivateKey, String> {
+    let dir = ca::keys_dir().join(folder);
+    let path = dir.join(format!("{name}.key.pem"));
     if let Some(k) = std::fs::read_to_string(&path).ok().and_then(|t| RsaPrivateKey::from_pkcs8_pem(&t).ok()) {
         return Ok(k);
     }
@@ -96,6 +100,31 @@ pub fn sign_raw(person: &Value, hash: &str, enc: &str) -> Result<String, String>
     k.sign(Pkcs1v15Sign::new::<Sha256>(), &digest).map(|s| B64.encode(s)).map_err(|e| e.to_string())
 }
 
+/// A plugin's own signing key (data/keys/plugins/<name>.key.pem, made on first use); its kid is the name.
+fn plugin_key(name: &str) -> Result<RsaPrivateKey, String> {
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err("a key name has letters, digits, - and _".into());
+    }
+    key_in("plugins", name)
+}
+
+/// jwt(claims, key): RS256, header {alg, typ, kid}, signed with the plugin's key.
+pub fn jwt(claims: &Value, key: &str) -> Result<String, String> {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64U;
+    let k = plugin_key(key)?;
+    let input = format!("{}.{}", B64U.encode(json!({"alg": "RS256", "typ": "JWT", "kid": key}).to_string()), B64U.encode(claims.to_string()));
+    let sig = k.sign(Pkcs1v15Sign::new::<Sha256>(), &<Sha256 as sha2::Digest>::digest(input.as_bytes())).map_err(|e| e.to_string())?;
+    Ok(format!("{input}.{}", B64U.encode(sig)))
+}
+
+/// jwks(key): {"keys": [the public JWK]} that verifies jwt(…, key).
+pub fn jwks(key: &str) -> Result<Value, String> {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64U;
+    use rsa::traits::PublicKeyParts;
+    let p = rsa::RsaPublicKey::from(&plugin_key(key)?);
+    Ok(json!({"keys": [{"kty": "RSA", "use": "sig", "alg": "RS256", "kid": key, "n": B64U.encode(p.n().to_bytes_be()), "e": B64U.encode(p.e().to_bytes_be())}]}))
+}
+
 /// [{id, raw_signature}] for every {id, hash} the app sent.
 pub fn sign_all(person: &Value, hashes: &Value, enc: &str) -> Result<Value, String> {
     let list = hashes.as_array().ok_or("hashes must be a list")?;
@@ -120,5 +149,15 @@ mod t {
         assert!(pubk.verify(Pkcs1v15Sign::new::<Sha256>(), &digest, &s).is_ok());
         assert!(sign_raw(&json!({"name": "N", "cpf": "1", "certificate": "none"}), &hex::encode(digest), "hex").is_err());
         let _ = RsaPublicKey::from_public_key_pem("");
+        // A plugin JWT verifies with its JWKS.
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64U;
+        let t = jwt(&json!({"sub": "auth0|1"}), "acme-tenant").unwrap();
+        let k = &jwks("acme-tenant").unwrap()["keys"][0];
+        let n = rsa::BigUint::from_bytes_be(&B64U.decode(k["n"].as_str().unwrap()).unwrap());
+        let e = rsa::BigUint::from_bytes_be(&B64U.decode(k["e"].as_str().unwrap()).unwrap());
+        let (input, sig) = t.rsplit_once('.').unwrap();
+        let ok = RsaPublicKey::new(n, e).unwrap().verify(Pkcs1v15Sign::new::<Sha256>(), &<Sha256 as sha2::Digest>::digest(input.as_bytes()), &B64U.decode(sig).unwrap());
+        assert!(ok.is_ok() && k["kid"] == "acme-tenant");
+        assert!(jwt(&json!({}), "../x").is_err());
     }
 }

@@ -282,11 +282,12 @@ fn num(v: &Value) -> Option<f64> {
 /// The lets in the order they can be computed: one that names another runs after it
 /// (YAML maps arrive sorted, so `b: a + 1` before `a: 2` still works). Cycles keep the sorted order.
 pub fn let_order(lets: &std::collections::BTreeMap<String, String>) -> Vec<(&String, &String)> {
-    let uses = |e: &str, k: &str| lex(e).map(|t| t.iter().any(|t| matches!(t, Tok::Id(x) if x == k))).unwrap_or(false);
+    // A name after a dot is a field (rec.at), not the let "at"; a let never waits for itself.
+    let uses = |e: &str, k: &str| lex(e).map(|t| t.iter().enumerate().any(|(i, x)| matches!(x, Tok::Id(x) if x == k) && !matches!(i.checked_sub(1).map(|j| &t[j]), Some(Tok::Op(o)) if o == "."))).unwrap_or(false);
     let mut left: Vec<(&String, &String)> = lets.iter().collect();
     let mut out = vec![];
     while !left.is_empty() {
-        let i = left.iter().position(|(_, e)| !left.iter().any(|(k, _)| uses(e, k))).unwrap_or(0);
+        let i = left.iter().position(|(me, e)| !left.iter().any(|(k, _)| k != me && uses(e, k))).unwrap_or(0);
         out.push(left.remove(i));
     }
     out
@@ -429,6 +430,26 @@ fn call(name: &str, a: &[Value], sc: &Scope) -> Result<Value, String> {
         // cert_pem(person), sign_all(person, body.hashes, 'hex' | 'base64'): see people.rs.
         "cert_pem" => json!(crate::people::cert_pem(a.first().unwrap_or(&Value::Null))?),
         "sign_all" => crate::people::sign_all(a.first().unwrap_or(&Value::Null), a.get(1).unwrap_or(&Value::Null), &a.get(2).map(text).unwrap_or("hex".into()))?,
+        // hmac('sha256' | 'sha1', key, message, 'hex' | 'base64'): a signature inside a body (Adyen's
+        // additionalData.hmacSignature). A key written 'hex:…' is the hex of the key's bytes.
+        "hmac" => {
+            use hmac::Mac;
+            let key = a.get(1).map(text).unwrap_or_default();
+            let key = match key.strip_prefix("hex:") { Some(h) => hex::decode(h).map_err(|_| "hmac: the key is not hex".to_string())?, None => key.into_bytes() };
+            let msg = a.get(2).map(text).unwrap_or_default();
+            let mac = match s0().as_str() {
+                "sha1" => { let mut m = hmac::Hmac::<sha1::Sha1>::new_from_slice(&key).unwrap(); m.update(msg.as_bytes()); m.finalize().into_bytes().to_vec() }
+                "sha256" => { let mut m = hmac::Hmac::<sha2::Sha256>::new_from_slice(&key).unwrap(); m.update(msg.as_bytes()); m.finalize().into_bytes().to_vec() }
+                x => return Err(format!("hmac: no algorithm “{x}” (sha256 | sha1)")),
+            };
+            json!(if a.get(3).map(text).as_deref() == Some("base64") { base64::Engine::encode(&base64::engine::general_purpose::STANDARD, mac) } else { hex::encode(mac) })
+        }
+        // parse_json(text): the value a JSON text holds (null when it is not JSON).
+        "parse_json" => serde_json::from_str(&s0()).unwrap_or(Value::Null),
+        // jwt(claims, 'key-name'): an RS256 JWT signed with the plugin's key of that name; jwks('key-name')
+        // publishes its public half. See people.rs.
+        "jwt" => json!(crate::people::jwt(a.first().unwrap_or(&Value::Null), &a.get(1).map(text).unwrap_or_default())?),
+        "jwks" => crate::people::jwks(&s0())?,
         "sign_raw" => json!(crate::people::sign_raw(a.first().unwrap_or(&Value::Null), &a.get(1).map(text).unwrap_or_default(), &a.get(2).map(text).unwrap_or("hex".into()))?),
         _ => return Err(format!("no function “{name}”")),
     })
@@ -695,6 +716,13 @@ mod t {
         assert_eq!(eval("{'n': 2}", &s).unwrap(), json!({"n": 2}));
         assert_eq!(eval("base64(':pat')", &s).unwrap(), json!("OnBhdA=="));
         assert_eq!(eval("cookie('a=1; sid=s1', 'sid')", &s).unwrap(), json!("s1"));
+        // RFC 4231 test case 2, and Adyen-style hex keys.
+        assert_eq!(eval("hmac('sha256', 'Jefe', 'what do ya want for nothing?')", &s).unwrap(), json!("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"));
+        assert_eq!(eval("hmac('sha256', 'hex:4a656665', 'what do ya want for nothing?', 'base64')", &s).unwrap(), json!("W9zBRr9gdU5qBCQmCJV1x1oAPwidJzmDnexYuWTsOEM="));
+        assert_eq!(eval("hmac('sha1', 'key', 'The quick brown fox jumps over the lazy dog')", &s).unwrap(), json!("de7c9b85b8b78aa6bc8a7a36f70a90701c9db4d9"));
+        assert_eq!(eval("parse_json(split('{\"a\": 1}|x', '|')[0]).a", &s).unwrap(), json!(1));
+        let lets: std::collections::BTreeMap<String, String> = [("a".into(), "rec.at + 1".into()), ("at".into(), "rec.at".into()), ("rec".into(), "{'at': 1}".into())].into();
+        assert_eq!(let_order(&lets).iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), vec!["rec", "a", "at"]);
         let lets: std::collections::BTreeMap<String, String> = [("a".into(), "b + 1".into()), ("b".into(), "2".into())].into();
         assert_eq!(let_order(&lets).iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), vec!["b", "a"]);
         assert_eq!(paths("selfie.tag != person.tg && size(body.cpf) > 3"), vec!["selfie.tag", "person.tg", "body.cpf"]);

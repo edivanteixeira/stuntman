@@ -1,0 +1,122 @@
+# Sentry ingestion for the acme organization: envelopes (POST /api/{project_id}/envelope/, what current
+# SDKs send, gzip or plain) and the legacy store endpoint (POST /api/{project_id}/store/), authenticated by
+# X-Sentry-Auth (sentry_key=…), the sentry_key query parameter or the envelope's dsn. Every event is kept,
+# so a test can assert what the app reported: GET /api/0/projects/{org}/{project}/events/{event_id}/
+# answers it in the shape of Sentry's web API, and GET /stuntman/events (Stuntman only) lists every kept
+# envelope by event id. Point the SDK's DSN at it:
+#   http://<public_key>@localhost:8028/sentry/<project_id>   (keys and projects in data.projects)
+# Forcing rate_limited answers 429 with Retry-After and X-Sentry-Rate-Limits, which SDKs obey.
+service:
+  name: sentry
+  title: Sentry
+  origin: community
+  description: Error and transaction ingestion (envelopes) you can read back
+  base_url: https://o4508000000000001.ingest.us.sentry.io
+  real_host: o4508000000000001.ingest.us.sentry.io
+  limits:
+    latency: 20ms..80ms
+routes:
+  - route: POST /api/{project_id}/envelope/
+    let: &lets
+      auth: "default(headers['x-sentry-auth'], '')"
+      a_lines: "split(raw, '\n')"
+      b_head: "__path.endsWith('/envelope/') ? default(parse_json(a_lines[0]), {}) : {}"
+      key: >-
+        auth.contains('sentry_key=') ? trim(split(split(auth, 'sentry_key=')[1], ',')[0])
+        : has(query.sentry_key) ? query.sentry_key
+        : has(b_head.dsn) ? split(split(b_head.dsn, '://')[1], '@')[0] : ''
+      project: "lookup('projects', 'id', path.project_id)"
+      c_item: "__path.endsWith('/envelope/') ? default(parse_json(default(a_lines[1], '')), {}) : {'type': 'event'}"
+      ev: "__path.endsWith('/envelope/') ? (c_item.type in ['event', 'transaction'] ? default(parse_json(default(a_lines[2], '')), {}) : {}) : body"
+      event_id: "replace(default(b_head.event_id, default(ev.event_id, uuid())), '-', '')"
+      exc: "default(default(default(ev.exception, {}).values, [{}]), [{}])[int(size(default(default(ev.exception, {}).values, [{}])) - 1)]"
+      what: >-
+        c_item.type == 'transaction' ? 'Transaction ' + default(ev.transaction, '?')
+        : has(exc.type) ? exc.type + ': ' + default(exc.value, '')
+        : has(ev.logentry) ? default(ev.logentry.formatted, ev.logentry.message)
+        : has(ev.message) ? string(ev.message)
+        : 'Envelope ' + default(c_item.type, 'item')
+    keep:
+      state: events
+      key: event_id
+    decide: &ingest
+      - when: "key == ''"
+        answer: missing_auth
+      - when: "!has(project) || project.public_key != key"
+        answer: rejected_key
+      - answer: accepted
+  - route: POST /api/{project_id}/store/
+    let: *lets
+    keep:
+      state: events
+      key: event_id
+    decide: *ingest
+  # ---------------------------------------------------------------- reading back
+  - route: GET /api/0/projects/{org}/{project}/events/{event_id}/
+    let:
+      kept: "state.events[replace(path.event_id, '-', '')]"
+      p: "lookup('projects', 'slug', path.project)"
+      lines: "split(string(kept.body), '\n')"
+      item: "default(parse_json(default(lines[1], '')), {})"
+      ev: "parse_json(string(kept.body)) != null ? kept.body : item.type in ['event', 'transaction'] ? default(parse_json(default(lines[2], '')), {}) : {}"
+      exc: "default(default(default(ev.exception, {}).values, [{}]), [{}])[int(size(default(default(ev.exception, {}).values, [{}])) - 1)]"
+      title: "has(exc.type) ? exc.type + ': ' + default(exc.value, '') : has(ev.logentry) ? default(ev.logentry.formatted, ev.logentry.message) : has(ev.message) ? string(ev.message) : default(ev.transaction, '<untitled>')"
+    decide:
+      - when: "!default(headers.authorization, '').startsWith('Bearer ')"
+        answer: api_unauthorized
+      - when: "!has(kept) || !has(p)"
+        answer: event_not_found
+      - answer: event
+  - route: GET /stuntman/events
+    decide:
+      - answer: kept_events
+answers:
+  - name: accepted
+    note: the event is kept; read it back by id
+    sentence: "{{ what }} ({{ substring(event_id, 0, 8) }}, {{ default(ev.level, c_item.type == 'transaction' ? 'transaction' : 'error') }}{{ has(ev.environment) ? ', ' + ev.environment : '' }})"
+    body: '{"id": "{{ event_id }}"}'
+  - name: event
+    sentence: "Read event {{ path.event_id }}: {{ title }}"
+    body: |-
+      {{ json({"id": replace(path.event_id, '-', ''), "eventID": replace(path.event_id, '-', ''), "projectID": string(p.id), "groupID": substring(digits(sha256(title)), 0, 10),
+        "type": has(exc.type) ? 'error' : item.type == 'transaction' ? 'transaction' : 'default', "title": title, "message": default(default(ev.logentry, {}).formatted, default(ev.message, '')),
+        "platform": default(ev.platform, 'other'), "dateCreated": default(ev.timestamp, now()), "dateReceived": now(), "level": default(ev.level, 'error'),
+        "environment": default(ev.environment, null), "release": default(ev.release, null), "user": default(ev.user, null), "tags": default(ev.tags, {}),
+        "contexts": default(ev.contexts, {}), "sdk": default(ev.sdk, null), "exception": default(ev.exception, null), "extra": default(ev.extra, {}), "culprit": default(ev.transaction, default(ev.culprit, ''))}) }}
+  - name: kept_events
+    note: Stuntman's own listing (event id → when it arrived and the raw envelope or event)
+    sentence: "Listed {{ size(default(state.events, {})) }} kept events"
+    body: '{{ json(default(state.events, {})) }}'
+  # ---- errors, as Relay answers
+  - name: missing_auth
+    status: 401
+    sentence: "Refused: no sentry_key"
+    body: '{"detail": "missing authorization information"}'
+  - name: rejected_key
+    status: 403
+    note: unknown project or a key that is not the project's (the detail wording is a guess)
+    sentence: "Refused: key {{ key }} is not valid for project {{ path.project_id }}"
+    body: '{"detail": "event submission rejected with_reason: ProjectId"}'
+  - name: rate_limited
+    status: 429
+    note: exists only to be forced; SDKs stop sending errors for Retry-After seconds
+    headers: {Retry-After: "60", X-Sentry-Rate-Limits: "60:error;transaction:organization:org_quota"}
+    sentence: "Rate limited (429): errors and transactions for 60 s"
+    body: '{"detail": "Sentry dropped data due to a quota or internal rate limit being reached. This will not affect your application. See https://docs.sentry.io/product/accounts/quotas/ for more information."}'
+  - name: payload_too_large
+    status: 413
+    note: exists only to be forced
+    sentence: "Refused: envelope too large (413)"
+    body: '{"detail": "envelope exceeded size limits"}'
+  - name: api_unauthorized
+    status: 401
+    sentence: "Refused: no auth token"
+    body: '{"detail": "Authentication credentials were not provided."}'
+  - name: event_not_found
+    status: 404
+    sentence: "No event {{ path.event_id }}"
+    body: '{"detail": "Event not found"}'
+data:
+  projects:
+    - {id: 4508000000000101, slug: acme-web, public_key: 7c3d0e5a2f1b4c6d8e9f0a1b2c3d4e5f, platform: python}
+    - {id: 4508000000000202, slug: acme-api, public_key: 1a2b3c4d5e6f70819a2b3c4d5e6f7081, platform: node}

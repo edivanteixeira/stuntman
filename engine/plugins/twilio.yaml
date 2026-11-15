@@ -1,0 +1,236 @@
+# Twilio Programmable Messaging (2010-04-01) and Verify v2 for the Acme account. Form-encoded bodies,
+# Basic auth (Account SID : Auth Token, any pair works), JSON answers, Twilio's error codes, and
+# StatusCallback requests signed as Twilio signs them (X-Twilio-Signature: HMAC-SHA1 of the callback URL
+# followed by the sorted form parameters, base64) with the auth token in secret://twilio-auth-token.
+# Point the SDK at it: client.api.base_url = client.verify.base_url = http://localhost:8028/twilio
+# (or resolve api.twilio.com and verify.twilio.com to Stuntman).
+#
+# Numbers drive the outcome, as Twilio's test credentials do: +15005550001 is not a valid number
+# (21211), +15005550004 and the numbers in data.unsubscribed replied STOP (21610), +15005550009 cannot
+# receive SMS (21614); data.undeliverable numbers end "undelivered" (30006) in their callback.
+# Verify: the code 123456 is right for any number (any other code stays pending; 5 wrong codes, 60202).
+service:
+  name: twilio
+  title: Twilio
+  origin: community
+  description: SMS with signed status callbacks, and Verify v2 codes
+  base_url: https://api.twilio.com
+  real_host: api.twilio.com
+  limits:
+    latency: 120ms..400ms
+  webhooks:
+    sign: twilio
+    secret: secret://twilio-auth-token
+routes:
+  # ---------------------------------------------------------------- messages
+  - route: POST /2010-04-01/Accounts/{sid}/Messages.json
+    let:
+      a_id: "'SM' + random_id() + random_id() + random_id() + random_id()"
+      b_to: "default(body.To, '')"
+      c_bad: "b_to == '+15005550001' || !b_to.matches('^(whatsapp:)?[+][1-9][0-9]{6,14}$')"
+      d_undelivered: "lookup('undeliverable', 'number', b_to) != null"
+      e_date: "now()"
+      view: >-
+        {"account_sid": path.sid, "api_version": "2010-04-01", "body": body.Body, "date_created": e_date, "date_sent": null,
+        "date_updated": e_date, "direction": "outbound-api", "error_code": null, "error_message": null, "from": default(body.From, null),
+        "messaging_service_sid": default(body.MessagingServiceSid, null), "num_media": "0", "num_segments": "1", "price": null,
+        "price_unit": "USD", "sid": a_id, "status": has(body.MessagingServiceSid) && !has(body.From) ? 'accepted' : 'queued',
+        "subresource_uris": {"media": '/2010-04-01/Accounts/' + path.sid + '/Messages/' + a_id + '/Media.json'},
+        "to": b_to, "uri": '/2010-04-01/Accounts/' + path.sid + '/Messages/' + a_id + '.json'}
+    keep:
+      state: messages
+      key: a_id
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: authenticate
+      - when: "!has(body.To)"
+        answer: to_required
+      - when: "!has(body.From) && !has(body.MessagingServiceSid)"
+        answer: from_required
+      - when: "!has(body.Body) && !has(body.MediaUrl) && !has(body.ContentSid)"
+        answer: body_required
+      - when: c_bad
+        answer: invalid_to
+      - when: "b_to == '+15005550004' || lookup('unsubscribed', 'number', b_to) != null"
+        answer: unsubscribed
+      - when: "b_to == '+15005550009'"
+        answer: not_sms_capable
+      - answer: message
+    send:
+      - url: "{{ answer == 'message' && has(body.StatusCallback) ? body.StatusCallback : '' }}"
+        delay: 1s
+        event: sent
+        headers:
+          Content-Type: application/x-www-form-urlencoded
+          User-Agent: TwilioProxy/1.1
+        body: &cb "AccountSid={{ path.sid }}&ApiVersion=2010-04-01&From={{ replace(default(body.From, ''), '+', '%2B') }}&MessageSid={{ a_id }}&MessageStatus=sent{{ has(body.MessagingServiceSid) ? '&MessagingServiceSid=' + body.MessagingServiceSid : '' }}&SmsSid={{ a_id }}&SmsStatus=sent&To={{ replace(b_to, '+', '%2B') }}"
+      - url: "{{ answer == 'message' && has(body.StatusCallback) ? body.StatusCallback : '' }}"
+        delay: 2s
+        event: final
+        headers:
+          Content-Type: application/x-www-form-urlencoded
+          User-Agent: TwilioProxy/1.1
+        body: "AccountSid={{ path.sid }}&ApiVersion=2010-04-01{{ d_undelivered ? '&ErrorCode=30006' : '' }}&From={{ replace(default(body.From, ''), '+', '%2B') }}&MessageSid={{ a_id }}&MessageStatus={{ d_undelivered ? 'undelivered' : 'delivered' }}{{ has(body.MessagingServiceSid) ? '&MessagingServiceSid=' + body.MessagingServiceSid : '' }}&SmsSid={{ a_id }}&SmsStatus={{ d_undelivered ? 'undelivered' : 'delivered' }}&To={{ replace(b_to, '+', '%2B') }}"
+  # The status follows the callbacks: queued, sent after 1 s, delivered (or undelivered) after 2 s.
+  - route: GET ~/2010-04-01/Accounts/(?P<sid>[^/]+)/Messages/(?P<msid>[^/.]+)\.json
+    let:
+      m: "state.messages[path.msid]"
+      age: "now_ms() - m.at"
+      undelivered: "lookup('undeliverable', 'number', m.body.To) != null"
+      status: "age >= 2000 ? (undelivered ? 'undelivered' : 'delivered') : age >= 1000 ? 'sent' : 'queued'"
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: authenticate
+      - when: "!has(m)"
+        answer: message_not_found
+      - answer: message_status
+  # ---------------------------------------------------------------- Verify v2
+  - route: POST /v2/Services/{service}/Verifications
+    let:
+      a_id: "'VE' + random_id() + random_id() + random_id() + random_id()"
+      b_channel: "default(body.Channel, 'sms')"
+    keep:
+      state: verifications
+      key: "path.service + '|' + body.To"
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: authenticate
+      - when: "!has(body.To)"
+        answer: verify_to_required
+      - when: "!(b_channel in ['sms', 'call', 'email', 'whatsapp', 'sna', 'auto'])"
+        answer: invalid_channel
+      - when: "b_channel != 'email' && (body.To == '+15005550001' || !body.To.matches('^[+][1-9][0-9]{6,14}$'))"
+        answer: verify_invalid_to
+      - answer: verification
+  - route: POST /v2/Services/{service}/VerificationCheck
+    let:
+      a_key: "path.service + '|' + default(body.To, '')"
+      v: "state.verifications[a_key]"
+      fails: "state.verify_fails[a_key]"
+      approved: "has(v) && body.Code == '123456' && !(has(state.verify_done[a_key]) && state.verify_done[a_key].at >= v.at)"
+    keep:
+      state: verify_done
+      key: "approved ? a_key : '-'"
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: authenticate
+      - when: "!has(body.Code)"
+        answer: code_required
+      - when: "!has(v) || (has(state.verify_done[a_key]) && state.verify_done[a_key].at >= v.at)"
+        answer: verification_not_found
+      - when: "approved"
+        answer: verification_approved
+      - answer: verification_pending
+answers:
+  - name: message
+    status: 201
+    note: the message is queued; StatusCallback gets sent, then delivered (or undelivered)
+    sentence: "SMS {{ a_id }} to {{ b_to }}: queued{{ has(body.StatusCallback) ? '; callbacks to ' + body.StatusCallback : '' }}"
+    body: '{{ view | json }}'
+  - name: message_status
+    sentence: "Message {{ path.msid }}: {{ status }}"
+    body: |-
+      {"account_sid": "{{ path.sid }}", "api_version": "2010-04-01", "body": {{ m.body.Body | json }}, "date_created": "{{ now() }}", "date_sent": {{ status == 'queued' ? 'null' : json(now()) }},
+       "date_updated": "{{ now() }}", "direction": "outbound-api", "error_code": {{ status == 'undelivered' ? '30006' : 'null' }}, "error_message": {{ status == 'undelivered' ? '"Landline or unreachable carrier"' : 'null' }},
+       "from": {{ default(m.body.From, null) | json }}, "messaging_service_sid": {{ default(m.body.MessagingServiceSid, null) | json }}, "num_media": "0", "num_segments": "1",
+       "price": {{ status == 'queued' ? 'null' : '"-0.00790"' }}, "price_unit": "USD", "sid": "{{ path.msid }}", "status": "{{ status }}",
+       "subresource_uris": {"media": "/2010-04-01/Accounts/{{ path.sid }}/Messages/{{ path.msid }}/Media.json"}, "to": {{ m.body.To | json }}, "uri": "/2010-04-01/Accounts/{{ path.sid }}/Messages/{{ path.msid }}.json"}
+  - name: verification
+    status: 201
+    note: a code went out; 123456 approves it
+    sentence: "Verification code to {{ body.To }} by {{ b_channel }}"
+    body: |-
+      {"sid": "{{ a_id }}", "service_sid": "{{ path.service }}", "account_sid": "AC0acme0000000000000000000000000001", "to": {{ body.To | json }}, "channel": "{{ b_channel }}",
+       "status": "pending", "valid": false, "lookup": {}, "amount": null, "payee": null, "send_code_attempts": [{"attempt_sid": "VL{{ random_id() }}{{ random_id() }}{{ random_id() }}{{ random_id() }}", "channel": "{{ b_channel }}", "time": "{{ now() }}"}],
+       "date_created": "{{ now() }}", "date_updated": "{{ now() }}", "sna": null, "url": "https://verify.twilio.com/v2/Services/{{ path.service }}/Verifications/{{ a_id }}"}
+  - name: verification_approved
+    sentence: "Code for {{ body.To }} approved"
+    body: &check |-
+      {"sid": "VE{{ substring(sha256(string(v.at)), 0, 32) }}", "service_sid": "{{ path.service }}", "account_sid": "AC0acme0000000000000000000000000001", "to": {{ body.To | json }},
+       "channel": "{{ default(v.body.Channel, 'sms') }}", "status": "{{ approved ? 'approved' : 'pending' }}", "valid": {{ approved }}, "amount": null, "payee": null,
+       "date_created": "{{ now() }}", "date_updated": "{{ now() }}", "sna_attempts_error_codes": []}
+  - name: verification_pending
+    note: wrong code; the verification stays pending
+    sentence: "Wrong code for {{ body.To }}: still pending"
+    body: *check
+  # ---- errors, in Twilio's shape (code, message, more_info, status)
+  - name: authenticate
+    status: 401
+    note: no Basic auth (any Account SID and Auth Token pass)
+    sentence: "Refused: no credentials (20003)"
+    headers: {WWW-Authenticate: 'Basic realm="Twilio API"'}
+    body: '{"code": 20003, "message": "Authenticate", "more_info": "https://www.twilio.com/docs/errors/20003", "status": 401}'
+  - name: to_required
+    status: 400
+    sentence: "Refused: To missing (21604)"
+    body: '{"code": 21604, "message": "A ''To'' phone number is required.", "more_info": "https://www.twilio.com/docs/errors/21604", "status": 400}'
+  - name: from_required
+    status: 400
+    sentence: "Refused: From missing (21603)"
+    body: '{"code": 21603, "message": "A ''From'' phone number is required.", "more_info": "https://www.twilio.com/docs/errors/21603", "status": 400}'
+  - name: body_required
+    status: 400
+    sentence: "Refused: Body missing (21602)"
+    body: '{"code": 21602, "message": "Message body is required.", "more_info": "https://www.twilio.com/docs/errors/21602", "status": 400}'
+  - name: invalid_to
+    status: 400
+    note: the To number is not a valid phone number (and +15005550001)
+    sentence: "Refused: {{ body.To }} is not a valid number (21211)"
+    body: '{"code": 21211, "message": "Invalid ''To'' Phone Number: {{ body.To }}", "more_info": "https://www.twilio.com/docs/errors/21211", "status": 400}'
+  - name: unsubscribed
+    status: 400
+    note: the recipient replied STOP (data.unsubscribed, and +15005550004)
+    sentence: "Refused: {{ body.To }} unsubscribed (21610)"
+    body: '{"code": 21610, "message": "Attempt to send to unsubscribed recipient", "more_info": "https://www.twilio.com/docs/errors/21610", "status": 400}'
+  - name: not_sms_capable
+    status: 400
+    sentence: "Refused: {{ body.To }} cannot receive SMS (21614)"
+    body: '{"code": 21614, "message": "''To'' number is not a valid mobile number", "more_info": "https://www.twilio.com/docs/errors/21614", "status": 400}'
+  - name: message_not_found
+    status: 404
+    sentence: "No message {{ path.msid }}"
+    body: '{"code": 20404, "message": "The requested resource /2010-04-01/Accounts/{{ path.sid }}/Messages/{{ path.msid }}.json was not found", "more_info": "https://www.twilio.com/docs/errors/20404", "status": 404}'
+  - name: verify_to_required
+    status: 400
+    sentence: "Refused: To missing (60200)"
+    body: '{"code": 60200, "message": "Invalid parameter `To`: ", "more_info": "https://www.twilio.com/docs/errors/60200", "status": 400}'
+  - name: verify_invalid_to
+    status: 400
+    sentence: "Refused: {{ body.To }} is not a valid number (60200)"
+    body: '{"code": 60200, "message": "Invalid parameter `To`: {{ body.To }}", "more_info": "https://www.twilio.com/docs/errors/60200", "status": 400}'
+  - name: invalid_channel
+    status: 400
+    sentence: "Refused: channel {{ body.Channel }} (60200)"
+    body: '{"code": 60200, "message": "Invalid parameter: Channel", "more_info": "https://www.twilio.com/docs/errors/60200", "status": 400}'
+  - name: code_required
+    status: 400
+    sentence: "Refused: Code missing (60200)"
+    body: '{"code": 60200, "message": "Invalid parameter: Code", "more_info": "https://www.twilio.com/docs/errors/60200", "status": 400}'
+  - name: verification_not_found
+    status: 404
+    note: no pending verification for this number (never sent, or approved already)
+    sentence: "No pending verification for {{ body.To }}"
+    body: '{"code": 20404, "message": "The requested resource /Services/{{ path.service }}/VerificationCheck was not found", "more_info": "https://www.twilio.com/docs/errors/20404", "status": 404}'
+  - name: max_attempts
+    status: 429
+    note: exists only to be forced
+    sentence: "Max check attempts reached (60202)"
+    body: '{"code": 60202, "message": "Max check attempts reached", "more_info": "https://www.twilio.com/docs/errors/60202", "status": 429}'
+  - name: too_many_requests
+    status: 429
+    note: exists only to be forced (the account's concurrency limit)
+    sentence: "Too many requests (20429)"
+    body: '{"code": 20429, "message": "Too Many Requests", "more_info": "https://www.twilio.com/docs/errors/20429", "status": 429}'
+  - name: server_error
+    status: 500
+    note: exists only to be forced
+    sentence: "Twilio error (20500)"
+    body: '{"code": 20500, "message": "An internal server error has occurred", "more_info": "https://www.twilio.com/docs/errors/20500", "status": 500}'
+data:
+  # Recipients who replied STOP.
+  unsubscribed:
+    - {number: '+12025550142', name: Olivia Bennett}
+    - {number: '+15005550004', name: Twilio test number}
+  # Recipients whose carrier never delivers (the delivered callback says undelivered, 30006).
+  undeliverable:
+    - {number: '+12025550199', name: Landline at Globex}

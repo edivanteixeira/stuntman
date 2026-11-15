@@ -15,7 +15,7 @@ AREAS = [  # (crate, title, file globs)
     ("ai", "AI models", ["crates/ai/src/tools.rs"]),
     ("events", "Product events", ["crates/events/src/tools.rs"]),
     ("storage", "Storage (Azure Blob, S3)", ["crates/storage/src/tools.rs"]),
-    ("messaging", "Messaging (Service Bus, RabbitMQ, ActiveMQ)", ["crates/messaging/src/tools.rs", "crates/messaging/src/openwire.rs"]),
+    ("messaging", "Messaging (Service Bus, RabbitMQ, ActiveMQ, Event Hubs)", ["crates/messaging/src/tools.rs", "crates/messaging/src/openwire.rs", "crates/messaging/src/eventhubs.rs"]),
     ("identity", "Identity (OIDC, OAuth2, SAML, LDAP, Bot Framework)", ["crates/identity/src/tools.rs", "crates/identity/src/botframework.rs"]),
     ("files", "Files (FTP, SFTP)", ["crates/files/src/tools.rs"]),
     ("streams", "Streams (Kafka, Schema Registry)", ["crates/streams/src/tools.rs"]),

@@ -2,12 +2,15 @@
 //! vocabulary for both — namespace, entity (queue, topic, subscription), message. Messages with
 //! their delivery history, locks, dead-letter, consumers, "next delivery", rules, namespaces as YAML.
 //! ActiveMQ Classic (OpenWire) has its own port and a small store of its own: openwire.rs.
+//! Azure Event Hubs shares the AMQP port (amqp1.rs answers its links) with its own namespaces,
+//! partitions and events: eventhubs.rs.
 
 pub mod amqp;
 pub mod amqp1;
 pub mod broker;
 pub mod config;
 pub mod cron;
+pub mod eventhubs;
 pub mod mgmt;
 pub mod openwire;
 pub mod rabbit;
@@ -44,11 +47,13 @@ impl Module for Messaging {
 
     fn migrations(&self) -> &'static str {
         static SQL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-        SQL.get_or_init(|| format!("{}{}", broker::SQL, openwire::SQL))
+        SQL.get_or_init(|| format!("{}{}{}", broker::SQL, openwire::SQL, eventhubs::SQL))
     }
 
     fn tools(&self) -> Vec<Tool> {
-        tools::all()
+        let mut v = tools::all();
+        v.extend(eventhubs::tools());
+        v
     }
 
     fn extra_routes(&self) -> axum::Router<Ctx> {
@@ -58,6 +63,7 @@ impl Module for Messaging {
     fn start(&self, ctx: Ctx) {
         openwire::upgrade(&ctx.db);
         tools::seed_if_empty(&ctx);
+        stuntman_streams::foreign::register(Box::new(eventhubs::Kafka));
         // Connections do not survive a restart: consumers still marked receiving are gone.
         let c2 = ctx.clone();
         tokio::spawn(async move {
@@ -70,6 +76,7 @@ impl Module for Messaging {
                     break;
                 }
                 broker::sweep(&ctx).await;
+                eventhubs::sweep(&ctx).await;
                 tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
             }
         });

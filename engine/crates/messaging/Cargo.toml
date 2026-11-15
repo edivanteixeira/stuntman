@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 stuntman-core.workspace = true
+stuntman-streams.workspace = true
 axum.workspace = true
 tokio.workspace = true
 rusqlite.workspace = true

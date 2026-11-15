@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 stuntman-core.workspace = true
 stuntman-streams.workspace = true
+stuntman-messaging.workspace = true
 stuntman-kinesis.workspace = true
 stuntman-storage.workspace = true
 stuntman-identity.workspace = true

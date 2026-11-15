@@ -18,7 +18,7 @@ default; most setups change nothing.
 | `STUNTMAN_APIS_PORT` | `8028` | HTTP API plugins |
 | `STUNTMAN_APIS_TLS_PORT` | `8443` | HTTP API plugins over TLS (any host name, Test CA) |
 | `STUNTMAN_KEYVAULT_PORT` | `8444` | Key Vault (TLS) |
-| `STUNTMAN_AMQP_PORT` | `5673` | AMQP (Service Bus, RabbitMQ) |
+| `STUNTMAN_AMQP_PORT` | `5673` | AMQP (Service Bus, Event Hubs, RabbitMQ) |
 | `STUNTMAN_AMQPS_PORT` | `5671` | AMQP over TLS |
 | `STUNTMAN_BLOB_PORT` | `10000` | Azure Blob |
 | `STUNTMAN_S3_PORT` | `9000` | Amazon S3 |

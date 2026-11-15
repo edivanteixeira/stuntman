@@ -5214,6 +5214,7 @@ dependencies = [
  "sha2 0.10.9",
  "stuntman-apis",
  "stuntman-core",
+ "stuntman-streams",
  "tokio",
  "tokio-rustls",
 ]
@@ -5243,6 +5244,7 @@ dependencies = [
  "stuntman-core",
  "stuntman-identity",
  "stuntman-kinesis",
+ "stuntman-messaging",
  "stuntman-storage",
  "stuntman-streams",
  "tokio",

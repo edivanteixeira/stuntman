@@ -5,7 +5,7 @@ Every action in Stuntman is one tool. Each tool is an **MCP tool** (same name) a
 
 _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit by hand._
 
-**382 tools** in 17 areas.
+**388 tools** in 17 areas.
 
 - [Environments and timeline](#environments-and-timeline) · 12 tools
 - [Email and mailboxes](#email-and-mailboxes) · 39 tools
@@ -15,7 +15,7 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 - [AI models](#ai-models) · 9 tools
 - [Product events](#product-events) · 8 tools
 - [Storage (Azure Blob, S3)](#storage-azure-blob-s3) · 45 tools
-- [Messaging (Service Bus, RabbitMQ, ActiveMQ)](#messaging-service-bus-rabbitmq-activemq) · 25 tools
+- [Messaging (Service Bus, RabbitMQ, ActiveMQ, Event Hubs)](#messaging-service-bus-rabbitmq-activemq-event-hubs) · 31 tools
 - [Identity (OIDC, OAuth2, SAML, LDAP, Bot Framework)](#identity-oidc-oauth2-saml-ldap-bot-framework) · 28 tools
 - [Files (FTP, SFTP)](#files-ftp-sftp) · 8 tools
 - [Streams (Kafka, Schema Registry)](#streams-kafka-schema-registry) · 10 tools
@@ -291,7 +291,7 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `remove_container` | `DELETE /api/services/{name}/accounts/{account}/containers/{container}` | service, account, container | — | Removes a container and its objects; says how many went with it. The seed is not changed, so a reset brings them back. |
 | `delete_account` | `DELETE /api/services/{name}/accounts/{account}` | service, account | — | Deletes an account, its objects and links (people confirm on the screen; agents do not). Also for messaging: service = azure-service-bus \| rabbitmq (accounts are namespaces). |
 
-## Messaging (Service Bus, RabbitMQ, ActiveMQ)
+## Messaging (Service Bus, RabbitMQ, ActiveMQ, Event Hubs)
 
 | Tool | HTTP | Required | Optional | What it does |
 |---|---|---|---|---|
@@ -320,6 +320,12 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `set_activemq` | `PUT /api/activemq/settings` | — | users, refuse_login, drop_after, slow_dispatch, redeliver, fail_commits, max_redeliveries, individual_dlq, advisory_delivered, advisory_consumed, reset | ActiveMQ broker behaviour: users (name → password; empty: anyone logs in), refuse_login (every login fails with a SecurityException), drop_after (close the connection after N dispatched messages), slow_dispatch (wait before each dispatch), redeliver (the next N acks are lost: those messages come again with a higher redelivery count), fail_commits (the next N transaction commits fail with a TransactionRolledBackException, or an XAException for XA, and roll back), max_redeliveries (past it a message goes to the dead-letter queue; default 6), individual_dlq (one DLQ per destination instead of ActiveMQ.DLQ), advisory_delivered / advisory_consumed (the MessageDelivered / MessageConsumed advisory topics, off by default as in ActiveMQ). Only what you pass changes; reset=true goes back to defaults. |
 | `cancel_activemq_scheduled` | `POST /api/activemq/scheduled/cancel` | — | seq, destination | Cancels scheduled ActiveMQ messages (AMQ_SCHEDULED_DELAY, _PERIOD/_REPEAT, _CRON) before they go out: one (seq) or all of a destination. They are kept as discarded. |
 | `wait_for_activemq_ack` | `GET /api/activemq/wait-ack` | destination | seq, count, timeout | Waits until the app acked: one message (seq), at least `count` messages of the destination, or (neither) everything sent to it: nothing pending or delivered and at least one acked. 408 after the timeout. |
+| `list_eventhubs` | `GET /api/eventhubs` | — | — | Azure Event Hubs namespaces (AMQP port, the SDKs in emulator mode): each event hub with its partitions (begin and last sequence number, last offset, last enqueued time, how many events it keeps), its consumer groups with the receivers reading each partition now (owner level/epoch, position) and the checkpoints the app wrote with BlobCheckpointStore, retention, the connection string (EntityPath per hub), the Kafka endpoint and what set_eventhubs provokes. |
+| `create_eventhub` | `POST /api/eventhubs/{namespace}/hubs` | namespace, hub | partitions, consumer_groups, retention | Creates an event hub (and its namespace when new) with partitions (default 4, can only grow), consumer groups ($Default is always there) and retention (default 24h, on the environment clock). Again on an existing hub: adds partitions and consumer groups, changes retention. |
+| `list_eventhub_events` | `GET /api/eventhubs/{namespace}/{hub}/events` | namespace, hub | partition, last | Events of an event hub, newest first, with partition, sequence number, offset, enqueued time (environment clock), partition key, properties, body and who sent it (the app over AMQP or Kafka, you, an agent). |
+| `eventhub_send` | `POST /api/eventhubs/{namespace}/{hub}/events` | namespace, hub | body, properties, partition_key, partition, events | Sends events to an event hub as another producer would; the app's receivers get them. One event (body) or a batch (events: [{body, properties, partition_key}]). partition_key is hashed to a partition as the service does; partition picks one. |
+| `set_eventhubs` | `PUT /api/eventhubs/{namespace}/settings` | namespace | server_busy, quota_exceeded, slow_sends, not_found, steal_owner, drop_connections, any_key, reset | Event Hubs provocations for a namespace: server_busy (the next N sends get ServerBusy, which the SDKs retry), quota_exceeded (the next N sends get QuotaExceeded), slow_sends (wait before each send is accepted), not_found (hubs that answer 'entity not found' while listed), steal_owner (the receivers of a hub, or all with true, are disconnected as by a higher epoch: OwnershipLost / link stolen), drop_connections (closes every AMQP connection of the namespace now; the SDKs reconnect), any_key. Only what you pass changes; reset=true goes back to normal. |
+| `wait_for_eventhub_event` | `GET /api/eventhubs/{namespace}/{hub}/wait` | namespace, hub | where, text, partition, since, timeout | Waits for the first event the app sent (over AMQP or Kafka, not you or an agent) to an event hub that matches: properties or JSON body fields in `where`, text in the body, a partition. 408 after the timeout. |
 
 ## Identity (OIDC, OAuth2, SAML, LDAP, Bot Framework)
 

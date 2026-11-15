@@ -110,6 +110,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/whatsapp/number") view=whatsapp::number::Number/>
                     <Route path=path!("/queues") view=|| view! { <messaging::Area><messaging::messages::Messages/></messaging::Area> }/>
                     <Route path=path!("/queues/activemq") view=messaging::activemq::ActiveMq/>
+                    <Route path=path!("/queues/eventhubs") view=messaging::eventhubs::EventHubs/>
                     <Route path=path!("/queues/subscriptions") view=|| view! { <messaging::Area><messaging::subscriptions::Subscriptions/></messaging::Area> }/>
                     <Route path=path!("/queues/dead-letter") view=|| view! { <messaging::Area><messaging::messages::Messages dlq=true/></messaging::Area> }/>
                     <Route path=path!("/queues/consumers") view=|| view! { <messaging::Area><messaging::consumers::Consumers/></messaging::Area> }/>

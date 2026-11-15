@@ -33,6 +33,9 @@ use tokio::{
 
 use crate::{broker, config};
 
+/// Event Hubs links, $cbs and $management on these connections.
+mod eventhubs;
+
 type Tx = mpsc::UnboundedSender<Vec<u8>>;
 
 // ---------------------------------------------------------------- frames
@@ -279,6 +282,20 @@ fn incoming(c: &broker::Claimed) -> Message<Body<Value>> {
     }
 }
 
+/// An event that did not come over AMQP (Kafka, the tools) as the AMQP message receivers get.
+pub fn kafka_message(body: &[u8], props: &Map<String, serde_json::Value>) -> Vec<u8> {
+    let app: OrderedMap<String, SimpleValue> = props.iter().map(|(k, v)| (k.clone(), json_sv(v))).collect();
+    encode(Message {
+        header: None,
+        delivery_annotations: None,
+        message_annotations: None,
+        properties: None,
+        application_properties: if app.iter().next().is_some() { Some(ApplicationProperties(app)) } else { None },
+        body: Body::Data(Batch::new(vec![Data(Binary::from(body.to_vec()))])),
+        footer: None,
+    })
+}
+
 fn encode(m: Message<Body<Value>>) -> Vec<u8> {
     serde_amqp::to_vec(&Serializable(m)).unwrap_or_default()
 }
@@ -300,6 +317,12 @@ enum Node {
     Mgmt(String),
     /// Where answers to requests go (the app's reply address).
     Reply(String),
+    /// Event Hubs: events to a hub (or one of its partitions).
+    EhSend(String, Option<u32>),
+    /// Event Hubs: a receiver on a consumer group's partition (its task sends).
+    EhRecv,
+    /// Event Hubs: requests to $management.
+    EhMgmt,
 }
 
 struct Link {
@@ -330,6 +353,8 @@ struct Partial {
     delivery_id: u32,
     settled: bool,
     payload: Vec<u8>,
+    /// 0, or 0x80013700 for a batch.
+    format: u32,
 }
 
 struct State {
@@ -341,6 +366,8 @@ struct State {
     out: HashMap<(u16, u32), (u32, String)>,
     partial: HashMap<(u16, u32), Partial>,
     max_frame: usize,
+    /// An Event Hubs connection: environment and namespace.
+    eh: Option<(Ctx, String)>,
 }
 
 struct Conn {
@@ -350,6 +377,8 @@ struct Conn {
     tx: Tx,
     st: Mutex<State>,
     authed: Mutex<bool>,
+    /// Closes the connection (Event Hubs drop_connections).
+    kill: Arc<Notify>,
 }
 
 impl Conn {
@@ -498,7 +527,9 @@ pub async fn serve(envs: Envs, sock: crate::amqp::Io, remote: String, header: [u
         _ => "amqp".into(),
     };
     let client = format!("{product} :{}", remote.rsplit(':').next().unwrap_or(""));
-    let found = open.hostname.as_deref().and_then(|h| resolve(&envs, h));
+    // An Event Hubs namespace named by the host is taken first: no Service Bus one is made for it.
+    let eh = open.hostname.as_deref().and_then(|h| crate::eventhubs::resolve(&envs, h));
+    let found = if eh.is_some() { None } else { open.hostname.as_deref().and_then(|h| resolve(&envs, h)) };
     if let Some((_, n)) = &found {
         match n.behaviour.reachability.as_str() {
             "refuse" => return,
@@ -519,9 +550,13 @@ pub async fn serve(envs: Envs, sock: crate::amqp::Io, remote: String, header: [u
         client: client.clone(),
         remote: remote.clone(),
         tx: tx.clone(),
-        st: Mutex::new(State { ctx: found.as_ref().map(|f| f.0.clone()), ns: found.as_ref().map(|f| f.1.clone()), sessions: HashMap::new(), links: HashMap::new(), out: HashMap::new(), partial: HashMap::new(), max_frame }),
+        st: Mutex::new(State { ctx: found.as_ref().map(|f| f.0.clone()), ns: found.as_ref().map(|f| f.1.clone()), sessions: HashMap::new(), links: HashMap::new(), out: HashMap::new(), partial: HashMap::new(), max_frame, eh: None }),
         authed: Mutex::new(false),
+        kill: Arc::new(Notify::new()),
     });
+    if let Some((c, n)) = &eh {
+        eventhubs::set(&conn, c, &n.namespace);
+    }
     if let Some((ctx, _)) = &found {
         ctx.live.seen(client.split(" :").next().unwrap_or(&client), "Service Bus");
     }
@@ -537,8 +572,16 @@ pub async fn serve(envs: Envs, sock: crate::amqp::Io, remote: String, header: [u
             }
         }
     });
+    let kill = conn.kill.clone();
     let reason = loop {
-        let Some((kind, ch, body)) = read_frame(&mut r).await else { break "connection closed by the client" };
+        let next = tokio::select! {
+            f = read_frame(&mut r) => f,
+            _ = kill.notified() => {
+                conn.send(perf(0, &Performative::Close(Close { error: Some(err("amqp:connection:forced", "The connection was closed by Stuntman (set_eventhubs drop_connections).")) })));
+                break "connection dropped by Stuntman";
+            }
+        };
+        let Some((kind, ch, body)) = next else { break "connection closed by the client" };
         if kind != 0 || body.is_empty() {
             continue;
         }
@@ -548,6 +591,7 @@ pub async fn serve(envs: Envs, sock: crate::amqp::Io, remote: String, header: [u
         }
     };
     hb.abort();
+    crate::eventhubs::conn_closed(&conn.remote);
     // Links die with the connection: consumers close; Service Bus keeps their locks until they expire.
     let links: Vec<(String, Arc<Notify>)> = conn.st.lock().unwrap().links.drain().filter(|(_, l)| !l.consumer.is_empty()).map(|(_, l)| (l.consumer, l.wake)).collect();
     if let Some((ctx, _)) = conn.ctx_ns() {
@@ -661,6 +705,9 @@ async fn attach(conn: &Arc<Conn>, ch: u16, a: Attach) {
         _ => None,
     }).unwrap_or_default();
     let source_addr = a.source.as_ref().and_then(|s| s.address.clone()).unwrap_or_default();
+    if eventhubs::attach(conn, ch, &a, &target_addr, &source_addr).await {
+        return;
+    }
     // A namespace not named by the host comes from the first address that carries one.
     if conn.ctx_ns().is_none() {
         for addr in [&target_addr, &source_addr] {
@@ -876,7 +923,7 @@ async fn transfer_in(conn: &Arc<Conn>, ch: u16, t: Transfer, payload: Vec<u8>) {
     }
     let whole = {
         let mut g = conn.st.lock().unwrap();
-        let p = g.partial.entry(key).or_insert(Partial { handle: t.handle.0, delivery_id: t.delivery_id.unwrap_or(0), settled: t.settled.unwrap_or(false), payload: Vec::new() });
+        let p = g.partial.entry(key).or_insert(Partial { handle: t.handle.0, delivery_id: t.delivery_id.unwrap_or(0), settled: t.settled.unwrap_or(false), payload: Vec::new(), format: t.message_format.unwrap_or(0) });
         if let Some(d) = t.delivery_id {
             p.delivery_id = d;
         }
@@ -944,6 +991,11 @@ async fn transfer_in(conn: &Arc<Conn>, ch: u16, t: Transfer, payload: Vec<u8>) {
             reply_state(conn, ch, p.delivery_id, p.settled, DeliveryState::Accepted(Accepted {}));
             management(conn, ch, &entity, msg).await;
         }
+        Node::EhSend(hub, part) => eventhubs::publish(conn, ch, &p, msg, &hub, part).await,
+        Node::EhMgmt => {
+            reply_state(conn, ch, p.delivery_id, p.settled, DeliveryState::Accepted(Accepted {}));
+            eventhubs::management(conn, ch, msg).await;
+        }
         _ => {}
     }
 }
@@ -968,7 +1020,9 @@ fn respond(conn: &Conn, ch: u16, req: &Message<Body<Value>>, status: i32, descri
     let reply_to = req.properties.as_ref().and_then(|p| p.reply_to.clone()).unwrap_or_default();
     let handle = {
         let g = conn.st.lock().unwrap();
-        g.links.iter().find(|((c, _), l)| *c == ch && matches!(&l.node, Node::Reply(t) if *t == reply_to)).map(|((_, h), _)| *h)
+        // No reply-to (pyamqp): the reply link of the node asked, $cbs or $management.
+        let hint = if !reply_to.is_empty() { reply_to.clone() } else if app_prop(req, "operation").as_deref() == Some("put-token") { "$cbs".into() } else { "$management".into() };
+        g.links.iter().find(|((c, _), l)| *c == ch && matches!(&l.node, Node::Reply(t) if *t == reply_to || (reply_to.is_empty() && t.ends_with(&hint)))).map(|((_, h), _)| *h)
             .or_else(|| g.links.iter().find(|((c, _), l)| *c == ch && matches!(&l.node, Node::Reply(_))).map(|((_, h), _)| *h))
     };
     let Some(handle) = handle else { return };
@@ -1016,18 +1070,20 @@ fn pct_decode(s: &str) -> String {
 
 /// A SAS token "SharedAccessSignature sr=…&sig=…&se=…&skn=…" checked against a policy key.
 pub fn sas_ok(n: &config::Namespace, ctx: &Ctx, token: &str) -> bool {
+    sas_valid(token, |skn| n.access.policies.contains_key(skn).then(|| config::key_value(ctx, &n.namespace, skn)))
+}
+
+/// A SAS token signed with the key `key_of` gives for its policy (skn), not expired.
+pub fn sas_valid(token: &str, key_of: impl Fn(&str) -> Option<String>) -> bool {
     use base64::{engine::general_purpose::STANDARD as B64, Engine};
     use hmac::{Hmac, Mac};
     let t = token.trim_start_matches("SharedAccessSignature").trim();
     let kv: HashMap<&str, &str> = t.split('&').filter_map(|p| p.split_once('=')).collect();
     let (Some(sr), Some(sig), Some(se), Some(skn)) = (kv.get("sr"), kv.get("sig"), kv.get("se"), kv.get("skn")) else { return false };
-    if !n.access.policies.contains_key(*skn) {
-        return false;
-    }
+    let Some(key) = key_of(skn) else { return false };
     if se.parse::<i64>().map(|e| e * 1000 < util::now_ms()).unwrap_or(true) {
         return false;
     }
-    let key = config::key_value(ctx, &n.namespace, skn);
     let mut m = Hmac::<sha2::Sha256>::new_from_slice(key.as_bytes()).unwrap();
     m.update(format!("{sr}\n{se}").as_bytes());
     B64.encode(m.finalize().into_bytes()) == pct_decode(sig)
@@ -1035,6 +1091,9 @@ pub fn sas_ok(n: &config::Namespace, ctx: &Ctx, token: &str) -> bool {
 
 async fn cbs(conn: &Arc<Conn>, ch: u16, m: Message<Body<Value>>) {
     let audience = app_prop(&m, "name").unwrap_or_default();
+    if eventhubs::cbs(conn, ch, &m, &audience) {
+        return;
+    }
     if conn.ctx_ns().is_none() {
         if let Some((c, n)) = resolve(&conn.envs, &host_of(&audience)) {
             c.live.seen(conn.client.split(" :").next().unwrap_or(&conn.client), "Service Bus");

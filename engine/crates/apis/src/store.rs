@@ -23,6 +23,9 @@ CREATE TABLE IF NOT EXISTS api_state(service TEXT NOT NULL, collection TEXT NOT 
 CREATE TABLE IF NOT EXISTS api_wait(service TEXT NOT NULL, route TEXT NOT NULL, key TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY(service, route, key));
 CREATE TABLE IF NOT EXISTS api_force_log(seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, service TEXT NOT NULL, answer TEXT NOT NULL,
   route TEXT NOT NULL DEFAULT '', count INTEGER, until INTEGER, by_who TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS api_scheduled(seq INTEGER PRIMARY KEY AUTOINCREMENT, due INTEGER NOT NULL, job TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS api_idem(service TEXT NOT NULL, key TEXT NOT NULL, hash TEXT NOT NULL, status INTEGER NOT NULL, headers TEXT NOT NULL,
+  body BLOB NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(service, key));
 CREATE TABLE IF NOT EXISTS api_force(service TEXT PRIMARY KEY, answer TEXT NOT NULL, route TEXT NOT NULL DEFAULT '', left INTEGER, until INTEGER,
   by_who TEXT NOT NULL, at INTEGER NOT NULL);
 ";
@@ -357,4 +360,64 @@ mod t {
         assert!(!force_applies("POST /v", "POST /token", true));
         assert!(!force_applies("POST /token", "POST /v", false));
     }
+}
+
+/// A webhook kept until the environment's clock reaches `due` (A10c).
+pub async fn schedule(ctx: &Ctx, due: i64, job: Value) -> Result<(), ApiError> {
+    ctx.db.call(move |cn| cn.execute("INSERT INTO api_scheduled(due, job) VALUES(?1,?2)", params![due, job.to_string()]).map(|_| ())).await?;
+    ctx.live.send("apis.scheduled", "", "updated");
+    Ok(())
+}
+
+/// Takes the jobs whose time has come.
+pub async fn take_due(ctx: &Ctx, now: i64) -> Result<Vec<Value>, ApiError> {
+    let v: Vec<Value> = ctx
+        .db
+        .call(move |cn| {
+            let mut st = cn.prepare("SELECT job FROM api_scheduled WHERE due<=?1 ORDER BY due, seq")?;
+            let v = st.query_map([now], |r| r.get::<_, String>(0))?.filter_map(|x| x.ok()).filter_map(|t| serde_json::from_str(&t).ok()).collect::<Vec<Value>>();
+            cn.execute("DELETE FROM api_scheduled WHERE due<=?1", [now])?;
+            Ok(v)
+        })
+        .await?;
+    if !v.is_empty() {
+        ctx.live.send("apis.scheduled", "", "updated");
+    }
+    Ok(v)
+}
+
+/// What waits to be sent: [{due, url, event, service}].
+pub async fn scheduled(ctx: &Ctx) -> Result<Vec<Value>, ApiError> {
+    ctx.db
+        .call(|cn| {
+            let mut st = cn.prepare("SELECT due, job FROM api_scheduled ORDER BY due, seq LIMIT 200")?;
+            let v = st
+                .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+                .filter_map(|x| x.ok())
+                .map(|(d, t)| {
+                    let j: Value = serde_json::from_str(&t).unwrap_or(Value::Null);
+                    json!({"due": d, "url": j["send"]["url"], "event": j["send"]["event"], "call": j["call"]})
+                })
+                .collect();
+            Ok(v)
+        })
+        .await
+}
+
+pub async fn idem_get(ctx: &Ctx, service: &str, key: &str, since: i64) -> Result<Option<(String, u16, Vec<(String, String)>, Vec<u8>)>, ApiError> {
+    let (s, k) = (service.to_string(), key.to_string());
+    ctx.db
+        .call(move |cn| {
+            cn.query_row("SELECT hash, status, headers, body FROM api_idem WHERE service=?1 AND key=?2 AND at>?3", params![s, k, since], |r| {
+                let h: String = r.get(2)?;
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u16, serde_json::from_str(&h).unwrap_or_default(), r.get::<_, Vec<u8>>(3)?))
+            })
+            .optional()
+        })
+        .await
+}
+
+pub async fn idem_put(ctx: &Ctx, service: &str, key: &str, hash: &str, status: u16, headers: &[(String, String)], body: &[u8]) -> Result<(), ApiError> {
+    let (s, k, h, hs, b) = (service.to_string(), key.to_string(), hash.to_string(), serde_json::to_string(headers).unwrap_or_default(), body.to_vec());
+    ctx.db.call(move |cn| cn.execute("INSERT OR REPLACE INTO api_idem VALUES(?1,?2,?3,?4,?5,?6,?7)", params![s, k, h, status as i64, hs, b, util::now_ms()]).map(|_| ())).await
 }

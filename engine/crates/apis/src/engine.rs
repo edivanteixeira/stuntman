@@ -56,6 +56,10 @@ pub struct Outcome {
     pub answered: Value,
     pub latency_ms: u64,
     pub scope: Map<String, Value>,
+    /// A streamed answer (A10): each part after its wait, in ms.
+    pub parts: Vec<(u64, Vec<u8>)>,
+    /// The stream is cut on purpose after the parts: the connection breaks.
+    pub cut: bool,
 }
 
 fn caller(h: &BTreeMap<String, String>) -> String {
@@ -284,6 +288,11 @@ pub async fn run(ctx: &Ctx, p: &Plugin, r: &Route, params: Map<String, Value>, r
     sc.insert("caller".into(), json!(req.caller));
     sc.insert("client_cert".into(), json!(req.client_cert));
     sc.insert("auth".into(), Value::Null);
+    sc.insert("__now".into(), json!(stuntman_core::clock::now(ctx)));
+    if !r.graphql.is_empty() {
+        sc.insert("variables".into(), req.body.get("variables").cloned().unwrap_or(json!({})));
+        sc.insert("operation".into(), json!(r.graphql));
+    }
     // Sent fields, for the detail.
     let mut sent = Map::new();
     for f in &r.receive.body {
@@ -295,6 +304,7 @@ pub async fn run(ctx: &Ctx, p: &Plugin, r: &Route, params: Map<String, Value>, r
 
     // 1. Service limits and provoked answers come before the steps.
     let mut chosen: Option<String> = None;
+    let mut stream_force: Option<String> = None;
     if !dry && !svc.limits.rate.is_empty() && !rate_ok(&ctx.env, &svc.name, &svc.limits.rate) {
         chosen = Some("429".into());
         o.provoked = Some(format!("rate limit {}", svc.limits.rate));
@@ -308,7 +318,11 @@ pub async fn run(ctx: &Ctx, p: &Plugin, r: &Route, params: Map<String, Value>, r
     if chosen.is_none() && !dry {
         if let Ok(Some((a, by))) = store::take_force(ctx, &svc.name, &route_name, r.token).await {
             o.provoked = Some(format!("forced by {}", by.trim_start_matches("api:").trim_start_matches("mcp:")));
-            chosen = Some(a);
+            if a == "cut" || a == "slow" {
+                stream_force = Some(a);
+            } else {
+                chosen = Some(a);
+            }
         }
     }
     if chosen.is_none() && !r.fail.is_empty() {
@@ -583,6 +597,9 @@ pub async fn run(ctx: &Ctx, p: &Plugin, r: &Route, params: Map<String, Value>, r
             o.body = body;
             o.answered = answered;
             o.answer = a.name.clone();
+            if !a.stream.is_empty() {
+                stream_parts(&mut o, a, &sc, stream_force.as_deref());
+            }
             o.sentence = if a.sentence.is_empty() { format!("{m} {} → {}", req.path, a.name) } else { expr::render(&a.sentence, &sc).unwrap_or_else(|e| format!("(sentence: {e})")) };
             steps.push(json!({"step": "respond", "text": format!("{} {}  ·  latency {} ms", a.name, status, o.latency_ms), "ok": status < 400}));
         }
@@ -608,6 +625,66 @@ pub async fn run(ctx: &Ctx, p: &Plugin, r: &Route, params: Map<String, Value>, r
     o.scope = sc;
     o.steps = steps;
     o
+}
+
+/// The parts of a streamed answer, rendered; `force` cut keeps half and breaks the connection,
+/// slow waits 2 s more before each part.
+pub fn stream_parts(o: &mut Outcome, a: &Answer, sc: &Map<String, Value>, force: Option<&str>) {
+    let fmt = if a.stream_format.is_empty() { "sse" } else { a.stream_format.as_str() };
+    let mut parts = vec![];
+    for pt in &a.stream {
+        let data = expr::render(&pt.data, sc).unwrap_or_else(|e| format!("template error: {e}"));
+        let bytes = match fmt {
+            "sse" => {
+                let mut t = String::new();
+                if !pt.event.is_empty() {
+                    t.push_str(&format!("event: {}\n", pt.event));
+                }
+                for l in data.lines() {
+                    t.push_str(&format!("data: {l}\n"));
+                }
+                if data.is_empty() {
+                    t.push_str("data: \n");
+                }
+                t.push('\n');
+                t
+            }
+            "ndjson" => format!("{}\n", data.replace('\n', " ")),
+            _ => data,
+        };
+        let wait = stuntman_core::util::parse_ms(&pt.after).unwrap_or(0) + if force == Some("slow") { 2000 } else { 0 };
+        parts.push((wait, bytes.into_bytes()));
+    }
+    if force == Some("cut") {
+        parts.truncate((parts.len() / 2).max(1));
+        o.cut = true;
+    }
+    o.headers.retain(|(k, _)| k != "content-type");
+    o.headers.push(("content-type".into(), match fmt { "sse" => "text/event-stream", "ndjson" => "application/x-ndjson", _ => "text/plain; charset=utf-8" }.into()));
+    o.headers.push(("cache-control".into(), "no-cache".into()));
+    o.body = parts.iter().flat_map(|p| p.1.clone()).collect();
+    o.parts = parts;
+}
+
+/// A GraphQL request names this operation: operationName, the operation's name in the query, or
+/// the first field it selects ("{ account(id: 1) { … } }" → account).
+pub fn gql_matches(body: &Value, name: &str) -> bool {
+    if body.get("operationName").and_then(|v| v.as_str()) == Some(name) {
+        return true;
+    }
+    let Some(q) = body.get("query").and_then(|v| v.as_str()) else { return false };
+    let q: String = q.lines().map(|l| l.split('#').next().unwrap_or("")).collect::<Vec<_>>().join(" ");
+    let head = q[..q.find('{').unwrap_or(q.len())].trim();
+    let mut w = head.split(|c: char| c.is_whitespace() || c == '(' );
+    if matches!(w.next(), Some("query" | "mutation" | "subscription")) && w.next() == Some(name) {
+        return true;
+    }
+    let Some(i) = q.find('{') else { return false };
+    let rest = q[i + 1..].trim_start();
+    let id: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+    let after = rest[id.len()..].trim_start();
+    let field = if let Some(a) = after.strip_prefix(':') { a.trim_start().chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect() } else { id };
+    field == name
 }
 
 /// Status, headers, body and the first answered fields of a named answer.
@@ -666,38 +743,128 @@ pub fn check_answer(r: &Route, a: &Answer, p: &Plugin) -> Option<String> {
     None
 }
 
-/// Webhooks of a route, after responding.
-pub fn send_webhooks(ctx: &Ctx, call_id: &str, r: &Route, sc: Map<String, Value>) {
-    for s in r.send.clone() {
-        let (ctx, id, sc) = (ctx.clone(), call_id.to_string(), sc.clone());
-        tokio::spawn(async move {
-            if let Some(d) = util::parse_ms(&s.delay) {
-                tokio::time::sleep(Duration::from_millis(d)).await;
+/// Webhooks of a route, after responding: at once, or kept until the environment's clock reaches
+/// their time (delay, A10c).
+pub fn send_webhooks(ctx: &Ctx, call_id: &str, p: &Plugin, r: &Route, sc: Map<String, Value>) {
+    let wh = p.service.webhooks.clone();
+    let prov = wh.as_ref().map(|w| w.provoke.clone()).unwrap_or_default();
+    let source = if p.service.base_url.is_empty() { format!("/{}", p.service.name) } else { p.service.base_url.clone() };
+    let n = r.send.len();
+    for (i, s) in r.send.iter().enumerate() {
+        let mut delay = util::parse_ms(&s.delay).unwrap_or(0);
+        if prov.iter().any(|x| x == "out_of_order") && n > 1 && i == 0 {
+            delay += 2000;
+        }
+        let times = if prov.iter().any(|x| x == "twice") { 2 } else { 1 };
+        let job = json!({"call": call_id, "send": s, "webhooks": wh, "scope": sc, "source": source});
+        for _ in 0..times {
+            if delay == 0 {
+                let (ctx, job) = (ctx.clone(), job.clone());
+                tokio::spawn(async move { fire(&ctx, job).await });
+            } else {
+                let (ctx, job, due) = (ctx.clone(), job.clone(), stuntman_core::clock::now(ctx) + delay as i64);
+                tokio::spawn(async move {
+                    let _ = store::schedule(&ctx, due, job).await;
+                });
             }
-            let url = expr::render(&s.url, &sc).unwrap_or_default();
-            let body = expr::render(&s.body, &sc).unwrap_or_default();
-            // A SOAP callback: the body is the payload, inside an envelope of the call's version.
-            if !s.operation.is_empty() {
-                let v = sc.get("soap_version").and_then(|v| v.as_str()).unwrap_or("1.2").to_string();
-                let t0 = std::time::Instant::now();
-                let (status, err) = match crate::soap::post(&ctx, &url, &v, &s.operation, &body).await { Ok((st, _)) => (Some(st), String::new()), Err(e) => (None, e) };
-                let _ = store::add_send(&ctx, &id, json!({"at": util::now_ms(), "url": url, "operation": s.operation, "status": status, "error": err, "ms": t0.elapsed().as_millis() as i64})).await;
-                return;
-            }
-            let mut req = ctx.http.request(s.method.parse().unwrap_or(reqwest::Method::POST), &url).header("content-type", "application/json").body(body.clone());
-            if !s.secret.is_empty() {
-                use hmac::Mac;
-                let key = util::resolve_secret(&s.secret, &ctx.data_dir);
-                let mut m = hmac::Hmac::<sha2::Sha256>::new_from_slice(key.as_bytes()).unwrap();
-                m.update(body.as_bytes());
-                req = req.header(if s.header.is_empty() { "X-Signature" } else { s.header.as_str() }, hex::encode(m.finalize().into_bytes()));
-            }
-            let t0 = std::time::Instant::now();
-            let r = req.send().await;
-            let (status, err) = match &r { Ok(x) => (Some(x.status().as_u16()), String::new()), Err(e) => (None, if e.is_connect() { "connection refused".into() } else { e.to_string() }) };
-            let _ = store::add_send(&ctx, &id, json!({"at": util::now_ms(), "url": url, "status": status, "error": err, "ms": t0.elapsed().as_millis() as i64})).await;
-        });
+        }
     }
+}
+
+/// Sends whose time has come on the environment's clock.
+pub async fn fire_due(ctx: &Ctx) {
+    for job in store::take_due(ctx, stuntman_core::clock::now(ctx)).await.unwrap_or_default() {
+        let ctx = ctx.clone();
+        tokio::spawn(async move { fire(&ctx, job).await });
+    }
+}
+
+/// One webhook: rendered, signed in the service's format, sent, kept on the call.
+async fn fire(ctx: &Ctx, job: Value) {
+    let Ok(s) = serde_json::from_value::<plugin::Send>(job["send"].clone()) else { return };
+    let wh: Option<plugin::Webhooks> = serde_json::from_value(job["webhooks"].clone()).ok().flatten();
+    let sc: Map<String, Value> = job["scope"].as_object().cloned().unwrap_or_default();
+    let id = job["call"].as_str().unwrap_or("").to_string();
+    let url = expr::render(&s.url, &sc).unwrap_or_default();
+    let body = expr::render(&s.body, &sc).unwrap_or_default();
+    // A SOAP callback: the body is the payload, inside an envelope of the call's version.
+    if !s.operation.is_empty() {
+        let v = sc.get("soap_version").and_then(|v| v.as_str()).unwrap_or("1.2").to_string();
+        let t0 = std::time::Instant::now();
+        let (status, err) = match crate::soap::post(ctx, &url, &v, &s.operation, &body).await { Ok((st, _)) => (Some(st), String::new()), Err(e) => (None, e) };
+        let _ = store::add_send(ctx, &id, json!({"at": util::now_ms(), "url": url, "operation": s.operation, "status": status, "error": err, "ms": t0.elapsed().as_millis() as i64})).await;
+        return;
+    }
+    let w = wh.clone().unwrap_or_default();
+    let sign = if !s.sign.is_empty() { s.sign.clone() } else if wh.is_some() { w.sign.clone() } else if !s.secret.is_empty() { "hex".into() } else { String::new() };
+    let secret = util::resolve_secret(if s.secret.is_empty() { &w.secret } else { &s.secret }, &ctx.data_dir);
+    let header = if s.header.is_empty() { w.header.clone() } else { s.header.clone() };
+    let tol = if wh.is_some() { w.tolerance } else { 300 };
+    let mut headers: Vec<(String, String)> = vec![("content-type".into(), "application/json".into())];
+    for (k, v) in &s.headers {
+        headers.push((k.clone(), expr::render(v, &sc).unwrap_or_default()));
+    }
+    let evid = format!("evt_{}", util::uuid().replace('-', "")[..20].to_string());
+    headers.extend(sign_headers(&sign, &header, &secret, &body, stuntman_core::clock::now(ctx) / 1000, tol, &w.provoke, &s.event, job["source"].as_str().unwrap_or(""), &evid));
+    let mut req = ctx.http.request(s.method.parse().unwrap_or(reqwest::Method::POST), &url).body(body.clone());
+    for (k, v) in &headers {
+        req = req.header(k, v);
+    }
+    let t0 = std::time::Instant::now();
+    let r = req.send().await;
+    let (status, err) = match &r { Ok(x) => (Some(x.status().as_u16()), String::new()), Err(e) => (None, if e.is_connect() { "connection refused".into() } else { e.to_string() }) };
+    let _ = store::add_send(ctx, &id, json!({"at": util::now_ms(), "url": url, "status": status, "error": err, "ms": t0.elapsed().as_millis() as i64, "sign": sign, "event": s.event,
+        "provoked": w.provoke, "headers": headers.iter().filter(|(k, _)| k != "content-type").map(|(k, v)| json!([k, v])).collect::<Vec<_>>()})).await;
+}
+
+fn hmac256(key: &[u8], msg: &[u8]) -> Vec<u8> {
+    use hmac::Mac;
+    let mut m = hmac::Hmac::<sha2::Sha256>::new_from_slice(key).unwrap();
+    m.update(msg);
+    m.finalize().into_bytes().to_vec()
+}
+
+/// The signature headers of one webhook in a provider's format; `provoke` breaks them on purpose.
+#[allow(clippy::too_many_arguments)]
+pub fn sign_headers(sign: &str, header: &str, secret: &str, body: &str, ts: i64, tolerance: u32, provoke: &[String], event: &str, source: &str, id: &str) -> Vec<(String, String)> {
+    let has = |x: &str| provoke.iter().any(|p| p == x);
+    let ts = if has("old_timestamp") { ts - tolerance as i64 - 60 } else { ts };
+    let secret = if has("wrong_signature") { format!("{secret}-wrong") } else { secret.to_string() };
+    let h = |d: &str| if header.is_empty() { d.to_string() } else { header.to_string() };
+    let mut out: Vec<(String, String)> = vec![];
+    let skip = has("no_signature");
+    match sign {
+        "hex" if !skip => out.push((h("X-Signature"), hex::encode(hmac256(secret.as_bytes(), body.as_bytes())))),
+        "hex_ts" => {
+            out.push(("X-Webhook-Timestamp".into(), ts.to_string()));
+            if !skip {
+                out.push((h("X-Webhook-Signature"), hex::encode(hmac256(secret.as_bytes(), format!("{ts}.{body}").as_bytes()))));
+            }
+        }
+        "stripe" if !skip => out.push((h("Stripe-Signature"), format!("t={ts},v1={}", hex::encode(hmac256(secret.as_bytes(), format!("{ts}.{body}").as_bytes()))))),
+        "svix" => {
+            let key = secret.strip_prefix("whsec_").and_then(|k| B64.decode(k).ok()).unwrap_or_else(|| secret.as_bytes().to_vec());
+            let msg_id = format!("msg_{}", id.trim_start_matches("evt_"));
+            out.push(("svix-id".into(), msg_id.clone()));
+            out.push(("svix-timestamp".into(), ts.to_string()));
+            if !skip {
+                out.push((h("svix-signature"), format!("v1,{}", B64.encode(hmac256(&key, format!("{msg_id}.{ts}.{body}").as_bytes())))));
+            }
+        }
+        "github" if !skip => out.push((h("X-Hub-Signature-256"), format!("sha256={}", hex::encode(hmac256(secret.as_bytes(), body.as_bytes()))))),
+        "cloudevents" => {
+            out.push(("ce-specversion".into(), "1.0".into()));
+            out.push(("ce-type".into(), if event.is_empty() { "com.stuntman.event".into() } else { event.to_string() }));
+            out.push(("ce-source".into(), source.to_string()));
+            out.push(("ce-id".into(), id.to_string()));
+            out.push(("ce-time".into(), expr::iso(ts * 1000, None)));
+            if !skip && !secret.is_empty() && !header.is_empty() {
+                out.push((header.to_string(), hex::encode(hmac256(secret.as_bytes(), body.as_bytes()))));
+            }
+        }
+        _ => {}
+    }
+    out
 }
 
 /// Which plugin a request is for, and the path inside it.
@@ -828,16 +995,51 @@ pub async fn handle(State(envs): State<Envs>, mut req: Request) -> Response {
             return finish(&ctx, p, r.as_ref(), &label, &method, &path, &inner, &query, &headers, &rq, o, t0, kill).await;
         }
     }
-    let Some((r, params)) = p.routes.iter().find_map(|r| {
+    // A10b: the service as an MCP server.
+    if let Some(m) = &p.mcp {
+        if inner.trim_end_matches('/').eq_ignore_ascii_case(m.path.trim_end_matches('/')) {
+            let (r, o) = crate::mcp::serve(&ctx, p, m, &method, &rq).await;
+            let label = r.map(|r| format!("MCP {}", r.tool)).unwrap_or_else(|| "MCP".into());
+            return finish(&ctx, p, r, &label, &method, &path, &inner, &query, &headers, &rq, o, t0, kill).await;
+        }
+    }
+    // GraphQL routes first (they share a path and differ by operation), then the others.
+    let Some((r, params)) = p.routes.iter().filter(|r| !r.graphql.is_empty()).chain(p.routes.iter().filter(|r| r.graphql.is_empty())).find_map(|r| {
         let (m, pat) = r.method_path();
         if m != method && !(m == "GET" && method == "HEAD") {
+            return None;
+        }
+        if !r.graphql.is_empty() && !gql_matches(&rq.body, &r.graphql) {
             return None;
         }
         match_path_case(&pat, &inner, p.service.ignore_case).map(|pp| (r, pp))
     }) else {
         return unmatched(&ctx, &plugins, &p.service.name, &method, &inner, &host, rq).await;
     };
+    // A10c: a key seen before gets the first answer again; with another body, 409.
+    let idem = p.service.idempotency.as_ref().filter(|_| ["POST", "PUT", "PATCH", "DELETE"].contains(&method.as_str())).and_then(|i| headers.get(&i.header.to_lowercase()).map(|k| (i.clone(), k.clone())));
+    let hash = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&rq.raw_body));
+    if let Some((i, k)) = &idem {
+        let ttl = util::parse_ms(&i.ttl).unwrap_or(86_400_000) as i64;
+        if let Ok(Some((h, status, hs, body))) = store::idem_get(&ctx, &p.service.name, k, util::now_ms() - ttl).await {
+            let (m, pat) = r.method_path();
+            let o = if h == hash {
+                let mut hs: Vec<(String, String)> = hs;
+                hs.push(("idempotent-replayed".into(), "true".into()));
+                Outcome { status, headers: hs, body, answer: "replayed".into(), sentence: format!("{m} {pat}: replayed the first answer for {} {k}", i.header), provoked: None, ..Default::default() }
+            } else {
+                let (s, h, b) = status_answer(409, json!({"error": {"type": "idempotency_error", "message": format!("Keys for idempotent requests can only be used with the same parameters they were first used with. Try using a key other than '{k}'.")}}));
+                Outcome { status: s, headers: h, body: b, answer: "idempotency_conflict".into(), sentence: format!("{m} {pat}: {} {k} reused with another body (409)", i.header), ..Default::default() }
+            };
+            return finish(&ctx, p, None, &format!("{m} {pat}"), &method, &path, &inner, &query, &headers, &rq, o, t0, kill).await;
+        }
+    }
     let o = run(&ctx, p, r, params, &rq, false).await;
+    if let Some((_, k)) = &idem {
+        if o.status > 0 && o.status < 500 && o.network.is_none() {
+            let _ = store::idem_put(&ctx, &p.service.name, k, &hash, o.status, &o.headers, &o.body).await;
+        }
+    }
     if o.latency_ms > 0 {
         tokio::time::sleep(Duration::from_millis(o.latency_ms)).await;
     }
@@ -856,7 +1058,7 @@ async fn finish(ctx: &Ctx, p: &Plugin, r: Option<&Route>, route: &str, method: &
     log_call(ctx, p, &id, billable, route, method, path, inner, query, headers, rq, &o, t0).await;
     if let Some(r) = r {
         if o.status > 0 && o.status < 500 {
-            send_webhooks(ctx, &id, r, o.scope.clone());
+            send_webhooks(ctx, &id, p, r, o.scope.clone());
         }
     }
     respond(o, kill).await
@@ -892,6 +1094,36 @@ pub async fn respond(o: Outcome, kill: Option<Kill>) -> Response {
                 std::future::pending::<()>().await;
             }
             StatusCode::BAD_GATEWAY.into_response()
+        }
+        None if !o.parts.is_empty() => {
+            let cut = o.cut;
+            let st = futures::stream::unfold((o.parts.into_iter(), false), move |(mut it, done)| async move {
+                if done {
+                    return None;
+                }
+                match it.next() {
+                    Some((wait, b)) => {
+                        if wait > 0 {
+                            tokio::time::sleep(Duration::from_millis(wait)).await;
+                        }
+                        Some((Ok::<_, std::io::Error>(bytes::Bytes::from(b)), (it, false)))
+                    }
+                    None if cut => {
+                        // Let the parts sent so far reach the app before the connection breaks.
+                        tokio::time::sleep(Duration::from_millis(150)).await;
+                        Some((Err(std::io::Error::other("stream cut on purpose")), (it, true)))
+                    }
+                    None => None,
+                }
+            });
+            let mut resp = Response::new(Body::from_stream(st));
+            *resp.status_mut() = StatusCode::from_u16(o.status).unwrap_or(StatusCode::OK);
+            for (k, v) in o.headers {
+                if let (Ok(k), Ok(v)) = (HeaderName::try_from(k), HeaderValue::from_str(&v)) {
+                    resp.headers_mut().append(k, v);
+                }
+            }
+            resp
         }
         None => {
             let mut resp = Response::new(Body::from(o.body));

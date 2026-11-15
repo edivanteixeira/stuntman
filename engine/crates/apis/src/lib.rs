@@ -6,6 +6,7 @@ pub mod ca;
 pub mod catalog;
 pub mod engine;
 pub mod expr;
+pub mod mcp;
 pub mod openapi;
 pub mod record;
 pub mod pades;
@@ -82,6 +83,17 @@ impl Module for Apis {
         }
         let app = Router::new().fallback(engine::handle).with_state(envs.clone());
         tokio::spawn(stuntman_core::netserve::serve(self.port, app.clone(), "APIs", &BIND_ERROR));
-        tokio::spawn(tls::serve(self.tls_port, envs, app));
+        tokio::spawn(tls::serve(self.tls_port, envs.clone(), app));
+        // Webhooks kept for later go when the environment's clock reaches them (A10c).
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                for c in envs.all() {
+                    if !c.state.gone() {
+                        engine::fire_due(&c).await;
+                    }
+                }
+            }
+        });
     }
 }

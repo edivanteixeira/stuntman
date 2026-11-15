@@ -331,7 +331,7 @@ fn tz_offset(z: &str) -> Option<i64> {
     } * 3_600_000)
 }
 
-fn iso(ms: i64, offset: Option<i64>) -> String {
+pub fn iso(ms: i64, offset: Option<i64>) -> String {
     let local = ms + offset.unwrap_or(0);
     let (s, days) = ((local / 1000).rem_euclid(86_400), (local / 1000).div_euclid(86_400));
     let z = days + 719468;
@@ -381,8 +381,8 @@ fn call(name: &str, a: &[Value], sc: &Scope) -> Result<Value, String> {
         "uuid" => json!(stuntman_core::util::uuid()),
         // random_id(): 8 letters and digits, for ids that change on every call ("ch_{{ random_id() }}").
         "random_id" => json!(stuntman_core::util::uuid().replace('-', "")[..8].to_string()),
-        "now" => json!(iso(stuntman_core::util::now_ms(), None)),
-        "now_ms" => json!(stuntman_core::util::now_ms()),
+        "now" => json!(iso(clock(sc), None)),
+        "now_ms" => json!(clock(sc)),
         "matches" => json!(regex::Regex::new(&a.get(1).map(text).unwrap_or_default()).map(|r| r.is_match(&s0())).unwrap_or(false)),
         "json" => json!(serde_json::to_string(a.first().unwrap_or(&Value::Null)).unwrap_or_default()),
         // lookup("people", "cpf", body.cpf): the first row of a data table whose field equals the value.
@@ -560,6 +560,11 @@ fn filter(v: Value, f: &str, sc: &Scope) -> Result<Value, String> {
     })
 }
 
+/// The environment's time: `__now` in the scope (its clock, A10c), else real time.
+pub fn clock(sc: &Scope) -> i64 {
+    sc.get("__now").and_then(|v| v.as_i64()).unwrap_or_else(stuntman_core::util::now_ms)
+}
+
 /// Renders {{ expr | filter }} holes. Strings go in as they are (write the quotes in the template),
 /// numbers and booleans as JSON, lists and maps as JSON.
 pub fn render(tpl: &str, sc: &Scope) -> Result<String, String> {
@@ -571,7 +576,7 @@ pub fn render(tpl: &str, sc: &Scope) -> Result<String, String> {
         let inner = &rest[i + 2..i + j];
         let mut parts = split_pipes(inner).into_iter();
         let head = parts.next().unwrap_or_default();
-        let mut v = if head.trim() == "now" { json!(stuntman_core::util::now_ms()) } else { eval(&head, sc)? };
+        let mut v = if head.trim() == "now" { json!(clock(sc)) } else { eval(&head, sc)? };
         for f in parts {
             v = filter(v, &f, sc)?;
         }

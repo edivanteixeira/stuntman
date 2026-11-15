@@ -146,6 +146,97 @@ pub struct Service {
     /// Routes match whatever the case of the path ("Api/v2/PadesSignatures" and "api/v2/padessignatures").
     #[serde(default, skip_serializing_if = "is_false")]
     pub ignore_case: bool,
+    /// How the send steps of this service sign their webhooks (A10c).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhooks: Option<Webhooks>,
+    /// A request repeated with the same key gets the first answer again (A10c).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency: Option<Idempotency>,
+}
+
+/// Signing of the webhooks a service sends: hex (HMAC-SHA256 of the body, hex) | hex_ts (of
+/// "{timestamp}.{body}", with X-Webhook-Timestamp) | stripe (t=…,v1=…) | svix (svix-id,
+/// svix-timestamp, svix-signature v1,base64) | github (sha256=hex) | cloudevents (ce-* headers).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Webhooks {
+    #[serde(default = "hex_sign")]
+    pub sign: String,
+    /// The signature header (each format has its own default).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub header: String,
+    /// secret://name or a literal; svix secrets are "whsec_<base64>".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub secret: String,
+    /// Seconds the app should accept; old_timestamp goes past it.
+    #[serde(default = "s300")]
+    pub tolerance: u32,
+    /// On purpose, on every send while set: wrong_signature | old_timestamp | no_signature | twice | out_of_order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provoke: Vec<String>,
+}
+fn hex_sign() -> String {
+    "hex".into()
+}
+fn s300() -> u32 {
+    300
+}
+pub const SIGNS: [&str; 6] = ["hex", "hex_ts", "stripe", "svix", "github", "cloudevents"];
+pub const SIGN_PROVOKE: [&str; 5] = ["wrong_signature", "old_timestamp", "no_signature", "twice", "out_of_order"];
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Idempotency {
+    #[serde(default = "idem_header")]
+    pub header: String,
+    /// How long a key is kept: 24h.
+    #[serde(default = "h24")]
+    pub ttl: String,
+}
+fn idem_header() -> String {
+    "Idempotency-Key".into()
+}
+fn h24() -> String {
+    "24h".into()
+}
+
+/// The service is also an MCP server (A10b): JSON-RPC on `path` (Streamable HTTP); its tools are
+/// the routes that have `tool:`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Mcp {
+    #[serde(default = "mcp_path")]
+    pub path: String,
+    /// serverInfo.name (the service name when empty)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(default = "v100")]
+    pub version: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub instructions: String,
+    /// "" (open) | bearer (a token from this service's token route; else 401 with WWW-Authenticate)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub auth: String,
+    /// Answer as text/event-stream instead of application/json.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub sse: bool,
+}
+fn mcp_path() -> String {
+    "/mcp".into()
+}
+fn v100() -> String {
+    "1.0.0".into()
+}
+
+/// One part of a streamed answer: sent `after` the previous one.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Part {
+    /// "400ms", "1.2s"; empty: at once
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub after: String,
+    /// SSE event name (empty: none)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub event: String,
+    /// A template, like a body.
+    #[serde(default)]
+    pub data: String,
 }
 fn yours() -> String {
     "yours".into()
@@ -219,6 +310,15 @@ pub struct Send {
     /// A SOAP callback: the body is the payload, sent inside an envelope with this SOAPAction.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub operation: String,
+    /// Overrides service.webhooks.sign for this send (hex | hex_ts | stripe | svix | github | cloudevents).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sign: String,
+    /// The event type (CloudEvents ce-type; shown on the call).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub event: String,
+    /// More headers, templates: {token: "{{ data.tokens[0] }}"}.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
 }
 fn post() -> String {
     "POST".into()
@@ -279,6 +379,18 @@ pub struct Route {
     /// Response fields and their types (number, string, bool, object, array): answers are checked.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub schema: BTreeMap<String, String>,
+    /// GraphQL: the operation name, or the first field of the query, this route answers on its
+    /// path (POST /graphql). The scope gets `variables` and `operation`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub graphql: String,
+    /// MCP: this route is a tool of the service's MCP server; `body` is the tool's arguments.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tool: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// The tool's inputSchema (JSON Schema); arguments that break it get isError.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<Value>,
     /// A step Stuntman runs in code instead of let/decide (restpki.start…): it picks one of the
     /// plugin's answers and gives it {{ result }} to render and {{ call }} for the sentence.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -287,6 +399,9 @@ pub struct Route {
 
 impl Route {
     pub fn method_path(&self) -> (String, String) {
+        if self.route.is_empty() && !self.tool.is_empty() {
+            return ("MCP".into(), self.tool.clone());
+        }
         if self.route.is_empty() && !self.operation.is_empty() {
             return ("SOAP".into(), self.operation.clone());
         }
@@ -323,6 +438,15 @@ pub struct Answer {
     /// A SOAP fault instead of a response; the body (if any) is its detail.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fault: Option<Fault>,
+    /// Sent in parts instead of `body` (A10): server-sent events, NDJSON lines or plain chunks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stream: Vec<Part>,
+    /// sse (default) | ndjson | chunks
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stream_format: String,
+    /// MCP: a JSON-RPC error (-32602…) instead of a tool result; the body is its message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rpc_error: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -572,10 +696,13 @@ pub struct Plugin {
     /// Recording the real provider (A9).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record: Option<Record>,
+    /// The service is an MCP server too (A10b).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<Mcp>,
 }
 
 /// Generic answers every service has (A1 "next calls answer", A3 route `fail`).
-pub const GENERIC: [(&str, &str); 8] = [("reset", "Connection reset"), ("empty", "Empty reply"), ("timeout", "Timeout (no answer)"), ("401", "401 Unauthorized, empty body"), ("403", "403 Forbidden, empty body"), ("500", "500 Internal error"), ("503", "503 Unavailable"), ("html", "HTML error page with 200")];
+pub const GENERIC: [(&str, &str); 12] = [("session_expired", "MCP: the session is gone (404)"), ("cut", "The stream stops halfway"), ("slow", "2 s between stream parts"), ("429", "429 Too many requests"), ("reset", "Connection reset"), ("empty", "Empty reply"), ("timeout", "Timeout (no answer)"), ("401", "401 Unauthorized, empty body"), ("403", "403 Forbidden, empty body"), ("500", "500 Internal error"), ("503", "503 Unavailable"), ("html", "HTML error page with 200")];
 
 pub fn dir(ctx: &Ctx) -> std::path::PathBuf {
     ctx.path("apis")
@@ -670,10 +797,10 @@ pub fn validate(p: &Plugin, t: &str) -> Vec<Value> {
     }
     for r in p.routes.iter().chain(p.operations.iter()) {
         let (m, path) = r.method_path();
-        if !(r.route.is_empty() && !r.operation.is_empty()) && (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"].contains(&m.as_str()) || !path.starts_with('/')) {
+        if !(r.route.is_empty() && (!r.operation.is_empty() || !r.tool.is_empty())) && (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"].contains(&m.as_str()) || !path.starts_with('/')) {
             err(format!("route “{}”: METHOD /path", r.route), &r.route);
         }
-        if !seen.insert(format!("{m} {path}")) {
+        if !seen.insert(format!("{m} {path} {}", r.graphql)) {
             err(format!("“{}” is there twice", if !r.route.is_empty() { &r.route } else { &r.operation }), if !r.route.is_empty() { &r.route } else { &r.operation });
         }
         for (k, e) in &r.lets {
@@ -752,6 +879,33 @@ pub fn validate(p: &Plugin, t: &str) -> Vec<Value> {
         for s in &r.send {
             if let Err(x) = expr::check_template(&s.url).and_then(|_| expr::check_template(&s.body)) {
                 err(format!("send: {x}"), &s.url);
+            }
+            if !s.sign.is_empty() && !SIGNS.contains(&s.sign.as_str()) {
+                err(format!("send.sign: {}", SIGNS.join(" | ")), "sign:");
+            }
+        }
+        if !r.tool.is_empty() && p.mcp.is_none() {
+            err(format!("tool “{}” needs an mcp: block", r.tool), &r.tool);
+        }
+    }
+    if let Some(w) = &p.service.webhooks {
+        if !SIGNS.contains(&w.sign.as_str()) {
+            err(format!("webhooks.sign: {}", SIGNS.join(" | ")), "sign:");
+        }
+        for x in w.provoke.iter().filter(|x| !SIGN_PROVOKE.contains(&x.as_str())) {
+            err(format!("webhooks.provoke “{x}”: {}", SIGN_PROVOKE.join(" | ")), x);
+        }
+    }
+    for a in &p.answers {
+        if !["", "sse", "ndjson", "chunks"].contains(&a.stream_format.as_str()) {
+            err("stream_format: sse | ndjson | chunks".into(), "stream_format:");
+        }
+        for pt in &a.stream {
+            if let Err(x) = expr::check_template(&pt.data) {
+                err(format!("answer {} stream: {x}", a.name), &pt.data);
+            }
+            if !pt.after.is_empty() && stuntman_core::util::parse_ms(&pt.after).is_none() {
+                err(format!("answer {} stream after: “{}” (400ms, 1.2s)", a.name, pt.after), &pt.after);
             }
         }
     }

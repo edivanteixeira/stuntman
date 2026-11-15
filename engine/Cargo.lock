@@ -3847,7 +3847,9 @@ version = "0.3.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "bytes",
  "flate2",
+ "futures",
  "hex",
  "hmac 0.12.1",
  "hyper",

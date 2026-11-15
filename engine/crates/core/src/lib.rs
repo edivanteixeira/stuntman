@@ -5,6 +5,7 @@
 //! background listeners (an SMTP port, a queue port…) and nothing else. The server wires them.
 
 pub mod callback;
+pub mod clock;
 pub mod env;
 pub mod extract;
 pub mod force;

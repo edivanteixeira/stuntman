@@ -600,6 +600,42 @@ fn service_tools() -> Vec<Tool> {
                 let f = v.as_f64().or_else(|| v.as_str().and_then(|s| s.trim_end_matches('%').trim().parse::<f64>().ok().map(|n| if s.contains('%') { n / 100.0 } else { n }))).ok_or_else(|| ApiError::bad("fail_share: 0 to 1, or 50%"))?;
                 sv.limits.fail_share = if f > 1.0 { f / 100.0 } else { f };
             }
+            if let Some(x) = a.str("webhook_signing") {
+                if x == "none" {
+                    sv.webhooks = None;
+                } else {
+                    if !plugin::SIGNS.contains(&x.as_str()) {
+                        return Err(ApiError::bad(format!("webhook_signing: {} | none", plugin::SIGNS.join(" | "))));
+                    }
+                    sv.webhooks.get_or_insert_with(|| plugin::Webhooks { tolerance: 300, ..Default::default() }).sign = x;
+                }
+            }
+            if let Some(w) = sv.webhooks.as_mut() {
+                if let Some(x) = a.str("webhook_secret") {
+                    w.secret = x;
+                }
+                if let Some(x) = a.str("webhook_header") {
+                    w.header = x;
+                }
+                if let Some(x) = a.get("webhook_tolerance").and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| util::parse_ms(s).map(|m| m / 1000)))) {
+                    w.tolerance = x as u32;
+                }
+                if let Some(v) = a.get("webhook_provoke") {
+                    let list: Vec<String> = match v { Value::Array(x) => x.iter().filter_map(|y| y.as_str().map(String::from)).collect(), Value::String(x) => x.split(',').map(|y| y.trim().to_string()).filter(|y| !y.is_empty() && y != "none").collect(), _ => vec![] };
+                    if let Some(bad) = list.iter().find(|x| !plugin::SIGN_PROVOKE.contains(&x.as_str())) {
+                        return Err(ApiError::bad(format!("webhook_provoke “{bad}”: {}", plugin::SIGN_PROVOKE.join(" | "))));
+                    }
+                    w.provoke = list;
+                }
+            }
+            if let Some(v) = a.get("idempotency") {
+                sv.idempotency = match v {
+                    Value::Bool(false) => None,
+                    Value::String(h) if h == "none" || h.is_empty() => None,
+                    Value::String(h) => Some(plugin::Idempotency { header: h.clone(), ttl: "24h".into() }),
+                    _ => Some(plugin::Idempotency { header: "Idempotency-Key".into(), ttl: "24h".into() }),
+                };
+            }
             for (k, f) in [("base_url", &mut sv.base_url), ("real_host", &mut sv.real_host), ("title", &mut sv.title), ("description", &mut sv.description)] {
                 if let Some(x) = a.str(k) {
                     *f = x;
@@ -610,7 +646,55 @@ fn service_tools() -> Vec<Tool> {
         })
         .req("service", "plugin").param("any_client", "bool").param("token_ttl", "60m").param("client_certificate", "bool: require the app's certificate (mTLS) on HTTPS").param("session_ttl", "30m: session-cookie portals").param("billing", "bool: count billable calls").param("per_call", "price").param("warn_above", "100/day")
         .param("latency", "300ms..600ms | none").param("rate", "10/s | none").param("fail_share", "0 to 1, or 50%").param("base_url", "real base URL").param("real_host", "real host name").param("title", "display name").param("version", "the version you read")
+        .param("webhook_signing", "hex | hex_ts | stripe | svix | github | cloudevents | none").param("webhook_secret", "secret://name").param("webhook_header", "the signature header").param("webhook_tolerance", "seconds, 300")
+        .param("webhook_provoke", "wrong_signature, old_timestamp, no_signature, twice, out_of_order | none").param("idempotency", "true | false | the header name (Idempotency-Key)")
         .route("PUT", "/plugins/{service}/service"),
+        Tool::new("clock", "The environment's clock (real time plus what advance_clock moved) and the webhooks waiting for their time.", |ctx, _a| async move {
+            let now = stuntman_core::clock::now(&ctx);
+            Ok(json!({"now": crate::expr::iso(now, None), "nowMs": now, "offsetMs": stuntman_core::clock::offset(&ctx), "waiting": store::scheduled(&ctx).await?}))
+        })
+        .route("GET", "/clock"),
+        Tool::new("advance_clock", "Moves the environment's clock forward (1h, 1d, 30d): sends that wait (delay) and now() in templates follow it. reset=true goes back to real time.", |ctx, a| async move {
+            if a.bool("reset") == Some(true) {
+                stuntman_core::clock::reset(&ctx);
+            } else {
+                let by = a.need("by")?;
+                let ms = util::parse_ms(&by).ok_or_else(|| ApiError::bad("by: 30m, 1h, 1d, 30d"))?;
+                stuntman_core::clock::advance(&ctx, ms as i64);
+            }
+            crate::engine::fire_due(&ctx).await;
+            ctx.live.send("clock", "", "updated");
+            let now = stuntman_core::clock::now(&ctx);
+            Ok(json!({"now": crate::expr::iso(now, None), "offsetMs": stuntman_core::clock::offset(&ctx), "waiting": store::scheduled(&ctx).await?}))
+        })
+        .param("by", "30m | 1h | 1d | 30d").param("reset", "bool: back to real time")
+        .route("POST", "/clock/advance"),
+        Tool::new("set_mcp_tool", "Adds or changes a tool of a service's MCP server (the service gets an mcp: block on /mcp if it has none). decide: [{when, answer}] like a route; answers are the tool results (status >= 400 gives isError).", |ctx, a| async move {
+            let s = service_of(&a)?;
+            let mut p = plugin::get(&ctx, &s)?;
+            let name = a.need("name")?;
+            p.mcp.get_or_insert_with(|| plugin::Mcp { path: "/mcp".into(), version: "1.0.0".into(), ..Default::default() });
+            let decide: Vec<plugin::Decide> = match a.get("decide") { Some(v) => serde_json::from_value(v.clone()).map_err(|e| ApiError::bad(format!("decide: {e}")))?, None => vec![] };
+            let i = p.routes.iter().position(|r| r.tool == name);
+            let r = match i { Some(i) => &mut p.routes[i], None => { p.routes.push(plugin::Route { tool: name.clone(), ..Default::default() }); p.routes.last_mut().unwrap() } };
+            if let Some(d) = a.str("description") {
+                r.description = d;
+            }
+            if let Some(v) = a.get("input_schema") {
+                r.input_schema = Some(v.clone());
+            }
+            if !decide.is_empty() {
+                r.decide = decide;
+            }
+            let errs = plugin::validate(&p, &serde_yaml::to_string(&p).unwrap_or_default());
+            if let Some(e) = errs.first() {
+                return Err(ApiError::bad(e["error"].as_str().unwrap_or("invalid").to_string()));
+            }
+            let v = plugin::save(&ctx, &p)?;
+            Ok(json!({"service": s, "tools": crate::mcp::tools(&p), "version": v}))
+        })
+        .req("service", "plugin").req("name", "tool name").param("description", "what it does").param("input_schema", "JSON Schema of the arguments").param("decide", "[{when, answer}]")
+        .route("PUT", "/plugins/{service}/mcp-tools"),
         Tool::new("get_test_ca", "The Stuntman Test CA (PEM): trust it in the app's machine or container and the providers' real host names work over HTTPS against Stuntman.", |_ctx, _a| async move {
             let c = crate::ca::get();
             Ok(json!({"pem": c.pem, "fingerprint": crate::tls::fingerprint(crate::ca::der_of(&c.pem).first().map(|d| d.as_ref()).unwrap_or(&[])), "httpsPort": crate::tls_port(),

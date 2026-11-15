@@ -187,25 +187,46 @@ points at Stuntman. See [Environments](environments.md#how-a-request-finds-its-e
 
 | | |
 |---|---|
-| **Speaks** | ActiveMQ "Classic" OpenWire on `:61616`, version 10 (Apache.NMS.ActiveMQ and the Java `activemq-client` negotiate down to it), loose encoding |
+| **Speaks** | ActiveMQ "Classic" OpenWire on `:61616`, version 10 (Apache.NMS.ActiveMQ 1.8 and 2.x and the Java `activemq-client` negotiate down to it), loose encoding |
 | **Point your app at** | `activemq:tcp://localhost:61616` (NMS) or `tcp://localhost:61616` (Java), with the user and password you set |
-| **It keeps** | queues and topics, every message with its state (pending, delivered, acked, dead_letter, discarded) and redelivery count, the consumers connected now |
-| **You can provoke** | `set_activemq`: `refuse_login` (a SecurityException for everyone), `drop_after` (close the connection after N dispatched messages), `slow_dispatch` (a delay before each dispatch), `redeliver` (the next N acks are lost and those messages come again) |
+| **It keeps** | queues and topics, every message with its state (scheduled, pending, delivered, acked, dead_letter, expired, rolled_back, discarded) and redelivery count, the consumers connected now with their selectors, durable subscriptions (online or offline), local and XA transactions |
+| **You can provoke** | `set_activemq`: `refuse_login` (a SecurityException for everyone), `drop_after` (close the connection after N dispatched messages), `slow_dispatch` (a delay before each dispatch), `redeliver` (the next N acks are lost and those messages come again), `fail_commits` (the next N commits fail and roll back) |
 
 Connections, sessions, producers and consumers work as on a real broker: prefetch, `MessagePull` when the prefetch is 0
 (so `Receive(timeout)` returns null on time), auto, client and individual acks, poison acks (to dead_letter), queue
 browsers, text, bytes and other message types with their properties. A consumer that leaves gives back what it did not
-ack; what the app had already seen comes again as redelivered. Topics are plain (non-durable): each subscriber
-connected at send time gets a copy; with none, the message is kept as discarded. With no users set, any user name
-and password log in. Not implemented: transactions, durable subscriptions, selectors, message groups, scheduled
-delivery and compression (compressed bodies pass through as they came). One port serves every environment: the
-default one answers.
+ack; what the app had already seen comes again as redelivered.
+
+- **Transactions.** A transacted session's sends stay invisible and its acks take no effect until the commit; a
+  rollback drops the sends (rolled_back) and the client redelivers what it had received, with the redelivery count up.
+  XA works too (Java `XAResource`): start, end, prepare (`XA_RDONLY` when nothing was done), one- and two-phase commit,
+  rollback, forget, and recover, which lists the prepared transactions from any connection. A connection that goes
+  away rolls back what it left open, except what was prepared.
+- **Durable subscriptions.** A consumer with a subscription name and a client ID keeps its copies while it is
+  offline; `Unsubscribe` deletes it. A different topic or selector replaces the subscription, as ActiveMQ does. Plain
+  topic subscribers get a copy only while connected; with no subscriber at all, the message is kept as discarded.
+- **Selectors.** The JMS SQL-92 subset: `=`, `<>`, `<`, `>`, `<=`, `>=`, `AND`, `OR`, `NOT`, `[NOT] IN`,
+  `[NOT] LIKE … ESCAPE`, `[NOT] BETWEEN`, `IS [NOT] NULL`, arithmetic, string, number and boolean literals, the
+  header fields `JMSType`, `JMSCorrelationID`, `JMSPriority`, `JMSDeliveryMode`, `JMSTimestamp`, `JMSMessageID` (and
+  `JMSXGroupID`, `JMSRedelivered`, `JMSXDeliveryCount`) and properties. An invalid one gets an
+  `InvalidSelectorException`.
+- **Also:** dispatch by `JMSPriority` (9 first), message groups (`JMSXGroupID` sticks to one consumer until it leaves or
+  `JMSXGroupSeq` is -1), scheduled delivery (`AMQ_SCHEDULED_DELAY`), expiration (`JMSExpiration`: expired), a
+  `ProducerAck` per async send when the producer has a `producerWindowSize`, and compressed bodies inflated on arrival
+  (kept and dispatched as plain text or bytes).
+
+With no users set, any user name and password log in. Not implemented: `noLocal`, exclusive consumers, the scheduler's
+repeat and cron properties (`AMQ_SCHEDULED_PERIOD`, `AMQ_SCHEDULED_REPEAT`, `AMQ_SCHEDULED_CRON`), blob messages, the
+tight encoding and the marshal cache (both negotiated off). Expired and poisoned messages stay on their destination
+with their state instead of moving to `ActiveMQ.DLQ`. One port serves every environment: the default one answers.
 
 ```text
 set_activemq            {"users": {"acme": "s3cret"}}
 activemq_send           {"destination": "queue://positions", "text": "{\"truck\": \"TRK-100\"}", "properties": {"region": "north"}}
+activemq_send           {"destination": "queue://positions", "text": "later", "delay": "5s", "priority": 9, "ttl": "1m"}
 wait_for_activemq_ack   {"destination": "queue://positions"}            → the app consumed and acked it
 list_activemq_messages  {"destination": "queue://positions", "state": "acked"}
+list_activemq_destinations                                              → durable subscriptions and transactions too
 ```
 
 Tools: `list_activemq_destinations`, `list_activemq_messages`, `activemq_send`, `set_activemq`, `wait_for_activemq_ack`.

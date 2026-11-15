@@ -1,11 +1,13 @@
 """End-to-end check of the ActiveMQ (OpenWire) broker with the official .NET client (Apache.NMS.ActiveMQ,
 tests/activemq_client): user and password, messages seeded by the partner (activemq_send), the app's own sends,
-Receive(timeout) until null with auto and client acks, prefetch 0 (MessagePull), a wrong password, and the
-provocations refuse_login and drop_after, all checked through the tools.
+Receive(timeout) until null with auto and client acks, prefetch 0 (MessagePull), a wrong password, the
+provocations refuse_login, drop_after and fail_commits, local transactions (commit and rollback), a durable
+subscriber that disconnects and comes back, selectors (and an invalid one), message groups, JMSPriority order,
+scheduled delivery, expiration and a compressed body, all checked through the tools.
 
     cargo build -p stuntman && python3 tests/e2e_activemq.py
 """
-import os, shutil, subprocess, tempfile, urllib.parse
+import os, shutil, subprocess, tempfile, time, urllib.parse
 
 from harness import Stuntman
 
@@ -39,7 +41,7 @@ def main():
                 return r.returncode, r.stdout
 
             def msgs(**q):
-                return s.call("GET", "/activemq/messages?" + urllib.parse.urlencode(dict(destination="queue://positions", **q)))["messages"]
+                return s.call("GET", "/activemq/messages?" + urllib.parse.urlencode({"destination": "queue://positions", **q}))["messages"]
 
             def send(text, **kw):
                 return s.call("POST", "/activemq/messages", dict(destination="queue://positions", text=text, **kw))
@@ -82,6 +84,71 @@ def main():
             d = s.call("GET", "/activemq/destinations")
             q = [x for x in d["destinations"] if x["name"] == "queue://positions"][0]
             check(q["counts"]["acked"] == 9 and q["consumers"] == [] and d["settings"]["users"] == ["acme"], f"list_activemq_destinations: {q['counts']}")
+
+            def dest(name):
+                return [x for x in s.call("GET", "/activemq/destinations")["destinations"] if x["name"] == name][0]
+
+            # Local transactions: a rolled back send, sends invisible until the commit, a rolled back receive redelivered.
+            code, out = client("acme", "s3cret", "tx")
+            check(code == 0, "transactions: the client's checks passed (invisible until commit, rollback redelivers)")
+            tx = msgs(destination="queue://orders.tx")
+            check(sorted((m["text"], m["state"]) for m in tx) == [("ORD-0", "rolled_back"), ("ORD-1", "acked"), ("ORD-2", "acked")], f"ORD-0 rolled back, ORD-1 and ORD-2 acked at the commit: {[(m['text'], m['state']) for m in tx]}")
+            check([m["redeliveryCount"] for m in tx if m["text"] == "ORD-1"] == [1], "ORD-1 counts one redelivery (the rollback)")
+            txs = s.call("GET", "/activemq/destinations")["transactions"]
+            check(len(txs) >= 3 and all(t["kind"] == "local" and t["state"] in ("committed", "rolled_back") for t in txs), f"list_activemq_destinations lists the local transactions: {[(t['state'], t['sends'], t['acks']) for t in txs]}")
+            s.call("PUT", "/activemq/settings", {"fail_commits": 1})
+            code, out = client("acme", "s3cret", "txfail")
+            check("commit: TransactionRolledBackException" in out, "fail_commits: the commit fails with a TransactionRolledBackException")
+            check(msgs(destination="queue://orders.tx", last=1)[0]["state"] == "rolled_back" and s.call("GET", "/activemq/destinations")["settings"]["failCommits"] == 0, "and its send is rolled back")
+
+            # Durable subscription: subscribe and leave, the partner publishes, come back for what it kept.
+            code, out = client("acme", "s3cret", "durable")
+            check(code == 0 and "consumed: 0" in out, "durable subscriber registered (clientId acme-dashboard, prices-sub)")
+            for region, price in [("north", 10), ("south", 11), ("north", 12)]:
+                s.call("POST", "/activemq/messages", dict(destination="topic://prices", text=f"PRICE-{price}", properties={"region": region}))
+            sub = dest("topic://prices")["subscriptions"]
+            check(len(sub) == 1 and sub[0]["name"] == "prices-sub" and sub[0]["clientId"] == "acme-dashboard" and sub[0]["pending"] == 2 and not sub[0]["active"] and sub[0]["selector"] == "region = 'north'",
+                  f"offline, the subscription keeps the 2 north prices: {sub}")
+            code, out = client("acme", "s3cret", "durable", "unsubscribe")
+            check("consumed: 2" in out and "PRICE-10" in out and "PRICE-12" in out and "PRICE-11" not in out and "unsubscribed" in out, "back online it got both, then unsubscribed")
+            check(dest("topic://prices")["subscriptions"] == [], "RemoveSubscriptionInfo deleted the subscription")
+
+            # Selectors.
+            for region, amount in [("north", 250), ("north", 50), ("south", 500)]:
+                s.call("POST", "/activemq/messages", dict(destination="queue://orders.sel", text=f"{region}-{amount}", properties={"region": region, "amount": amount}))
+            code, out = client("acme", "s3cret", "select")
+            check("consumed: 1" in out and "north-250" in out, "the selector region = 'north' AND amount > 100 took only north-250")
+            check("invalid selector: InvalidSelectorException" in out, "an invalid selector is refused with InvalidSelectorException: " + next((l for l in out.splitlines() if "invalid selector" in l), ""))
+            check(sorted(m["state"] for m in msgs(destination="queue://orders.sel")) == ["acked", "pending", "pending"], "the other two stay pending")
+
+            # Message groups: two consumers with prefetch 1; each group sticks to one of them.
+            for i, g in enumerate("ABABAB"):
+                s.call("POST", "/activemq/messages", dict(destination="queue://orders.grp", text=f"{g}-{i}", group_id=f"TRK-{g}"))
+            code, out = client("acme", "s3cret", "groups", uri=uri + "?nms.PrefetchPolicy.QueuePrefetch=1")
+            owners = {}
+            for m in msgs(destination="queue://orders.grp"):
+                owners.setdefault(m["headers"]["groupId"], set()).add(m["consumer"])
+            check(len(owners) == 2 and all(len(v) == 1 for v in owners.values()) and owners["TRK-A"] != owners["TRK-B"], f"JMSXGroupID: each group went to one consumer, a different one each ({[len(v) for v in owners.values()]})")
+
+            # JMSPriority order, scheduled delivery, expiration.
+            s.call("POST", "/activemq/messages", dict(destination="queue://orders.prio", text="low", priority=1))
+            s.call("POST", "/activemq/messages", dict(destination="queue://orders.prio", text="high", priority=9))
+            later = s.call("POST", "/activemq/messages", dict(destination="queue://orders.prio", text="later", delay="2s"))["seqs"][0]
+            s.call("POST", "/activemq/messages", dict(destination="queue://orders.prio", text="stale", ttl="300ms"))
+            check(dest("queue://orders.prio")["counts"]["scheduled"] == 1, "AMQ_SCHEDULED_DELAY: the delayed message waits as scheduled")
+            time.sleep(0.5)
+            check([m["state"] for m in msgs(destination="queue://orders.prio") if m["text"] == "stale"] == ["expired"], "past its JMSExpiration the message is expired")
+            code, out = client("acme", "s3cret", "drain", "queue://orders.prio")
+            got = [l.split()[1] for l in out.splitlines() if l.startswith("got:")]
+            check(got == ["high", "low", "later"], f"JMSPriority 9 before 1, the scheduled one when its time came, the expired one never: {got}")
+            check(s.call("GET", f"/activemq/wait-ack?destination=queue://orders.prio&seq={later}&timeout=5s")["counts"]["expired"] == 1, "counts: acked 3, expired 1")
+
+            # A compressed body (UseCompression) is inflated on arrival.
+            code, out = client("acme", "s3cret", "produce", '{"order": "ORD-77", "note": "' + "acme " * 50 + '"}', uri=uri + "?nms.UseCompression=true")
+            z = msgs(destination="queue://orders.z", last=1)
+            check(code == 0 and z and z[0].get("text", "").startswith('{"order": "ORD-77"') and "compressed" not in z[0]["headers"], "a compressed TextMessage is kept as its plain text")
+            code, out = client("acme", "s3cret", "drain", "queue://orders.z")
+            check("consumed: 1" in out and "ORD-77" in out, "and dispatched plain to a consumer")
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print("ActiveMQ e2e: " + ("ok" if not failed else f"{failed} failed"))

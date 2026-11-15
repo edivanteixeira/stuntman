@@ -5107,6 +5107,7 @@ dependencies = [
  "bytes",
  "cookie-factory",
  "fe2o3-amqp-types",
+ "flate2",
  "futures",
  "hex",
  "hmac 0.12.1",

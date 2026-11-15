@@ -12,6 +12,7 @@ pub mod openwire;
 pub mod rabbit;
 pub mod rabbit_mgmt;
 pub mod rules;
+pub mod selector;
 pub mod tools;
 
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -54,6 +55,7 @@ impl Module for Messaging {
     }
 
     fn start(&self, ctx: Ctx) {
+        openwire::upgrade(&ctx.db);
         tools::seed_if_empty(&ctx);
         // Connections do not survive a restart: consumers still marked receiving are gone.
         let c2 = ctx.clone();

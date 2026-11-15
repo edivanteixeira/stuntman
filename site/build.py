@@ -101,28 +101,14 @@ def art(page, name, w, h, alt, mobile=None):
             f'alt="{e(alt)}" loading="lazy" decoding="async"></picture></figure>')
 
 
-PIN_SEQ = [0]
-
-
-def pinbtn(n, x, y, title=None, text=None):
-    """A numbered mark on a screen; with a title it opens a popover next to itself (native popover API)."""
-    if not title:
-        return f'<span class="num" style="--x:{x:.2f}%;--y:{y:.2f}%" aria-hidden="true">{n}</span>'
-    PIN_SEQ[0] += 1
-    pid = f"pin-{PIN_SEQ[0]}"
-    return (f'<button type="button" class="num pinb" style="--x:{x:.2f}%;--y:{y:.2f}%" popovertarget="{pid}" '
-            f'aria-label="{n}: {e(title)}">{n}</button>'
-            f'<div popover id="{pid}" class="pinpop" role="note"><b><span class="num">{n}</span>{e(title)}</b>{f"<p>{e(text)}</p>" if text else ""}</div>')
-
-
 def shot(page, name, alt, pins=()):
-    p = "".join(pinbtn(*pn) for pn in pins)
+    p = "".join(f'<span class="num" style="--x:{x:.1f}%;--y:{y:.1f}%" aria-hidden="true">{n}</span>' for n, x, y in pins)
     return (f'<figure class="shot"><img src="{asset(page, "screens/" + name + ".webp")}" width="1920" height="1200" '
             f'alt="{e(alt)}" loading="lazy" decoding="async">{p}</figure>')
 
 
-def pin(n, x, y, title=None, text=None):  # 1440 x 900 screen coordinates → percent
-    return (n, x / 1440 * 100, y / 900 * 100, title, text)
+def pin(n, x, y):  # 1440 x 900 screen coordinates → percent
+    return (n, x / 1440 * 100, y / 900 * 100)
 
 
 def head(level, title, text=None, cls=""):
@@ -160,20 +146,6 @@ def prompt_box(page, label="Paste this into your coding agent"):
 
 
 COPY_JS = """<script>
-function placePin(pop) {
-  var b = document.querySelector('[popovertarget="' + pop.id + '"]'); if (!b) return;
-  var r = b.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight, m = 12;
-  var x = r.right + m, y = r.top - 8;
-  if (x + w > innerWidth - m) x = r.left - w - m;
-  if (x < m) { x = Math.max(m, Math.min(innerWidth - w - m, r.left + r.width / 2 - w / 2)); y = r.bottom + m; }
-  if (y + h > innerHeight - m) y = Math.max(m, r.top - h - m);
-  pop.style.left = x + 'px'; pop.style.top = y + 'px';
-}
-document.querySelectorAll('.pinpop').forEach(function (pop) {
-  pop.addEventListener('toggle', function (ev) { if (ev.newState === 'open') placePin(pop); });
-});
-function placeOpen() { document.querySelectorAll('.pinpop:popover-open').forEach(placePin); }
-addEventListener('scroll', placeOpen, {passive: true}); addEventListener('resize', placeOpen);
 document.querySelectorAll('[data-copy]').forEach(function (b) {
   b.addEventListener('click', function () {
     var t = document.getElementById(b.dataset.copy).textContent, s = b.parentNode.parentNode.querySelector('.prompt__status');
@@ -306,13 +278,13 @@ def home():
     {session([("say", "you", "Make contract uploads fail twice with a 503, then tell me whether acme-api recovers."),
               ("tool", "create_rule", '{"when": {"op": "put", "path": "contracts/**"}, "then": {"respond": "503"}, "how_often": {"first": 2}}'),
               ("res", "ok", "rule on, recorded as claude-code via MCP")])}</div>
-    {shot(p, "rules", "The storage rule “Contract uploads fail twice,” turned on by claude-code via MCP", [pin(1, 470, 137, "The rule, turned on by the agent", "claude-code created it over MCP: the next two uploads to contracts/** answer 503, then the provider behaves again.")])}</article>
+    {shot(p, "rules", "The storage rule “Contract uploads fail twice,” turned on by claude-code via MCP", [pin(1, 470, 137)])}</article>
   <article class="chapter"><div class="chapter__text"><h3 class="display"><span class="num">2</span>It reads what your app actually did.</h3>
     <p class="body">Not what the code says it does. Every call your app made is on the timeline, in the provider's words.</p>
     {session([("tool", "wait_for_object", '{"container": "documents", "prefix": "contracts/nda-acme"}'),
               ("res", "bad", "408: no new object"),
               ("say", "agent", "Nothing was stored. The timeline shows two 503s, then acme-api gave up. The retry limit is the bug.")])}</div>
-    {shot(p, "timeline", "The timeline: the upload of nda-acme-signed.pdf failed with 503, provoked by the rule; attempt 1 and 2 both 503", [pin(2, 930, 130, "What the app really did", "Attempts 1 and 2 both got the 503 the rule provoked, and then acme-api gave up: the retry limit is the bug.")])}</article>
+    {shot(p, "timeline", "The timeline: the upload of nda-acme-signed.pdf failed with 503, provoked by the rule; attempt 1 and 2 both 503", [pin(2, 930, 130)])}</article>
   <article class="chapter"><div class="chapter__text"><h3 class="display"><span class="num">3</span>It fixes the code and runs the flow again.</h3>
     <p class="body">The rule is still on, so the second run meets the same two failures. This time the app has to get through them.</p></div>
     {session([("say", "agent", "Raised the upload attempts in BlobUploader from 2 to 3, with backoff. Running the signing flow again."),
@@ -535,7 +507,7 @@ def failures():
 <section class="wrap section"><div class="split">
   <div class="stack">{head(2, "A rule is a file, too.", "Edit it in the UI and try it against the last 50 requests before saving. It is saved in <code>storage/rules/&lt;service&gt;.yaml</code>, and an agent creates the same rule with one tool call.")}
   {code('create_rule {\n  "service": "azure-blob",\n  "name": "Contract uploads fail twice",\n  "when": {"op": "put", "container": "documents",\n           "path": "contracts/**"},\n  "then": {"respond": "503"},\n  "how_often": {"first": 2}\n}')}</div>
-  {shot(p, "rules", "The rule editor: when, then, how often and what the app will see", [pin(1, 470, 137, "When, then, how often", "Which calls it catches, what they answer and for how many: try it against the last 50 requests before saving.")])}
+  {shot(p, "rules", "The rule editor: when, then, how often and what the app will see", [pin(1, 470, 137)])}
 </div></section>
 <section class="wrap section"><div class="split">
   <div class="stack">{head(2, "Callbacks your app must verify.", "Stuntman signs callbacks the way each provider does: ECDSA for SendGrid, the app secret for Meta, HMAC for your own inboxes, and Stripe, Svix, GitHub or CloudEvents signatures for plugin webhooks. Ask for a badly signed, old, repeated or replayed one and check that your app rejects it.")}
@@ -554,7 +526,7 @@ def timeline():
 {hero(p, "See what your app sent, in the provider's words.",
       "Every call becomes a sentence: who sent it, what came back, how long it took. Raw HTTP is one click away when you need it.", actions=False)}
 <section class="wrap">
-  {shot(p, "timeline", "The timeline with numbered marks", [pin(n + 1, x, y, *notes[n]) for n, (x, y) in enumerate([(875, 188), (352, 478), (930, 130), (1092, 290)])])}
+  {shot(p, "timeline", "The timeline with numbered marks", [pin(1, 875, 188), pin(2, 352, 478), pin(3, 930, 130), pin(4, 1092, 290)])}
   <ol class="notes">{nl}</ol>
 </section>
 <section class="wrap section">
@@ -707,7 +679,7 @@ def provider_page(d):
     shots = []
     for k, x in enumerate(d["excerpts"]):
         cx, cy, cw, ch = x["crop"]
-        pins = "".join(pinbtn(n + 1, (c["x"] - cx) / cw * 100, (c["y"] - cy) / ch * 100, c["title"], c["text"])
+        pins = "".join(f'<span class="num" style="--x:{(c["x"] - cx) / cw * 100:.2f}%;--y:{(c["y"] - cy) / ch * 100:.2f}%" aria-hidden="true">{n + 1}</span>'
                        for n, c in enumerate(x["callouts"]))
         sc = min(1, 1248 / cw)
         notes = "".join(f'<li><span class="num" aria-hidden="true">{n + 1}</span><div><b>{e(c["title"])}</b><p>{e(c["text"])}</p></div></li>'

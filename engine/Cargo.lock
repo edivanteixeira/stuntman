@@ -4877,6 +4877,7 @@ dependencies = [
  "stuntman-messaging",
  "stuntman-sms",
  "stuntman-storage",
+ "stuntman-streams",
  "stuntman-telemetry",
  "stuntman-webhook",
  "stuntman-whatsapp",
@@ -5159,6 +5160,25 @@ dependencies = [
  "stuntman-core",
  "tokio",
  "tower",
+]
+
+[[package]]
+name = "stuntman-streams"
+version = "0.3.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "flate2",
+ "hex",
+ "hmac 0.12.1",
+ "rand 0.8.8",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "stuntman-core",
+ "tokio",
 ]
 
 [[package]]

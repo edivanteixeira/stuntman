@@ -2,11 +2,15 @@
 //! AWS_ENDPOINT_URL_KINESIS. Streams in provisioned and on-demand mode, shards with MD5 hash key
 //! ranges, puts and iterators, resharding (split, merge, shard count) with parent and child shards,
 //! retention on the environment clock, tags, enhanced fan-out consumers and SubscribeToShard;
-//! provoked throughput, not-found, expired-iterator and KMS errors, slow puts, partial failures.
+//! the CREATING / UPDATING / DELETING lifecycle, the real per-shard throughput limits (on unless
+//! set_kinesis limits=off), KMS encryption settings (records are not really encrypted), stream mode
+//! changes, enhanced monitoring settings; provoked throughput, not-found, expired-iterator and KMS
+//! errors, slow puts, partial failures.
 
 pub mod api;
 pub mod cbor;
 pub mod config;
+pub mod limits;
 pub mod store;
 pub mod tools;
 

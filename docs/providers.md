@@ -439,10 +439,10 @@ sets on Cloud Storage `max_messages` and `max_duration` are not enforced, so tes
 
 | | |
 |---|---|
-| **Speaks** | Amazon Kinesis Data Streams on `:4567`: AWS JSON 1.1 (`X-Amz-Target: Kinesis_20131202.*`) and the CBOR (`application/x-amz-cbor-1.1`) the AWS SDK for Java sends by default; SigV4 accepted with any key, the region taken from the signature. CreateStream (provisioned or on-demand), DeleteStream, DescribeStream, DescribeStreamSummary, ListStreams, ListShards (with shard filters), PutRecord, PutRecords, GetShardIterator (TRIM_HORIZON, LATEST, AT/AFTER_SEQUENCE_NUMBER, AT_TIMESTAMP), GetRecords (MillisBehindLatest, NextShardIterator, ChildShards), SplitShard, MergeShards, UpdateShardCount, Increase/DecreaseStreamRetentionPeriod, Add/Remove/ListTagsForStream and the resource-ARN tag calls, Register/List/Describe/DeregisterStreamConsumer, SubscribeToShard (enhanced fan-out, an event stream over HTTP/1.1 or HTTP/2), DescribeLimits |
+| **Speaks** | Amazon Kinesis Data Streams on `:4567`: AWS JSON 1.1 (`X-Amz-Target: Kinesis_20131202.*`) and the CBOR (`application/x-amz-cbor-1.1`) the AWS SDK for Java sends by default; SigV4 accepted with any key, the region taken from the signature. CreateStream (provisioned or on-demand), DeleteStream, DescribeStream, DescribeStreamSummary, ListStreams, ListShards (with shard filters), PutRecord, PutRecords, GetShardIterator (TRIM_HORIZON, LATEST, AT/AFTER_SEQUENCE_NUMBER, AT_TIMESTAMP), GetRecords (MillisBehindLatest, NextShardIterator, ChildShards), SplitShard, MergeShards, UpdateShardCount, Increase/DecreaseStreamRetentionPeriod, Add/Remove/ListTagsForStream and the resource-ARN tag calls, Register/List/Describe/DeregisterStreamConsumer, SubscribeToShard (enhanced fan-out, an event stream over HTTP/1.1 or HTTP/2), DescribeLimits, UpdateStreamMode, Start/StopStreamEncryption, Enable/DisableEnhancedMonitoring. Tested with boto3, the AWS SDK for Java v2 (CBOR) and the AWS SDK for JavaScript v3 |
 | **Point your app at** | `AWS_ENDPOINT_URL_KINESIS=http://localhost:4567` (or the client's `endpoint_url` / `ServiceURL` / `endpointOverride`), any access key and secret, any region |
-| **It keeps** | streams with mode, retention, tags and shards (hash key range, sequence number range, parent and adjacent parent after a split or merge), every record with its partition key, shard, sequence number, arrival time and who put it (`app` or you), enhanced fan-out consumers; the provocation in `kinesis/config.yaml` |
-| **You can provoke** | `set_kinesis` with `provoke`: `throughput_puts`, `throughput_gets` (ProvisionedThroughputExceededException; the SDKs retry), `not_found` (ResourceNotFoundException), `expired_iterator`, `kms_throttling` (KMSThrottlingException), `slow_puts` (`delay_ms`, 3 s), `partial_failures` (PutRecords fails every second record); `times` limits it to the next N calls, `stream` to one stream; `reshard` splits the stream's widest open shard now |
+| **It keeps** | streams with status, mode, encryption (KMS key), shard-level metrics, retention, tags and shards (hash key range, sequence number range, parent and adjacent parent after a split or merge), every record with its partition key, shard, sequence number, arrival time and who put it (`app` or you), enhanced fan-out consumers; the provocation, the limits switch and the transition time in `kinesis/config.yaml` |
+| **You can provoke** | `set_kinesis` with `provoke`: `throughput_puts`, `throughput_gets` (ProvisionedThroughputExceededException; the SDKs retry), `not_found` (ResourceNotFoundException), `expired_iterator`, `kms_throttling` (KMSThrottlingException on puts and gets) and `kms_disabled` (KMSDisabledException on puts), both only on encrypted streams, `slow_puts` (`delay_ms`, 3 s), `partial_failures` (PutRecords fails every second record); `times` limits it to the next N calls, `stream` to one stream; `reshard` splits the stream's widest open shard now |
 
 The partition key's MD5, read as a 128-bit number, picks the open shard whose hash key range holds it (or
 `ExplicitHashKey` does). Shards of a new stream split the key space evenly; on-demand streams have 4. A split or merge
@@ -450,10 +450,32 @@ closes the parent at the stream's last sequence number: reading it to its end gi
 its `ChildShards`, new records go to the children. Iterators expire after 5 minutes and records after the retention
 period, both on the environment clock (`advance_clock`). One port serves every environment: the default one answers.
 
+A stream is CREATING after CreateStream, UPDATING after SplitShard, MergeShards, UpdateShardCount, UpdateStreamMode
+and a change of encryption, and DELETING after DeleteStream, for `transition_ms` (1 s by default, on the wall clock, so
+the SDK waiters such as boto3's `stream_exists` and `stream_not_exists` work); then ACTIVE, or gone. Changes to the
+stream (resharding, mode, encryption, retention, tags, monitoring, consumers, DeleteStream) answer ResourceInUseException
+until it is ACTIVE; puts and reads work while UPDATING and answer ResourceNotFoundException while CREATING or DELETING.
+`set_kinesis {"transition_ms": 0}` makes every change take effect at once.
+
+The real throughput limits are enforced on the app's calls, on the wall clock: per provisioned shard 1 MiB/s or 1,000
+records/s in (data plus partition key) and 2 MiB/s and 5 GetRecords/s out (a 10 MiB GetRecords throttles the shard's
+reads for about 5 s); an on-demand stream takes 4 MiB/s or 4,000 records/s in (what a new on-demand stream gets), reads
+per shard as provisioned. Over the limit, PutRecord and GetRecords answer ProvisionedThroughputExceededException (the
+SDKs retry) and PutRecords fails only the records over it. A record holds at most 1 MiB, a PutRecords 500 records and
+5 MiB, a GetRecords returns at most 10,000 records and 10 MiB. `set_kinesis {"limits": "off"}` turns the limits off
+(your own tool calls never meet them).
+
+StartStreamEncryption takes EncryptionType KMS and a KeyId as Kinesis accepts it (key ID, key ARN, alias name such as
+`alias/aws/kinesis`, alias ARN); DescribeStream and DescribeStreamSummary show EncryptionType and KeyId, puts and records
+say KMS. The records are not really encrypted. DescribeStreamSummary also gives StreamModeDetails, OpenShardCount,
+ConsumerCount and EnhancedMonitoring; Enable/DisableEnhancedMonitoring keep and return the shard-level metrics (ALL or
+named). ListStreams pages with Limit and NextToken (or ExclusiveStartStreamName) and returns StreamSummaries.
+
 ```text
 create_kinesis_stream {"name": "shipments", "shards": 2}
 kinesis_put           {"stream": "shipments", "data": {"shipment": "SHP-1042", "status": "DELIVERED"}, "partition_key": "SHP-1042"}
 set_kinesis           {"provoke": "throughput_puts", "times": 2, "stream": "shipments"}
+set_kinesis           {"limits": "off", "transition_ms": 0}
 wait_for_kinesis_record {"stream": "shipments", "contains": "SHP-1042"}
 ```
 
@@ -461,9 +483,12 @@ Tools: `list_kinesis_streams`, `create_kinesis_stream`, `list_kinesis_records`, 
 `wait_for_kinesis_record`, `set_kinesis`. In the web UI: **Kinesis**. A Pub/Sub import topic whose
 `aws_kinesis.stream_arn` names one of these streams reads it ([Pub/Sub](#pubsub)).
 
-Limits: the real per-shard limits (1 MB/s or 1,000 records/s in, 2 MB/s out, 5 GetRecords/s) are not enforced, only
-provoked; streams are ACTIVE at once (no CREATING/UPDATING); server-side encryption, enhanced monitoring and
-UpdateStreamMode are not offered; the account is always `000000000000`.
+Limits: on-demand streams do not scale with their traffic (their write limit stays at 4 MiB/s or 4,000 records/s, and
+a mode can be switched any number of times a day); the limits are counted in 1-second windows per shard, without the
+burst credit Kinesis sometimes allows; records are not encrypted and no KMS key is checked to exist; no CloudWatch
+metric is emitted; resharding takes effect at once (the new shards exist while the stream is UPDATING); the 10 MiB
+records of UpdateMaxRecordSize, resource policies, stream consumers' CREATING/DELETING states and the account-level
+shard quota are not offered; the account is always `000000000000`.
 
 ## Identity
 

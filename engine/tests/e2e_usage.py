@@ -46,6 +46,7 @@ def main():
             import boto3
             k = boto3.client("kinesis", endpoint_url=f"http://127.0.0.1:{s.KINESIS_PORT}", region_name="us-east-1", aws_access_key_id="AKIAEXAMPLE", aws_secret_access_key="any")
             k.create_stream(StreamName="orders", ShardCount=1)
+            k.get_waiter("stream_exists").wait(StreamName="orders", WaiterConfig={"Delay": 1, "MaxAttempts": 10})  # CREATING for 1 s
             k.put_record(StreamName="orders", Data=b"A-1001", PartitionKey="A-1001")
             kinesis = True
         except ImportError:

@@ -1,6 +1,8 @@
 //! A21 · Kinesis: Data Streams on AWS_ENDPOINT_URL_KINESIS=http://localhost:4567. Streams with the
 //! hash key space split by open shard, records (who put them), shards with their parents after a
 //! reshard, enhanced fan-out consumers, putting a record as another producer would, provocations.
+//! Each stream shows its status (CREATING / UPDATING / DELETING for a moment), mode and encryption;
+//! the throughput limits switch turns the real per-shard limits on and off.
 
 use leptos::prelude::*;
 use leptos_router::hooks::use_query_map;
@@ -22,6 +24,11 @@ fn seq(x: &str) -> String {
 /// 2^128−1 and 2^127−1 are recognisable; the rest as Kinesis writes them.
 fn hk(x: &str) -> String {
     match x { "340282366920938463463374607431768211455" => "2^128−1".into(), "170141183460469231731687303715884105727" => "2^127−1".into(), _ => x.to_string() }
+}
+
+/// "ACTIVE" is the normal state; the others last a moment (transition_ms).
+fn status_class(st: &str) -> &'static str {
+    if st == "ACTIVE" || st.is_empty() { "ok" } else { "attn" }
 }
 
 #[component]
@@ -62,6 +69,10 @@ pub fn Kinesis() -> impl IntoView {
         leptos::task::spawn_local(async move { match api::send("PUT", "/kinesis/config", b).await {
             Ok(_) => ui::toast(match k { "none" => "Back to normal", "reshard" => "Widest shard split", _ => "Provoked" }), Err(e) => ui::toast_err(e) } });
     };
+    let limits = move |v: &'static str| {
+        leptos::task::spawn_local(async move { match api::send("PUT", "/kinesis/config", json!({"limits": v})).await {
+            Ok(_) => ui::toast(if v == "on" { "Throughput limits on" } else { "Throughput limits off" }), Err(e) => ui::toast_err(e) } });
+    };
     let provoked = move || s(&data.get()["provoke"], "kind");
     let link = move |st: &str, tab: &str| format!("/kinesis?s={}{}", enc(st), if tab == "records" { String::new() } else { format!("&tab={tab}") });
     view! {
@@ -70,7 +81,8 @@ pub fn Kinesis() -> impl IntoView {
                 <div style="padding:20px 20px 8px"><div class="strong" style="font-size:15px">"Kinesis"</div><div class="small cap">"Data Streams · AWS JSON 1.1"</div></div>
                 {move || data.get()["streams"].as_array().cloned().unwrap_or_default().into_iter().map(|x| { let nm = s(&x, "name"); let n2 = nm.clone(); let open = n(&x, "openShards"); view! {
                     <a class="mrow" class:on=move || cur.get() == n2 href=link(&nm, "records")><div class="row"><span class="mono">{nm.clone()}</span><span class="grow"></span><span class="mono small cap">{api::thousands(n(&x, "records"))}</span></div>
-                        <div class="small cap">{if s(&x, "mode") == "ON_DEMAND" { format!("on-demand · {open} shards") } else { format!("provisioned · {open} open shard{}", if open == 1 { "" } else { "s" }) }}</div></a> } }).collect_view()}
+                        <div class="small cap">{if s(&x, "mode") == "ON_DEMAND" { format!("on-demand · {open} shards") } else { format!("provisioned · {open} open shard{}", if open == 1 { "" } else { "s" }) }}
+                            {(s(&x, "encryption") == "KMS").then_some(" · KMS")}{let st = s(&x, "status"); (st != "ACTIVE").then(|| view! { <span class="attn">{format!(" · {st}")}</span> })}</div></a> } }).collect_view()}
                 <div class="stack" style="padding:12px 20px">
                     <input class="input mono" placeholder="new stream" prop:value=move || new_name.get() on:input=move |e| new_name.set(event_target_value(&e))/>
                     <input class="input mono" placeholder="shards  2" prop:value=move || new_shards.get() on:input=move |e| new_shards.set(event_target_value(&e))/>
@@ -92,8 +104,10 @@ pub fn Kinesis() -> impl IntoView {
                         let tags = x["tags"].as_object().map(|o| o.iter().map(|(k, v)| format!("{k}={}", v.as_str().unwrap_or_default())).collect::<Vec<_>>().join(", ")).unwrap_or_default();
                         let mut open: Vec<Value> = shards.into_iter().filter(|h| h["open"].as_bool().unwrap_or(false)).collect();
                         open.sort_by(|a, b| s(a, "startingHashKey").parse::<u128>().unwrap_or(0).cmp(&s(b, "startingHashKey").parse::<u128>().unwrap_or(0)));
+                        let st = s(&x, "status");
+                        let enc = if s(&x, "encryption") == "KMS" { format!("KMS {}", s(&x, "keyId")) } else { "not encrypted".into() };
                         view! {
-                            <div class="small"><span class="caps">"Stream  "</span><span class="mono">{format!("{} · retention {} h · {} open shard{}{}{}", if s(&x, "mode") == "ON_DEMAND" { "on-demand" } else { "provisioned" }, n(&x, "retentionHours"),
+                            <div class="small"><span class="caps">"Stream  "</span><span class=status_class(&st)>{st.clone()}</span><span class="mono">{format!("  · {} · {} · retention {} h · {} open shard{}{}{}", if s(&x, "mode") == "ON_DEMAND" { "on-demand" } else { "provisioned" }, enc, n(&x, "retentionHours"),
                                 open.len(), if open.len() == 1 { "" } else { "s" }, if closed > 0 { format!(", {closed} closed") } else { String::new() }, if tags.is_empty() { String::new() } else { format!(" · tags {tags}") })}</span></div>
                             <div class="caps">"Hash key space · MD5 of the partition key picks the shard"</div>
                             <div class="row" style="gap:2px;max-width:920px">{open.into_iter().enumerate().map(|(i, h)| view! {
@@ -136,9 +150,13 @@ pub fn Kinesis() -> impl IntoView {
                                 <div><button class="btn primary small" on:click=put disabled=move || cur.get().is_empty() || body.get().trim().is_empty()>"Put record"</button></div></div>
                         }.into_any(),
                     }}
+                    <div class="caps" style="margin-top:14px">"Throughput limits"</div>
+                    <div class="row" style="gap:6px;align-items:center">{[("on", "On"), ("off", "Off")].into_iter().map(|(v, l)| view! {
+                        <button class="btn small" class:primary=move || s(&data.get(), "limits") == v on:click=move |_| limits(v)>{l}</button> }).collect_view()}
+                        <span class="small cap">{move || if s(&data.get(), "limits") == "off" { "off: every put and read goes through".to_string() } else { "per shard 1 MiB/s or 1,000 records/s in, 2 MiB/s and 5 GetRecords/s out; on-demand 4 MiB/s or 4,000 records/s per stream".to_string() }}</span></div>
                     <div class="caps" style="margin-top:14px">"Provoke"</div>
                     <div class="row" style="gap:6px;flex-wrap:wrap">{[("throughput_puts", "Throughput (puts)"), ("throughput_gets", "Throughput (gets)"), ("not_found", "Not found"), ("expired_iterator", "Expired iterator"),
-                        ("kms_throttling", "KMS throttling"), ("slow_puts", "Slow puts (3 s)"), ("partial_failures", "Partial failures"), ("reshard", "Reshard now"), ("none", "Normal")].into_iter().map(|(k, l)| view! {
+                        ("kms_throttling", "KMS throttling"), ("kms_disabled", "KMS disabled"), ("slow_puts", "Slow puts (3 s)"), ("partial_failures", "Partial failures"), ("reshard", "Reshard now"), ("none", "Normal")].into_iter().map(|(k, l)| view! {
                         <button class="btn small" class:primary=move || if k == "none" { provoked().is_empty() && !data.get().is_null() } else { provoked() == k } on:click=move |_| provoke(k) disabled=move || k == "reshard" && cur.get().is_empty()>{l}</button> }).collect_view()}</div>
                     {move || { let p = data.get()["provoke"].clone(); (!p.is_null()).then(|| { let label = config_label(&s(&p, "kind"));
                         view! { <div class="small attn">{format!("{}{}{}", if n(&p, "times") > 0 { format!("next {} call{}: ", n(&p, "times"), if n(&p, "times") == 1 { "" } else { "s" }) } else { String::new() },
@@ -156,7 +174,8 @@ fn config_label(k: &str) -> &'static str {
         "throughput_gets" => "GetRecords answers ProvisionedThroughputExceededException",
         "not_found" => "calls answer ResourceNotFoundException",
         "expired_iterator" => "GetRecords answers ExpiredIteratorException",
-        "kms_throttling" => "puts and gets answer KMSThrottlingException",
+        "kms_throttling" => "puts and gets on encrypted streams answer KMSThrottlingException",
+        "kms_disabled" => "puts to encrypted streams answer KMSDisabledException",
         "slow_puts" => "each put waits before answering",
         "partial_failures" => "PutRecords fails every second record",
         _ => "provoked",

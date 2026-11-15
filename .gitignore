@@ -7,3 +7,5 @@ site/dist/
 .DS_Store
 __pycache__/
 *.pyc
+engine/tests/kinesis_node/node_modules/
+engine/tests/kinesis_java/target/

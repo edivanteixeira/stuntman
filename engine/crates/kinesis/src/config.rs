@@ -18,20 +18,33 @@ pub struct Config {
     pub stream: String,
     /// slow_puts: how long a put waits.
     pub delay_ms: u64,
+    /// The real per-shard throughput limits are enforced (limits.rs); false turns them off.
+    pub limits: bool,
+    /// How long CREATING, UPDATING and DELETING last (wall clock).
+    pub transition_ms: u64,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { provoke: String::new(), times: 0, stream: String::new(), delay_ms: 3000 }
+        Self { provoke: String::new(), times: 0, stream: String::new(), delay_ms: 3000, limits: true, transition_ms: 1000 }
     }
 }
 
-pub const PROVOKE: [(&str, &str); 8] = [
+impl Config {
+    pub fn clear(&mut self) {
+        self.provoke.clear();
+        self.times = 0;
+        self.stream.clear();
+    }
+}
+
+pub const PROVOKE: [(&str, &str); 9] = [
     ("throughput_puts", "PutRecord and PutRecords answer ProvisionedThroughputExceededException (the SDKs retry)"),
     ("throughput_gets", "GetRecords answers ProvisionedThroughputExceededException"),
     ("not_found", "every call naming the stream answers ResourceNotFoundException"),
     ("expired_iterator", "GetRecords answers ExpiredIteratorException: get a new iterator"),
-    ("kms_throttling", "puts and gets answer KMSThrottlingException"),
+    ("kms_throttling", "puts and gets on an encrypted stream answer KMSThrottlingException"),
+    ("kms_disabled", "puts to an encrypted stream answer KMSDisabledException"),
     ("slow_puts", "each put waits delay_ms before answering"),
     ("partial_failures", "PutRecords fails every second record (FailedRecordCount > 0)"),
     ("reshard", "now: the stream's widest open shard is split in two (children read after the parent)"),
@@ -60,9 +73,7 @@ pub fn take(ctx: &Ctx, stream: &str, kinds: &[&str]) -> Option<Config> {
     let hit = c.clone();
     if c.times > 0 {
         c.times -= 1;
-        if c.times == 0 {
-            c = Config { delay_ms: c.delay_ms, ..Default::default() };
-        }
+        if c.times == 0 { c.clear() }
         let _ = save(ctx, &c);
         ctx.live.send("kinesis.config", "", "updated");
     }

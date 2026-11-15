@@ -15,7 +15,7 @@ use axum::{
 use serde_json::{json, Value};
 use stuntman_core::{clock, env::Envs, netserve, Ctx};
 
-use crate::{cbor, config, store::{self, kerr, KErr}};
+use crate::{cbor, config, limits::Limiter, store::{self, kerr, KErr}};
 
 const JSON: &str = "application/x-amz-json-1.1";
 const CBOR: &str = "application/x-amz-cbor-1.1";
@@ -52,36 +52,48 @@ fn ops() -> &'static [&'static str] {
     &["CreateStream", "DeleteStream", "DescribeStream", "DescribeStreamSummary", "ListStreams", "ListShards", "PutRecord", "PutRecords", "GetShardIterator", "GetRecords",
       "MergeShards", "SplitShard", "UpdateShardCount", "IncreaseStreamRetentionPeriod", "DecreaseStreamRetentionPeriod", "AddTagsToStream", "RemoveTagsFromStream",
       "ListTagsForStream", "TagResource", "UntagResource", "ListTagsForResource", "RegisterStreamConsumer", "ListStreamConsumers", "DescribeStreamConsumer",
-      "DeregisterStreamConsumer", "SubscribeToShard", "DescribeLimits"]
+      "DeregisterStreamConsumer", "SubscribeToShard", "DescribeLimits", "UpdateStreamMode", "StartStreamEncryption", "StopStreamEncryption",
+      "EnableEnhancedMonitoring", "DisableEnhancedMonitoring"]
 }
 
 fn mutates(op: &str) -> Option<&'static str> {
     match op {
         "PutRecord" | "PutRecords" => Some("kinesis.records"),
         "CreateStream" | "DeleteStream" | "MergeShards" | "SplitShard" | "UpdateShardCount" | "IncreaseStreamRetentionPeriod" | "DecreaseStreamRetentionPeriod" | "AddTagsToStream"
-        | "RemoveTagsFromStream" | "TagResource" | "UntagResource" | "RegisterStreamConsumer" | "DeregisterStreamConsumer" => Some("kinesis.streams"),
+        | "RemoveTagsFromStream" | "TagResource" | "UntagResource" | "RegisterStreamConsumer" | "DeregisterStreamConsumer" | "UpdateStreamMode" | "StartStreamEncryption"
+        | "StopStreamEncryption" | "EnableEnhancedMonitoring" | "DisableEnhancedMonitoring" => Some("kinesis.streams"),
         _ => None,
     }
 }
 
 /// One operation. `provoke`: the app's calls meet the provoked failure; tools do not.
+/// The real limits apply to the app's calls only (provoke), unless set_kinesis limits=off.
 pub async fn call(ctx: &Ctx, op: &str, region: &str, b: Value, producer: &str, provoke: bool) -> Result<Value, KErr> {
     let stream = store::named(op, &b).unwrap_or_default();
+    let cfg = config::load(ctx);
     let mut partial = false;
     if provoke {
         let put = op == "PutRecord" || op == "PutRecords";
         let named = !stream.is_empty() && op != "CreateStream" && op != "ListStreams";
+        // KMS errors only reach encrypted streams.
+        let kms = cfg.provoke.starts_with("kms") && (put || op == "GetRecords") && {
+            let s2 = stream.clone();
+            ctx.db.call(move |cn| Ok(store::encrypted(cn, &s2))).await.unwrap_or(false)
+        };
         let mut kinds = vec![];
         if named { kinds.push("not_found") }
-        if put { kinds.extend(["throughput_puts", "kms_throttling", "slow_puts"]) }
+        if put { kinds.extend(["throughput_puts", "slow_puts"]) }
+        if put && kms { kinds.extend(["kms_throttling", "kms_disabled"]) }
         if op == "PutRecords" { kinds.push("partial_failures") }
-        if op == "GetRecords" { kinds.extend(["throughput_gets", "expired_iterator", "kms_throttling"]) }
+        if op == "GetRecords" { kinds.extend(["throughput_gets", "expired_iterator"]) }
+        if op == "GetRecords" && kms { kinds.push("kms_throttling") }
         if let Some(c) = config::take(ctx, &stream, &kinds) {
             match c.provoke.as_str() {
                 "not_found" => return Err(kerr("ResourceNotFoundException", format!("Stream {stream} under account {} not found.", store::ACCOUNT))),
                 "throughput_puts" | "throughput_gets" => return Err(kerr("ProvisionedThroughputExceededException", format!("Rate exceeded for stream {stream} under account {}.", store::ACCOUNT))),
                 "expired_iterator" => return Err(kerr("ExpiredIteratorException", "Iterator expired. The iterator was created more than 300000 milliseconds ago.")),
                 "kms_throttling" => return Err(kerr("KMSThrottlingException", "The request was denied due to request throttling by AWS KMS. Retry the request.")),
+                "kms_disabled" => return Err(kerr("KMSDisabledException", format!("The KMS key of stream {stream} under account {} is disabled.", store::ACCOUNT))),
                 "slow_puts" => tokio::time::sleep(Duration::from_millis(c.delay_ms)).await,
                 "partial_failures" => partial = true,
                 _ => {}
@@ -89,18 +101,23 @@ pub async fn call(ctx: &Ctx, op: &str, region: &str, b: Value, producer: &str, p
         }
     }
     let now = clock::now(ctx);
-    let (o, r, p) = (op.to_string(), region.to_string(), producer.to_string());
-    let res = ctx.db.call(move |cn| Ok(match o.as_str() {
-        "CreateStream" => store::create(cn, &b, &r, now),
-        "DeleteStream" => store::delete(cn, &b),
+    let wall = stuntman_core::util::now_ms();
+    let ready = wall + cfg.transition_ms as i64;
+    let lim = Limiter { env: ctx.env.to_string(), on: provoke && cfg.limits, now: wall };
+    let (o, r, p, st) = (op.to_string(), region.to_string(), producer.to_string(), stream.clone());
+    let res = ctx.db.call(move |cn| Ok((|| {
+        if !st.is_empty() && o != "CreateStream" { store::gate(cn, &o, &st)? }
+        let v = match o.as_str() {
+        "CreateStream" => store::create(cn, &b, &r, now, ready),
+        "DeleteStream" => store::delete(cn, &b, ready),
         "DescribeStream" => store::describe(cn, &b, false),
         "DescribeStreamSummary" => store::describe(cn, &b, true),
         "ListStreams" => store::list_streams(cn, &b),
         "ListShards" => store::list_shards(cn, &b, now),
-        "PutRecord" => store::put_record(cn, &b, now, &p),
-        "PutRecords" => store::put_records(cn, &b, now, &p, |i| partial && i % 2 == 1),
+        "PutRecord" => store::put_record(cn, &b, now, &p, &lim),
+        "PutRecords" => store::put_records(cn, &b, now, &p, |i| partial && i % 2 == 1, &lim),
         "GetShardIterator" => store::get_shard_iterator(cn, &b, now),
-        "GetRecords" => store::get_records(cn, &b, now),
+        "GetRecords" => store::get_records(cn, &b, now, &lim),
         "SplitShard" => store::split(cn, &b),
         "MergeShards" => store::merge(cn, &b),
         "UpdateShardCount" => store::update_shard_count(cn, &b),
@@ -109,8 +126,19 @@ pub async fn call(ctx: &Ctx, op: &str, region: &str, b: Value, producer: &str, p
         "AddTagsToStream" | "RemoveTagsFromStream" | "ListTagsForStream" | "TagResource" | "UntagResource" | "ListTagsForResource" => store::tags(cn, &o, &b),
         "RegisterStreamConsumer" | "ListStreamConsumers" | "DescribeStreamConsumer" | "DeregisterStreamConsumer" => store::consumers(cn, &o, &b, now),
         "DescribeLimits" => store::limits(cn),
+        "UpdateStreamMode" => store::update_mode(cn, &b),
+        "StartStreamEncryption" => store::encryption(cn, &b, true),
+        "StopStreamEncryption" => store::encryption(cn, &b, false),
+        "EnableEnhancedMonitoring" => store::monitoring(cn, &b, true),
+        "DisableEnhancedMonitoring" => store::monitoring(cn, &b, false),
         _ => Err(kerr("UnknownOperationException", format!("Kinesis_20131202.{o} is not an operation Stuntman knows"))),
-    })).await.map_err(|e| kerr("InternalFailure", e.message))?;
+        }?;
+        // Resharding, mode and encryption changes: UPDATING for a while, as Kinesis does.
+        if matches!(o.as_str(), "SplitShard" | "MergeShards" | "UpdateShardCount" | "UpdateStreamMode" | "StartStreamEncryption" | "StopStreamEncryption") {
+            store::transition(cn, &st, "UPDATING", ready)?;
+        }
+        Ok(v)
+    })())).await.map_err(|e| kerr("InternalFailure", e.message))?;
     if res.is_ok() {
         if let Some(t) = mutates(op) { ctx.live.send(t, &stream, "updated"); }
     }
@@ -166,6 +194,7 @@ async fn subscribe(ctx: Ctx, b: Value, cbor_ct: bool) -> Response {
     let b2 = b.clone();
     let start = ctx.db.call(move |cn| Ok((|| {
         let (s, _, _, _) = store::consumer(cn, &b2)?;
+        store::gate(cn, "SubscribeToShard", &s.name)?;
         let sh = s.shard(b2["ShardId"].as_str().unwrap_or(""))?.clone();
         let p = &b2["StartingPosition"];
         let from = store::start_at(cn, &s, &sh, p["Type"].as_str().unwrap_or(""), p["SequenceNumber"].as_str(), p["Timestamp"].as_f64())?;

@@ -6,6 +6,8 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 
+use crate::limits::{Limiter, MIB};
+
 pub const SQL: &str = "
 CREATE TABLE IF NOT EXISTS kinesis_streams(name TEXT PRIMARY KEY, arn TEXT NOT NULL, mode TEXT NOT NULL, retention INTEGER NOT NULL DEFAULT 24, created INTEGER NOT NULL,
   tags TEXT NOT NULL DEFAULT '{}', next_seq INTEGER NOT NULL DEFAULT 1, next_shard INTEGER NOT NULL DEFAULT 0);
@@ -15,6 +17,8 @@ CREATE TABLE IF NOT EXISTS kinesis_records(stream TEXT NOT NULL, shard TEXT NOT 
   producer TEXT NOT NULL DEFAULT '', PRIMARY KEY(stream, seq));
 CREATE INDEX IF NOT EXISTS kinesis_records_shard ON kinesis_records(stream, shard, seq);
 CREATE TABLE IF NOT EXISTS kinesis_consumers(stream TEXT NOT NULL, name TEXT NOT NULL, arn TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(stream, name));
+CREATE TABLE IF NOT EXISTS kinesis_stream_state(name TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'ACTIVE', ready_at INTEGER NOT NULL DEFAULT 0,
+  encryption TEXT NOT NULL DEFAULT 'NONE', key_id TEXT, metrics TEXT NOT NULL DEFAULT '[]');
 ";
 
 pub const ACCOUNT: &str = "000000000000";
@@ -63,6 +67,13 @@ pub struct Stream {
     pub next_seq: i64,
     pub next_shard: i64,
     pub shards: Vec<Shard>,
+    /// CREATING | UPDATING | ACTIVE | DELETING; the transition ends at `ready_at` (wall clock, ms).
+    pub status: String,
+    pub ready_at: i64,
+    /// NONE | KMS (records are not really encrypted).
+    pub encryption: String,
+    pub key_id: Option<String>,
+    pub metrics: Vec<String>,
 }
 
 pub fn seq_str(n: i64) -> String {
@@ -125,10 +136,55 @@ impl Stream {
     }
 }
 
+fn wall() -> i64 {
+    stuntman_core::util::now_ms()
+}
+
+/// Ends the transitions that are due: CREATING and UPDATING become ACTIVE, DELETING streams go.
+pub fn settle(cn: &Connection, now: i64) -> R<()> {
+    cn.execute("UPDATE kinesis_stream_state SET status='ACTIVE' WHERE status IN ('CREATING','UPDATING') AND ready_at<=?1", [now])?;
+    let gone: Vec<String> = cn.prepare("SELECT name FROM kinesis_stream_state WHERE status='DELETING' AND ready_at<=?1")?.query_map([now], |r| r.get(0))?.collect::<Result<_, _>>()?;
+    for n in gone { purge(cn, &n)? }
+    Ok(())
+}
+
+fn purge(cn: &Connection, name: &str) -> R<()> {
+    for t in ["kinesis_streams WHERE name", "kinesis_shards WHERE stream", "kinesis_records WHERE stream", "kinesis_consumers WHERE stream", "kinesis_stream_state WHERE name"] {
+        cn.execute(&format!("DELETE FROM {t}=?1"), [name])?;
+    }
+    Ok(())
+}
+
+/// Starts a transition (UPDATING after a reshard, mode or encryption change) that ends at `ready`.
+pub fn transition(cn: &Connection, name: &str, status: &str, ready: i64) -> R<()> {
+    cn.execute("INSERT INTO kinesis_stream_state(name, status, ready_at) VALUES(?1,?2,?3) ON CONFLICT(name) DO UPDATE SET status=?2, ready_at=?3", params![name, status, ready])?;
+    Ok(())
+}
+
+/// What a call may do in the stream's state: control-plane changes need ACTIVE
+/// (ResourceInUseException); reads and writes work while UPDATING, not while CREATING or DELETING.
+pub fn gate(cn: &Connection, op: &str, name: &str) -> R<()> {
+    let s = load(cn, name)?;
+    let data = matches!(op, "PutRecord" | "PutRecords" | "GetShardIterator" | "GetRecords" | "SubscribeToShard");
+    let control = matches!(op, "DeleteStream" | "SplitShard" | "MergeShards" | "UpdateShardCount" | "UpdateStreamMode" | "StartStreamEncryption" | "StopStreamEncryption"
+        | "IncreaseStreamRetentionPeriod" | "DecreaseStreamRetentionPeriod" | "AddTagsToStream" | "RemoveTagsFromStream" | "TagResource" | "UntagResource"
+        | "RegisterStreamConsumer" | "EnableEnhancedMonitoring" | "DisableEnhancedMonitoring");
+    if data && (s.status == "CREATING" || s.status == "DELETING") {
+        return Err(kerr("ResourceNotFoundException", format!("Stream {name} under account {ACCOUNT} not found.")));
+    }
+    if control && s.status != "ACTIVE" {
+        return Err(kerr("ResourceInUseException", format!("Stream {name} under account {ACCOUNT} not ACTIVE, instead in state {}", s.status)));
+    }
+    Ok(())
+}
+
 pub fn load(cn: &Connection, name: &str) -> R<Stream> {
-    let s = cn.query_row("SELECT name, arn, mode, retention, created, tags, next_seq, next_shard FROM kinesis_streams WHERE name=?1", [name], |r| Ok(Stream {
+    settle(cn, wall())?;
+    let s = cn.query_row("SELECT s.name, arn, mode, retention, created, tags, next_seq, next_shard, coalesce(x.status,'ACTIVE'), coalesce(x.ready_at,0), coalesce(x.encryption,'NONE'), x.key_id, coalesce(x.metrics,'[]')
+        FROM kinesis_streams s LEFT JOIN kinesis_stream_state x ON x.name=s.name WHERE s.name=?1", [name], |r| Ok(Stream {
         name: r.get(0)?, arn: r.get(1)?, mode: r.get(2)?, retention: r.get(3)?, created: r.get(4)?,
         tags: serde_json::from_str(&r.get::<_, String>(5)?).unwrap_or_default(), next_seq: r.get(6)?, next_shard: r.get(7)?, shards: vec![],
+        status: r.get(8)?, ready_at: r.get(9)?, encryption: r.get(10)?, key_id: r.get(11)?, metrics: serde_json::from_str(&r.get::<_, String>(12)?).unwrap_or_default(),
     })).optional()?;
     let mut s = s.ok_or_else(|| kerr("ResourceNotFoundException", format!("Stream {name} under account {ACCOUNT} not found.")))?;
     let mut st = cn.prepare("SELECT id, parent, adjacent, start_hash, end_hash, start_seq, end_seq FROM kinesis_shards WHERE stream=?1 ORDER BY id")?;
@@ -140,6 +196,7 @@ pub fn load(cn: &Connection, name: &str) -> R<Stream> {
 }
 
 pub fn names(cn: &Connection) -> R<Vec<String>> {
+    settle(cn, wall())?;
     let mut st = cn.prepare("SELECT name FROM kinesis_streams ORDER BY name")?;
     let v = st.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
     Ok(v)
@@ -188,7 +245,8 @@ fn shard_count(b: &Value, key: &str) -> R<i64> {
     Ok(n)
 }
 
-pub fn create(cn: &Connection, b: &Value, region: &str, now: i64) -> R<Value> {
+/// The stream is CREATING until `ready` (wall clock), then ACTIVE.
+pub fn create(cn: &Connection, b: &Value, region: &str, now: i64, ready: i64) -> R<Value> {
     let name = b["StreamName"].as_str().filter(|n| !n.is_empty()).ok_or_else(|| kerr("ValidationException", "StreamName is required"))?.to_string();
     if name.len() > 128 || !name.chars().all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c)) {
         return Err(kerr("ValidationException", format!("1 validation error detected: Value '{name}' at 'streamName' failed to satisfy constraint: Member must satisfy regular expression pattern: [a-zA-Z0-9_.-]+")));
@@ -201,20 +259,21 @@ pub fn create(cn: &Connection, b: &Value, region: &str, now: i64) -> R<Value> {
     let arn = format!("arn:aws:kinesis:{region}:{ACCOUNT}:stream/{name}");
     let tags = b["Tags"].as_object().cloned().unwrap_or_default();
     cn.execute("INSERT INTO kinesis_streams(name, arn, mode, created, tags) VALUES(?1,?2,?3,?4,?5)", params![name, arn, mode, now, Value::Object(tags).to_string()])?;
+    transition(cn, &name, "CREATING", ready)?;
     let mut s = load(cn, &name)?;
     for r in uniform(n as u128) { add_shard(cn, &mut s, None, None, r)?; }
     Ok(json!({}))
 }
 
-pub fn delete(cn: &Connection, b: &Value) -> R<Value> {
+/// The stream is DELETING until `ready` (wall clock), then gone.
+pub fn delete(cn: &Connection, b: &Value, ready: i64) -> R<Value> {
     let s = load(cn, &name_of(b)?)?;
     let consumers: i64 = cn.query_row("SELECT COUNT(*) FROM kinesis_consumers WHERE stream=?1", [&s.name], |r| r.get(0))?;
     if consumers > 0 && !b["EnforceConsumerDeletion"].as_bool().unwrap_or(false) {
         return Err(kerr("ResourceInUseException", format!("Stream {} has {consumers} registered consumer(s); deregister them or set EnforceConsumerDeletion.", s.name)));
     }
-    for t in ["kinesis_streams WHERE name", "kinesis_shards WHERE stream", "kinesis_records WHERE stream", "kinesis_consumers WHERE stream"] {
-        cn.execute(&format!("DELETE FROM {t}=?1"), [&s.name])?;
-    }
+    transition(cn, &s.name, "DELETING", ready)?;
+    settle(cn, wall())?;
     Ok(json!({}))
 }
 
@@ -224,8 +283,9 @@ fn open_count(s: &Stream) -> usize {
 
 pub fn describe(cn: &Connection, b: &Value, summary: bool) -> R<Value> {
     let s = load(cn, &name_of(b)?)?;
-    let mut d = json!({"StreamName": s.name, "StreamARN": s.arn, "StreamStatus": "ACTIVE", "StreamModeDetails": s.mode_json(), "RetentionPeriodHours": s.retention,
-        "StreamCreationTimestamp": now_s(s.created), "EnhancedMonitoring": [{"ShardLevelMetrics": []}], "EncryptionType": "NONE"});
+    let mut d = json!({"StreamName": s.name, "StreamARN": s.arn, "StreamStatus": s.status, "StreamModeDetails": s.mode_json(), "RetentionPeriodHours": s.retention,
+        "StreamCreationTimestamp": now_s(s.created), "EnhancedMonitoring": [{"ShardLevelMetrics": s.metrics}], "EncryptionType": s.encryption});
+    if let Some(k) = &s.key_id { d["KeyId"] = json!(k); }
     if summary {
         let consumers: i64 = cn.query_row("SELECT COUNT(*) FROM kinesis_consumers WHERE stream=?1", [&s.name], |r| r.get(0))?;
         d["OpenShardCount"] = json!(open_count(&s));
@@ -248,7 +308,7 @@ pub fn list_streams(cn: &Connection, b: &Value) -> R<Value> {
     let mut sums = vec![];
     for n in &page {
         let s = load(cn, n)?;
-        sums.push(json!({"StreamName": s.name, "StreamARN": s.arn, "StreamStatus": "ACTIVE", "StreamModeDetails": s.mode_json(), "StreamCreationTimestamp": now_s(s.created)}));
+        sums.push(json!({"StreamName": s.name, "StreamARN": s.arn, "StreamStatus": s.status, "StreamModeDetails": s.mode_json(), "StreamCreationTimestamp": now_s(s.created)}));
     }
     let more = all.len() > limit;
     let mut v = json!({"StreamNames": page, "HasMoreStreams": more, "StreamSummaries": sums});
@@ -284,11 +344,17 @@ pub fn list_shards(cn: &Connection, b: &Value, now: i64) -> R<Value> {
 // ---------------------------------------------------------------- records
 
 /// One record as the API returns it.
-fn rec_json(seq: i64, pkey: &str, data: &[u8], at: i64) -> Value {
-    json!({"SequenceNumber": seq_str(seq), "ApproximateArrivalTimestamp": now_s(at), "Data": B64.encode(data), "PartitionKey": pkey})
+fn rec_json(seq: i64, pkey: &str, data: &[u8], at: i64, kms: bool) -> Value {
+    let mut v = json!({"SequenceNumber": seq_str(seq), "ApproximateArrivalTimestamp": now_s(at), "Data": B64.encode(data), "PartitionKey": pkey});
+    if kms { v["EncryptionType"] = json!("KMS") }
+    v
 }
 
-fn put_one(cn: &Connection, s: &mut Stream, r: &Value, now: i64, producer: &str) -> R<(String, i64)> {
+fn throttled(s: &Stream, shard: &str) -> KErr {
+    kerr("ProvisionedThroughputExceededException", format!("Rate exceeded for shard {shard} in stream {} under account {ACCOUNT}.", s.name))
+}
+
+fn put_one(cn: &Connection, s: &mut Stream, r: &Value, now: i64, producer: &str, lim: &Limiter) -> R<(String, i64)> {
     let pkey = r["PartitionKey"].as_str().unwrap_or("");
     if pkey.is_empty() || pkey.chars().count() > 256 {
         return Err(kerr("ValidationException", "1 validation error detected: Value at 'partitionKey' failed to satisfy constraint: Member must have length between 1 and 256"));
@@ -302,6 +368,7 @@ fn put_one(cn: &Connection, s: &mut Stream, r: &Value, now: i64, producer: &str)
         None => hash(pkey),
     };
     let shard = s.shards.iter().find(|x| x.open() && x.start <= h && h <= x.end).map(|x| x.id.clone()).ok_or_else(|| kerr("InternalFailure", "no open shard covers the hash key"))?;
+    if !lim.write(s, &shard, (data.len() + pkey.len()) as u64) { return Err(throttled(s, &shard)) }
     let seq = s.next_seq;
     s.next_seq += 1;
     cn.execute("INSERT INTO kinesis_records VALUES(?1,?2,?3,?4,?5,?6,?7)", params![s.name, shard, seq, pkey, data, now, producer])?;
@@ -313,21 +380,25 @@ fn prune(cn: &Connection, s: &Stream, now: i64) -> R<()> {
     Ok(())
 }
 
-pub fn put_record(cn: &mut Connection, b: &Value, now: i64, producer: &str) -> R<Value> {
+pub fn put_record(cn: &mut Connection, b: &Value, now: i64, producer: &str, lim: &Limiter) -> R<Value> {
     let tx = cn.transaction()?;
     let mut s = load(&tx, &name_of(b)?)?;
-    let (shard, seq) = put_one(&tx, &mut s, b, now, producer)?;
+    let (shard, seq) = put_one(&tx, &mut s, b, now, producer, lim)?;
     tx.execute("UPDATE kinesis_streams SET next_seq=?2 WHERE name=?1", params![s.name, s.next_seq])?;
     prune(&tx, &s, now)?;
     tx.commit()?;
-    Ok(json!({"ShardId": shard, "SequenceNumber": seq_str(seq), "EncryptionType": "NONE"}))
+    Ok(json!({"ShardId": shard, "SequenceNumber": seq_str(seq), "EncryptionType": s.encryption}))
 }
 
-/// `fail(i)`: the provoked partial failure of record i.
-pub fn put_records(cn: &mut Connection, b: &Value, now: i64, producer: &str, fail: impl Fn(usize) -> bool) -> R<Value> {
+/// `fail(i)`: the provoked partial failure of record i. A record over the shard's limit fails alone.
+pub fn put_records(cn: &mut Connection, b: &Value, now: i64, producer: &str, fail: impl Fn(usize) -> bool, lim: &Limiter) -> R<Value> {
     let recs = b["Records"].as_array().cloned().unwrap_or_default();
     if recs.is_empty() || recs.len() > 500 {
         return Err(kerr("ValidationException", "1 validation error detected: Value at 'records' failed to satisfy constraint: Member must have length between 1 and 500"));
+    }
+    let size: usize = recs.iter().map(|r| r["Data"].as_str().map_or(0, |d| d.len() / 4 * 3) + r["PartitionKey"].as_str().map_or(0, str::len)).sum();
+    if size as u64 > 5 * MIB {
+        return Err(kerr("InvalidArgumentException", "Records size exceeds 5 MB limit"));
     }
     let tx = cn.transaction()?;
     let mut s = load(&tx, &name_of(b)?)?;
@@ -340,13 +411,16 @@ pub fn put_records(cn: &mut Connection, b: &Value, now: i64, producer: &str, fai
             out.push(json!({"ErrorCode": "ProvisionedThroughputExceededException", "ErrorMessage": format!("Rate exceeded for shard {sh} in stream {} under account {ACCOUNT}.", s.name)}));
             continue;
         }
-        let (shard, seq) = put_one(&tx, &mut s, r, now, producer)?;
-        out.push(json!({"ShardId": shard, "SequenceNumber": seq_str(seq)}));
+        match put_one(&tx, &mut s, r, now, producer, lim) {
+            Ok((shard, seq)) => out.push(json!({"ShardId": shard, "SequenceNumber": seq_str(seq)})),
+            Err(e) if e.code == "ProvisionedThroughputExceededException" => { failed += 1; out.push(json!({"ErrorCode": e.code, "ErrorMessage": e.msg})) }
+            Err(e) => return Err(e),
+        }
     }
     tx.execute("UPDATE kinesis_streams SET next_seq=?2 WHERE name=?1", params![s.name, s.next_seq])?;
     prune(&tx, &s, now)?;
     tx.commit()?;
-    Ok(json!({"FailedRecordCount": failed, "Records": out, "EncryptionType": "NONE"}))
+    Ok(json!({"FailedRecordCount": failed, "Records": out, "EncryptionType": s.encryption}))
 }
 
 pub fn make_iterator(stream: &str, shard: &str, from: i64, now: i64) -> String {
@@ -399,14 +473,17 @@ pub struct Batch {
 pub fn read(cn: &Connection, s: &Stream, shard: &Shard, from: i64, limit: usize, now: i64) -> R<Batch> {
     let mut st = cn.prepare("SELECT seq, pkey, data, at FROM kinesis_records WHERE stream=?1 AND shard=?2 AND seq>=?3 AND at>=?4 ORDER BY seq LIMIT ?5")?;
     let rows: Vec<(i64, String, Vec<u8>, i64)> = st.query_map(params![s.name, shard.id, from, now - s.retention * 3_600_000, limit as i64 + 1], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<Result<_, _>>()?;
-    let more = rows.len() > limit;
-    let behind = if more { (now - rows[limit].3).max(0) } else { 0 };
-    let rows = &rows[..rows.len().min(limit)];
+    // At most `limit` records and 10 MiB (always one record).
+    let (mut n, mut bytes) = (0, 0);
+    while n < rows.len().min(limit) && (n == 0 || bytes + rows[n].2.len() <= 10 * MIB as usize) { bytes += rows[n].2.len(); n += 1 }
+    let more = n < rows.len();
+    let behind = if more { (now - rows[n].3).max(0) } else { 0 };
+    let rows = &rows[..n];
     let last = rows.last().map(|r| r.0);
     let next_from = last.map(|l| l + 1).unwrap_or(from);
     let done = !more && shard.end_seq.is_some();
     Ok(Batch {
-        records: rows.iter().map(|(q, k, d, a)| rec_json(*q, k, d, *a)).collect(),
+        records: rows.iter().map(|(q, k, d, a)| rec_json(*q, k, d, *a, s.encryption == "KMS")).collect(),
         last,
         next: (!done).then_some(next_from),
         behind,
@@ -414,7 +491,7 @@ pub fn read(cn: &Connection, s: &Stream, shard: &Shard, from: i64, limit: usize,
     })
 }
 
-pub fn get_records(cn: &Connection, b: &Value, now: i64) -> R<Value> {
+pub fn get_records(cn: &Connection, b: &Value, now: i64, lim: &Limiter) -> R<Value> {
     let it = b["ShardIterator"].as_str().unwrap_or("");
     let (name, shard, from, issued) = parse_iterator(it)?;
     if now - issued > ITERATOR_TTL {
@@ -423,7 +500,9 @@ pub fn get_records(cn: &Connection, b: &Value, now: i64) -> R<Value> {
     let s = load(cn, &name)?;
     let sh = s.shard(&shard)?;
     let limit = b["Limit"].as_u64().unwrap_or(10_000).clamp(1, 10_000) as usize;
+    if !lim.read_call(&s, &shard) { return Err(throttled(&s, &shard)) }
     let r = read(cn, &s, sh, from, limit, now)?;
+    lim.read_bytes(&s, &shard, r.records.iter().map(|x| x["Data"].as_str().map_or(0, |d| d.len() / 4 * 3) as u64).sum());
     let mut v = json!({"Records": r.records, "MillisBehindLatest": r.behind});
     if let Some(n) = r.next { v["NextShardIterator"] = json!(make_iterator(&name, &shard, n, now)); }
     if !r.children.is_empty() { v["ChildShards"] = json!(r.children); }
@@ -481,12 +560,83 @@ pub fn update_shard_count(cn: &mut Connection, b: &Value) -> R<Value> {
 }
 
 /// The provoked resharding: the widest open shard is split at its middle.
-pub fn reshard(cn: &mut Connection, name: &str) -> R<Value> {
+pub fn reshard(cn: &mut Connection, name: &str, ready: i64) -> R<Value> {
+    gate(cn, "SplitShard", name)?;
     let s = load(cn, name)?;
     let sh = s.shards.iter().filter(|x| x.open()).max_by_key(|x| x.end - x.start).ok_or_else(|| kerr("ResourceInUseException", "no open shard"))?.clone();
     let mid = sh.start + (sh.end - sh.start) / 2 + 1;
     split(cn, &json!({"StreamName": name, "ShardToSplit": sh.id, "NewStartingHashKey": mid.to_string()}))?;
+    transition(cn, name, "UPDATING", ready)?;
     Ok(json!({"stream": name, "split": sh.id}))
+}
+
+// ---------------------------------------------------------------- mode, encryption, monitoring
+
+/// UpdateStreamMode: PROVISIONED ↔ ON_DEMAND; the shards stay as they are.
+pub fn update_mode(cn: &Connection, b: &Value) -> R<Value> {
+    let s = load(cn, &name_of(b)?)?;
+    let m = b["StreamModeDetails"]["StreamMode"].as_str().unwrap_or("");
+    if m != "PROVISIONED" && m != "ON_DEMAND" {
+        return Err(kerr("ValidationException", format!("1 validation error detected: Value '{m}' at 'streamModeDetails.streamMode' failed to satisfy constraint: Member must satisfy enum value set: [PROVISIONED, ON_DEMAND]")));
+    }
+    if m == s.mode { return Err(kerr("InvalidArgumentException", format!("Stream {} under account {ACCOUNT} is already in {m} mode.", s.name))) }
+    cn.execute("UPDATE kinesis_streams SET mode=?2 WHERE name=?1", params![s.name, m])?;
+    Ok(json!({}))
+}
+
+/// A KMS key as Kinesis accepts it: key id, key ARN, alias name or alias ARN (alias/aws/kinesis too).
+pub fn kms_key_ok(k: &str) -> bool {
+    let uuid = |x: &str| x.len() == 36 && x.chars().enumerate().all(|(i, c)| if [8, 13, 18, 23].contains(&i) { c == '-' } else { c.is_ascii_hexdigit() });
+    let mrk = |x: &str| x.strip_prefix("mrk-").is_some_and(|h| h.len() == 32 && h.chars().all(|c| c.is_ascii_hexdigit()));
+    let alias = |x: &str| x.strip_prefix("alias/").is_some_and(|a| !a.is_empty() && a.len() <= 250 && a.chars().all(|c| c.is_ascii_alphanumeric() || "/_-".contains(c)));
+    if let Some(rest) = k.strip_prefix("arn:aws:kms:") {
+        let p: Vec<&str> = rest.splitn(3, ':').collect();
+        return p.len() == 3 && !p[0].is_empty() && p[1].len() == 12 && p[1].chars().all(|c| c.is_ascii_digit())
+            && (p[2].strip_prefix("key/").is_some_and(|x| uuid(x) || mrk(x)) || alias(p[2]));
+    }
+    uuid(k) || mrk(k) || alias(k)
+}
+
+/// Start/StopStreamEncryption: EncryptionType KMS and a well-formed KeyId. Nothing is encrypted.
+pub fn encryption(cn: &Connection, b: &Value, start: bool) -> R<Value> {
+    let s = load(cn, &name_of(b)?)?;
+    let t = b["EncryptionType"].as_str().unwrap_or("");
+    if t != "KMS" { return Err(kerr("InvalidArgumentException", format!("EncryptionType {t} is not valid: it must be KMS."))) }
+    let k = b["KeyId"].as_str().unwrap_or("");
+    if !kms_key_ok(k) {
+        return Err(kerr("InvalidArgumentException", format!("KeyId {k} is not valid: give a key ID, key ARN, alias name (alias/…) or alias ARN.")));
+    }
+    let (enc, key) = if start { ("KMS", Some(k)) } else { ("NONE", None) };
+    cn.execute("INSERT INTO kinesis_stream_state(name, encryption, key_id) VALUES(?1,?2,?3) ON CONFLICT(name) DO UPDATE SET encryption=?2, key_id=?3", params![s.name, enc, key])?;
+    Ok(json!({}))
+}
+
+pub const METRICS: [&str; 7] = ["IncomingBytes", "IncomingRecords", "OutgoingBytes", "OutgoingRecords", "WriteProvisionedThroughputExceeded", "ReadProvisionedThroughputExceeded", "IteratorAgeMilliseconds"];
+
+/// Enable/DisableEnhancedMonitoring: the shard-level metrics are kept and returned (none are emitted).
+pub fn monitoring(cn: &Connection, b: &Value, enable: bool) -> R<Value> {
+    let s = load(cn, &name_of(b)?)?;
+    let asked: Vec<String> = b["ShardLevelMetrics"].as_array().cloned().unwrap_or_default().iter().filter_map(|v| v.as_str().map(String::from)).collect();
+    if asked.is_empty() { return Err(kerr("ValidationException", "1 validation error detected: Value null at 'shardLevelMetrics' failed to satisfy constraint: Member must not be null")) }
+    let mut want: Vec<String> = vec![];
+    for m in &asked {
+        if m == "ALL" { want = METRICS.iter().map(|x| x.to_string()).collect(); continue }
+        if !METRICS.contains(&m.as_str()) {
+            return Err(kerr("ValidationException", format!("1 validation error detected: Value '[{m}]' at 'shardLevelMetrics' failed to satisfy constraint: Member must satisfy enum value set: [ALL, {}]", METRICS.join(", "))));
+        }
+        if !want.contains(m) { want.push(m.clone()) }
+    }
+    let desired: Vec<String> = if enable {
+        METRICS.iter().map(|x| x.to_string()).filter(|x| s.metrics.contains(x) || want.contains(x)).collect()
+    } else {
+        s.metrics.iter().filter(|x| !want.contains(x)).cloned().collect()
+    };
+    cn.execute("INSERT INTO kinesis_stream_state(name, metrics) VALUES(?1,?2) ON CONFLICT(name) DO UPDATE SET metrics=?2", params![s.name, json!(desired).to_string()])?;
+    Ok(json!({"StreamName": s.name, "StreamARN": s.arn, "CurrentShardLevelMetrics": s.metrics, "DesiredShardLevelMetrics": desired}))
+}
+
+pub fn encrypted(cn: &Connection, name: &str) -> bool {
+    load(cn, name).is_ok_and(|s| s.encryption == "KMS")
 }
 
 // ---------------------------------------------------------------- retention, tags, consumers
@@ -595,7 +745,7 @@ pub fn overview(cn: &Connection) -> R<Vec<Value>> {
         }
         let mut st = cn.prepare("SELECT name, arn, created FROM kinesis_consumers WHERE stream=?1 ORDER BY name")?;
         let cons: Vec<Value> = st.query_map([&s.name], |r| Ok(json!({"name": r.get::<_, String>(0)?, "arn": r.get::<_, String>(1)?, "createdAt": r.get::<_, i64>(2)?})))?.collect::<Result<_, _>>()?;
-        out.push(json!({"name": s.name, "arn": s.arn, "mode": s.mode, "status": "ACTIVE", "retentionHours": s.retention, "createdAt": s.created, "tags": s.tags,
+        out.push(json!({"name": s.name, "arn": s.arn, "mode": s.mode, "status": s.status, "encryption": s.encryption, "keyId": s.key_id, "metrics": s.metrics, "retentionHours": s.retention, "createdAt": s.created, "tags": s.tags,
             "records": total, "openShards": open_count(&s), "shards": shards, "consumers": cons}));
     }
     Ok(out)
@@ -633,7 +783,7 @@ mod t {
     }
 
     fn put(c: &mut Connection, pk: &str, data: &str) -> Value {
-        put_record(c, &json!({"StreamName": "shipments", "PartitionKey": pk, "Data": B64.encode(data)}), 1_000, "app").unwrap()
+        put_record(c, &json!({"StreamName": "shipments", "PartitionKey": pk, "Data": B64.encode(data)}), 1_000, "app", &Limiter::off()).unwrap()
     }
 
     #[test]
@@ -654,8 +804,8 @@ mod t {
     #[test]
     fn put_read_split_and_children() {
         let mut c = db();
-        create(&c, &json!({"StreamName": "shipments", "ShardCount": 2}), "us-east-1", 0).unwrap();
-        assert_eq!(create(&c, &json!({"StreamName": "shipments", "ShardCount": 2}), "us-east-1", 0).unwrap_err().code, "ResourceInUseException");
+        create(&c, &json!({"StreamName": "shipments", "ShardCount": 2}), "us-east-1", 0, 0).unwrap();
+        assert_eq!(create(&c, &json!({"StreamName": "shipments", "ShardCount": 2}), "us-east-1", 0, 0).unwrap_err().code, "ResourceInUseException");
         for i in 0..6 { put(&mut c, &format!("SHP-{i}"), &format!("{{\"n\":{i}}}")); }
         let s = load(&c, "shipments").unwrap();
         let total: usize = s.shards.iter().map(|sh| read(&c, &s, sh, sh.start_seq, 100, 1_000).unwrap().records.len()).sum();
@@ -665,9 +815,9 @@ mod t {
         assert_eq!(a["ShardId"], b["ShardId"]);
         // Iterators: TRIM_HORIZON reads all, AFTER the first skips it, an old one expired.
         let it = get_shard_iterator(&c, &json!({"StreamName": "shipments", "ShardId": a["ShardId"], "ShardIteratorType": "AFTER_SEQUENCE_NUMBER", "StartingSequenceNumber": a["SequenceNumber"]}), 1_000).unwrap();
-        let r = get_records(&c, &json!({"ShardIterator": it["ShardIterator"], "Limit": 1}), 2_000).unwrap();
+        let r = get_records(&c, &json!({"ShardIterator": it["ShardIterator"], "Limit": 1}), 2_000, &Limiter::off()).unwrap();
         assert_eq!(r["Records"][0]["SequenceNumber"], b["SequenceNumber"]);
-        assert_eq!(get_records(&c, &json!({"ShardIterator": it["ShardIterator"]}), 1_000 + ITERATOR_TTL + 1).unwrap_err().code, "ExpiredIteratorException");
+        assert_eq!(get_records(&c, &json!({"ShardIterator": it["ShardIterator"]}), 1_000 + ITERATOR_TTL + 1, &Limiter::off()).unwrap_err().code, "ExpiredIteratorException");
         // Split shard 0: it closes, its children start after; reading it to its end shows them.
         let s0 = s.shards[0].clone();
         split(&mut c, &json!({"StreamName": "shipments", "ShardToSplit": s0.id, "NewStartingHashKey": (s0.end / 2).to_string()})).unwrap();
@@ -681,7 +831,7 @@ mod t {
         let u = update_shard_count(&mut c, &json!({"StreamName": "shipments", "TargetShardCount": 4})).unwrap();
         assert_eq!((u["CurrentShardCount"].as_i64(), u["TargetShardCount"].as_i64()), (Some(2), Some(4)));
         // Partial failures: every second record.
-        let p = put_records(&mut c, &json!({"StreamName": "shipments", "Records": [{"PartitionKey": "a", "Data": "eA=="}, {"PartitionKey": "b", "Data": "eA=="}, {"PartitionKey": "c", "Data": "eA=="}]}), 1_000, "app", |i| i % 2 == 1).unwrap();
+        let p = put_records(&mut c, &json!({"StreamName": "shipments", "Records": [{"PartitionKey": "a", "Data": "eA=="}, {"PartitionKey": "b", "Data": "eA=="}, {"PartitionKey": "c", "Data": "eA=="}]}), 1_000, "app", |i| i % 2 == 1, &Limiter::off()).unwrap();
         assert_eq!(p["FailedRecordCount"], 1);
         assert_eq!(p["Records"][1]["ErrorCode"], "ProvisionedThroughputExceededException");
         // Retention on the clock: 25 h later nothing is read.
@@ -689,5 +839,47 @@ mod t {
         let sh = s.shards.iter().find(|x| x.open()).unwrap();
         assert!(read(&c, &s, s.shard(&s.shards[1].id).unwrap(), 0, 100, 25 * 3_600_000).unwrap().records.is_empty());
         let _ = sh;
+    }
+
+    #[test]
+    fn lifecycle_mode_encryption_monitoring() {
+        let c = db();
+        let far = wall() + 600_000;
+        create(&c, &json!({"StreamName": "orders", "ShardCount": 1}), "us-east-1", 0, far).unwrap();
+        assert_eq!(load(&c, "orders").unwrap().status, "CREATING");
+        assert_eq!(gate(&c, "PutRecord", "orders").unwrap_err().code, "ResourceNotFoundException");
+        assert_eq!(gate(&c, "SplitShard", "orders").unwrap_err().code, "ResourceInUseException");
+        assert!(gate(&c, "DescribeStream", "orders").is_ok());
+        settle(&c, far).unwrap();
+        assert_eq!(load(&c, "orders").unwrap().status, "ACTIVE");
+        transition(&c, "orders", "UPDATING", far + 600_000).unwrap();
+        assert!(gate(&c, "PutRecord", "orders").is_ok());
+        assert_eq!(gate(&c, "UpdateStreamMode", "orders").unwrap_err().code, "ResourceInUseException");
+        transition(&c, "orders", "ACTIVE", 0).unwrap();
+        // Mode.
+        update_mode(&c, &json!({"StreamName": "orders", "StreamModeDetails": {"StreamMode": "ON_DEMAND"}})).unwrap();
+        assert_eq!(load(&c, "orders").unwrap().mode, "ON_DEMAND");
+        assert_eq!(update_mode(&c, &json!({"StreamName": "orders", "StreamModeDetails": {"StreamMode": "ON_DEMAND"}})).unwrap_err().code, "InvalidArgumentException");
+        // Encryption: key formats.
+        for k in ["alias/aws/kinesis", "1234abcd-12ab-34cd-56ef-1234567890ab", "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab",
+                  "arn:aws:kms:us-east-1:111122223333:alias/orders-key", "mrk-1234abcd12ab34cd56ef1234567890ab"] { assert!(kms_key_ok(k), "{k}") }
+        for k in ["", "orders-key", "arn:aws:kms:us-east-1:1:key/x", "1234abcd-12ab-34cd-56ef-1234567890aZ", "arn:aws:s3:::bucket"] { assert!(!kms_key_ok(k), "{k}") }
+        assert_eq!(encryption(&c, &json!({"StreamName": "orders", "EncryptionType": "KMS", "KeyId": "nope"}), true).unwrap_err().code, "InvalidArgumentException");
+        encryption(&c, &json!({"StreamName": "orders", "EncryptionType": "KMS", "KeyId": "alias/aws/kinesis"}), true).unwrap();
+        let d = describe(&c, &json!({"StreamName": "orders"}), true).unwrap();
+        assert_eq!((d["StreamDescriptionSummary"]["EncryptionType"].as_str(), d["StreamDescriptionSummary"]["KeyId"].as_str()), (Some("KMS"), Some("alias/aws/kinesis")));
+        assert!(encrypted(&c, "orders"));
+        // Monitoring.
+        let m = monitoring(&c, &json!({"StreamName": "orders", "ShardLevelMetrics": ["IncomingBytes"]}), true).unwrap();
+        assert_eq!(m["DesiredShardLevelMetrics"], json!(["IncomingBytes"]));
+        let m = monitoring(&c, &json!({"StreamName": "orders", "ShardLevelMetrics": ["ALL"]}), true).unwrap();
+        assert_eq!(m["DesiredShardLevelMetrics"].as_array().unwrap().len(), 7);
+        let m = monitoring(&c, &json!({"StreamName": "orders", "ShardLevelMetrics": ["IncomingBytes"]}), false).unwrap();
+        assert_eq!(m["DesiredShardLevelMetrics"].as_array().unwrap().len(), 6);
+        // Delete: DELETING, then gone.
+        delete(&c, &json!({"StreamName": "orders"}), far).unwrap();
+        assert_eq!(load(&c, "orders").unwrap().status, "DELETING");
+        settle(&c, far).unwrap();
+        assert_eq!(load(&c, "orders").unwrap_err().code, "ResourceNotFoundException");
     }
 }

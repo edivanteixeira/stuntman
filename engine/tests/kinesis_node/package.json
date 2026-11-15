@@ -1,0 +1,9 @@
+{
+  "name": "stuntman-kinesis-node",
+  "private": true,
+  "type": "module",
+  "description": "The AWS SDK for JavaScript v3 against Stuntman's Kinesis; run by tests/e2e_kinesis.py",
+  "dependencies": {
+    "@aws-sdk/client-kinesis": "3.1150.0"
+  }
+}

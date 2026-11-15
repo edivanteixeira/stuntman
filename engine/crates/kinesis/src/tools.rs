@@ -16,21 +16,25 @@ async fn db<T: Send + 'static>(ctx: &Ctx, f: impl FnOnce(&mut rusqlite::Connecti
     ctx.db.call(move |cn| Ok(f(cn))).await?.map_err(e)
 }
 
+fn provoked(c: &config::Config) -> Value {
+    if c.provoke.is_empty() { Value::Null } else { json!({"kind": c.provoke, "times": c.times, "stream": c.stream, "delayMs": c.delay_ms}) }
+}
+
 fn endpoint() -> String {
     format!("http://localhost:{}", crate::port())
 }
 
 pub fn all() -> Vec<Tool> {
     vec![
-        Tool::new("list_kinesis_streams", "The Kinesis streams of this environment: mode, retention, shards (hash key range, sequence range, parent shards, open or closed, records), enhanced fan-out consumers, tags; how to connect; the provocation.", |ctx, _a| async move {
+        Tool::new("list_kinesis_streams", "The Kinesis streams of this environment: status (CREATING, UPDATING, ACTIVE, DELETING), mode, encryption (KMS key), shard-level metrics, retention, shards (hash key range, sequence range, parent shards, open or closed, records), enhanced fan-out consumers, tags; how to connect; whether the throughput limits are enforced; the provocation.", |ctx, _a| async move {
             let streams = db(&ctx, |cn| store::overview(cn)).await?;
             let c = config::load(&ctx);
             Ok(json!({"streams": streams, "endpoint": endpoint(), "connect": {"AWS_ENDPOINT_URL_KINESIS": endpoint(), "AWS_REGION": "us-east-1", "AWS_ACCESS_KEY_ID": "any", "AWS_SECRET_ACCESS_KEY": "any"},
-                "provoke": if c.provoke.is_empty() { Value::Null } else { json!({"kind": c.provoke, "times": c.times, "stream": c.stream, "delayMs": c.delay_ms}) },
+                "limits": if c.limits { "on" } else { "off" }, "transitionMs": c.transition_ms, "provoke": provoked(&c),
                 "provocations": config::PROVOKE.iter().map(|p| json!({"kind": p.0, "label": p.1})).collect::<Vec<_>>()}))
         })
         .route("GET", "/kinesis/streams"),
-        Tool::new("create_kinesis_stream", "Creates a stream: shards = N for provisioned mode (hash key space split evenly), or mode = on_demand (4 shards).", |ctx, a| async move {
+        Tool::new("create_kinesis_stream", "Creates a stream: shards = N for provisioned mode (hash key space split evenly), or mode = on_demand (4 shards). It is CREATING for transition_ms (1 s), then ACTIVE.", |ctx, a| async move {
             let n = a.need("name")?;
             let mut b = json!({"StreamName": n});
             if a.str("mode").is_some_and(|m| m.eq_ignore_ascii_case("on_demand")) { b["StreamModeDetails"] = json!({"StreamMode": "ON_DEMAND"}) } else { b["ShardCount"] = json!(a.u64("shards").unwrap_or(1)) }
@@ -81,27 +85,37 @@ pub fn all() -> Vec<Tool> {
         })
         .req("stream", "shipments").param("contains", "text in the data").param("partition_key", "SHP-1042").param("since", "ms epoch").param("timeout", "30s")
         .route("GET", "/kinesis/streams/{stream}/wait"),
-        Tool::new("set_kinesis", "A provocation on the Kinesis endpoint: throughput_puts, throughput_gets (ProvisionedThroughputExceededException), not_found (ResourceNotFoundException), expired_iterator, kms_throttling, slow_puts (delay_ms), partial_failures (PutRecords fails every second record); times = for the next N calls (0 = until cleared), stream = only that stream; none clears. reshard splits the stream's widest open shard now.", |ctx, a| async move {
-            let p = a.need("provoke")?;
-            if p == "reshard" {
-                let s = a.need("stream")?;
-                let r = db(&ctx, move |cn| store::reshard(cn, &s)).await?;
-                ctx.live.send("kinesis.streams", "", "updated");
-                return Ok(r);
+        Tool::new("set_kinesis", "The Kinesis endpoint's settings and provocations. limits = on | off: the real throughput limits (per provisioned shard 1 MiB/s or 1,000 records/s in, 2 MiB/s and 5 GetRecords/s out; on-demand streams 4 MiB/s or 4,000 records/s in) answer ProvisionedThroughputExceededException; on by default. transition_ms: how long CREATING, UPDATING and DELETING last (1000; 0 = at once). provoke: throughput_puts, throughput_gets (ProvisionedThroughputExceededException), not_found (ResourceNotFoundException), expired_iterator, kms_throttling (KMSThrottlingException), kms_disabled (KMSDisabledException on puts; both KMS ones only on encrypted streams), slow_puts (delay_ms), partial_failures (PutRecords fails every second record); times = for the next N calls (0 = until cleared), stream = only that stream; none clears. reshard splits the stream's widest open shard now.", |ctx, a| async move {
+            let mut c = config::load(&ctx);
+            if let Some(l) = a.str("limits") {
+                c.limits = match l.as_str() { "on" | "true" | "1" => true, "off" | "false" | "0" => false, _ => return Err(ApiError::bad("limits: on | off")) };
             }
-            if p != "none" && !config::PROVOKE.iter().any(|x| x.0 == p) { return Err(ApiError::bad(format!("provoke: {} | none", config::PROVOKE.iter().map(|x| x.0).collect::<Vec<_>>().join(" | ")))) }
-            let mut c = config::Config::default();
-            if p != "none" {
-                c.provoke = p;
-                c.times = a.u64("times").unwrap_or(0) as u32;
-                c.stream = a.str("stream").unwrap_or_default();
+            if let Some(t) = a.u64("transition_ms") { c.transition_ms = t.min(600_000) }
+            if let Some(p) = a.str("provoke") {
+                if p == "reshard" {
+                    let s = a.need("stream")?;
+                    let ready = util::now_ms() + c.transition_ms as i64;
+                    let r = db(&ctx, move |cn| store::reshard(cn, &s, ready)).await?;
+                    ctx.live.send("kinesis.streams", "", "updated");
+                    return Ok(r);
+                }
+                if p != "none" && !config::PROVOKE.iter().any(|x| x.0 == p) { return Err(ApiError::bad(format!("provoke: {} | none", config::PROVOKE.iter().map(|x| x.0).collect::<Vec<_>>().join(" | ")))) }
+                c.clear();
+                if p != "none" {
+                    c.provoke = p;
+                    c.times = a.u64("times").unwrap_or(0) as u32;
+                    c.stream = a.str("stream").unwrap_or_default();
+                }
                 if let Some(d) = a.u64("delay_ms") { c.delay_ms = d }
+            } else if a.get("limits").is_none() && a.get("transition_ms").is_none() {
+                return Err(ApiError::bad("give provoke, limits or transition_ms"));
             }
             config::save(&ctx, &c)?;
             ctx.live.send("kinesis.config", "", "updated");
-            Ok(json!({"provoke": if c.provoke.is_empty() { Value::Null } else { json!({"kind": c.provoke, "times": c.times, "stream": c.stream, "delayMs": c.delay_ms}) }}))
+            Ok(json!({"provoke": provoked(&c), "limits": if c.limits { "on" } else { "off" }, "transitionMs": c.transition_ms}))
         })
-        .req("provoke", "throughput_puts | throughput_gets | not_found | expired_iterator | kms_throttling | slow_puts | partial_failures | reshard | none").param("times", "0 = until cleared").param("stream", "only this stream").param("delay_ms", "3000")
+        .param("provoke", "throughput_puts | throughput_gets | not_found | expired_iterator | kms_throttling | kms_disabled | slow_puts | partial_failures | reshard | none").param("times", "0 = until cleared").param("stream", "only this stream").param("delay_ms", "3000")
+        .param("limits", "on | off").param("transition_ms", "1000")
         .route("PUT", "/kinesis/config"),
     ]
 }

@@ -1,16 +1,23 @@
-"""End-to-end check of Kinesis Data Streams (A21) with boto3 pointed at Stuntman's endpoint: streams
-in provisioned and on-demand mode, puts by partition key (MD5 into the shard ranges) and every
+"""End-to-end check of Kinesis Data Streams (A21) with boto3 pointed at Stuntman's endpoint: the stream
+lifecycle (CREATING, UPDATING, DELETING) with the boto3 waiters, the real throughput limits (a burst
+over 1,000 records/s, 1 MiB/s, 5 GetRecords/s, on-demand's higher limit, the SDK retrying, limits
+off), KMS encryption (KMS errors only on encrypted streams), UpdateStreamMode, enhanced monitoring,
+ListStreams paging; streams in provisioned and on-demand mode, puts by partition key (MD5 into the shard ranges) and every
 iterator type, GetRecords paging with MillisBehindLatest, PutRecords with a provoked partial failure,
 a provoked ProvisionedThroughputExceededException the SDK retries (and one it gives up on),
 not-found, expired and KMS errors, resharding (split, merge, shard count, the provoked one) with
 child shards, retention on the environment clock, tags, enhanced fan-out consumers with
 SubscribeToShard, the CBOR protocol of the Java SDK, the tools. Last: a Pub/Sub import topic reading
-a Kinesis stream (partition key → ordering key), ACTIVE and STREAM_NOT_FOUND.
+a Kinesis stream (partition key → ordering key), ACTIVE and STREAM_NOT_FOUND. Then the AWS SDK for
+Java v2 (CBOR) and for JavaScript v3, when mvn and node are installed (tests/kinesis_java,
+tests/kinesis_node).
 
     pip install boto3 cbor2 google-cloud-pubsub
     cargo build -p stuntman && python3 tests/e2e_kinesis.py
 """
-import base64, datetime, http.client, json, os, threading, time
+import base64, datetime, http.client, json, os, shutil, subprocess, threading, time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 from harness import Stuntman, wait
 
@@ -32,11 +39,45 @@ def main():
                 return e.response["Error"]["Code"]
             raise AssertionError(f"{f.__name__} did not fail")
 
-        # ---- Streams.
+        exists = lambda n: k.get_waiter("stream_exists").wait(StreamName=n, WaiterConfig={"Delay": 1, "MaxAttempts": 10})
+        status = lambda n: k.describe_stream_summary(StreamName=n)["StreamDescriptionSummary"]["StreamStatus"]
+
+        # ---- Lifecycle (transitions last 1 s by default): CREATING, UPDATING, DELETING, and the waiters.
+        assert s.call("GET", "/kinesis/streams")["limits"] == "on"
         k.create_stream(StreamName="shipments", ShardCount=2)
         k.create_stream(StreamName="positions", StreamModeDetails={"StreamMode": "ON_DEMAND"})
-        k.get_waiter("stream_exists").wait(StreamName="shipments", WaiterConfig={"Delay": 1, "MaxAttempts": 5})
+        assert status("shipments") == "CREATING"
+        assert err(k.put_record, StreamName="shipments", PartitionKey="a", Data=b"x") == "ResourceNotFoundException"
+        assert err(k.update_shard_count, StreamName="shipments", TargetShardCount=3, ScalingType="UNIFORM_SCALING") == "ResourceInUseException"
         assert err(k.create_stream, StreamName="shipments", ShardCount=1) == "ResourceInUseException"
+        t = time.time(); exists("shipments"); exists("positions")
+        assert status("shipments") == "ACTIVE" and time.time() - t >= 0.5
+        # Encryption: UPDATING, puts still work, other changes wait; the key format is checked.
+        assert err(k.start_stream_encryption, StreamName="positions", EncryptionType="KMS", KeyId="not-a-key") == "InvalidArgumentException"
+        k.start_stream_encryption(StreamName="shipments", EncryptionType="KMS", KeyId="alias/aws/kinesis")
+        assert status("shipments") == "UPDATING"
+        assert k.put_record(StreamName="shipments", PartitionKey="SHP-0", Data=b"while updating")["EncryptionType"] == "KMS"
+        assert err(k.add_tags_to_stream, StreamName="shipments", Tags={"a": "b"}) == "ResourceInUseException"
+        exists("shipments")
+        sm = k.describe_stream_summary(StreamName="shipments")["StreamDescriptionSummary"]
+        assert sm["EncryptionType"] == "KMS" and sm["KeyId"] == "alias/aws/kinesis" and sm["ConsumerCount"] == 0, sm
+        # UpdateStreamMode: ON_DEMAND → PROVISIONED and back.
+        parn = k.describe_stream_summary(StreamName="positions")["StreamDescriptionSummary"]["StreamARN"]
+        k.update_stream_mode(StreamARN=parn, StreamModeDetails={"StreamMode": "PROVISIONED"})
+        assert status("positions") == "UPDATING"; exists("positions")
+        assert k.describe_stream_summary(StreamName="positions")["StreamDescriptionSummary"]["StreamModeDetails"]["StreamMode"] == "PROVISIONED"
+        k.update_stream_mode(StreamARN=parn, StreamModeDetails={"StreamMode": "ON_DEMAND"}); exists("positions")
+        # DeleteStream: DELETING, then gone (stream_not_exists).
+        k.create_stream(StreamName="scratch", ShardCount=1); exists("scratch")
+        k.delete_stream(StreamName="scratch")
+        assert status("scratch") == "DELETING"
+        assert err(k.put_record, StreamName="scratch", PartitionKey="a", Data=b"x") == "ResourceNotFoundException"
+        k.get_waiter("stream_not_exists").wait(StreamName="scratch", WaiterConfig={"Delay": 1, "MaxAttempts": 10})
+        print("ok   lifecycle: CREATING → ACTIVE (stream_exists), UPDATING after encryption and mode changes, DELETING → gone (stream_not_exists); ResourceInUseException while not ACTIVE")
+        # The rest goes at once and without throughput limits (they have their own section).
+        assert s.call("PUT", "/kinesis/config", {"transition_ms": 0, "limits": "off"}) == {"provoke": None, "limits": "off", "transitionMs": 0}
+
+        # ---- Streams.
         d = k.describe_stream(StreamName="shipments")["StreamDescription"]
         assert d["StreamStatus"] == "ACTIVE" and len(d["Shards"]) == 2 and d["StreamARN"] == "arn:aws:kinesis:us-east-1:000000000000:stream/shipments", d
         assert d["Shards"][1]["HashKeyRange"]["StartingHashKey"] == str(2 ** 127) and d["Shards"][1]["HashKeyRange"]["EndingHashKey"] == str(2 ** 128 - 1), d["Shards"]
@@ -104,10 +145,16 @@ def main():
             assert err(stingy.get_records, ShardIterator=it) == code, kind
         assert err(stingy.put_record, StreamName="shipments", PartitionKey="a", Data=b"x") == "KMSThrottlingException"
         assert stingy.put_record(StreamName="positions", PartitionKey="a", Data=b"x")["SequenceNumber"]  # only shipments is provoked
+        # KMS errors only reach encrypted streams: positions is not, shipments is.
+        s.call("PUT", "/kinesis/config", {"provoke": "kms_disabled", "times": 1})
+        assert stingy.put_record(StreamName="positions", PartitionKey="a", Data=b"x")["EncryptionType"] == "NONE"
+        assert s.call("GET", "/kinesis/streams")["provoke"]["kind"] == "kms_disabled", "not used up by an unencrypted stream"
+        assert err(stingy.put_record, StreamName="shipments", PartitionKey="a", Data=b"x") == "KMSDisabledException"
+        assert s.call("GET", "/kinesis/streams")["provoke"] is None
         s.call("PUT", "/kinesis/config", {"provoke": "slow_puts", "delay_ms": 1200, "times": 1})
         t = time.time(); k.put_record(StreamName="shipments", PartitionKey="SHP-3001", Data=b"slow"); assert time.time() - t >= 1.1
         s.call("PUT", "/kinesis/config", {"provoke": "none"})
-        print("ok   provoked: throughput retried by the SDK (3 attempts), given up with 2; not found, expired iterator, KMS throttling (one stream only); slow put")
+        print("ok   provoked: throughput retried by the SDK (3 attempts), given up with 2; not found, expired iterator, KMS throttling and disabled (encrypted stream only); slow put")
 
         # ---- Resharding: split, read the parent to its end, merge, shard count, the provoked one.
         sh0 = k.describe_stream(StreamName="shipments")["StreamDescription"]["Shards"][0]
@@ -138,6 +185,26 @@ def main():
         assert err(k.increase_stream_retention_period, StreamName="shipments", RetentionPeriodHours=30) == "InvalidArgumentException"
         assert k.describe_stream(StreamName="shipments")["StreamDescription"]["RetentionPeriodHours"] == 48
         print("ok   tags; retention increased to 48 h")
+
+        # ---- Enhanced monitoring (kept and returned), ListStreams paging with StreamSummaries.
+        m = k.enable_enhanced_monitoring(StreamName="shipments", ShardLevelMetrics=["IncomingBytes", "OutgoingRecords"])
+        assert m["CurrentShardLevelMetrics"] == [] and m["DesiredShardLevelMetrics"] == ["IncomingBytes", "OutgoingRecords"], m
+        assert k.describe_stream(StreamName="shipments")["StreamDescription"]["EnhancedMonitoring"] == [{"ShardLevelMetrics": ["IncomingBytes", "OutgoingRecords"]}]
+        assert len(k.enable_enhanced_monitoring(StreamName="shipments", ShardLevelMetrics=["ALL"])["DesiredShardLevelMetrics"]) == 7
+        m = k.disable_enhanced_monitoring(StreamName="shipments", ShardLevelMetrics=["ALL"])
+        assert m["DesiredShardLevelMetrics"] == [] and len(m["CurrentShardLevelMetrics"]) == 7, m
+        for n in ["audit-a", "audit-b", "audit-c"]:
+            k.create_stream(StreamName=n, ShardCount=1)
+        p1 = k.list_streams(Limit=2)
+        assert p1["StreamNames"] == ["audit-a", "audit-b"] and p1["HasMoreStreams"] and p1["NextToken"], p1
+        assert [x["StreamName"] for x in p1["StreamSummaries"]] == ["audit-a", "audit-b"] and p1["StreamSummaries"][0]["StreamStatus"] == "ACTIVE"
+        p2 = k.list_streams(Limit=2, NextToken=p1["NextToken"])
+        assert p2["StreamNames"] == ["audit-c", "positions"], p2
+        allnames = [n for page in k.get_paginator("list_streams").paginate(PaginationConfig={"PageSize": 2}) for n in page["StreamNames"]]
+        assert allnames == ["audit-a", "audit-b", "audit-c", "positions", "shipments"], allnames
+        for n in ["audit-a", "audit-b", "audit-c"]:
+            k.delete_stream(StreamName=n)
+        print("ok   enhanced monitoring: enable, ALL, disable; ListStreams paging (Limit, NextToken, paginator) with StreamSummaries")
 
         # ---- The tools: records as people read them, a put as another producer, waiting for the app's.
         view = {x["name"]: x for x in s.call("GET", "/kinesis/streams")["streams"]}
@@ -196,6 +263,75 @@ def main():
         st, _, v = raw("CreateStream", {"StreamName": "eu-stream", "ShardCount": 1})
         assert k.describe_stream_summary(StreamName="eu-stream")["StreamDescriptionSummary"]["StreamARN"].startswith("arn:aws:kinesis:eu-west-1:")
         print("ok   CBOR (application/x-amz-cbor-1.1): byte-string data, millisecond timestamps, errors; region from the SigV4 scope")
+
+        # ---- Real throughput limits, on again.
+        s.call("PUT", "/kinesis/config", {"limits": "on"})
+        k.create_stream(StreamName="bursts", ShardCount=1)
+        k.create_stream(StreamName="bursts-od", StreamModeDetails={"StreamMode": "ON_DEMAND"})
+        once = mk(retries={"mode": "standard", "max_attempts": 1})
+        patient = mk(retries={"mode": "standard", "max_attempts": 10})
+
+        def second_start():
+            time.sleep(1 - time.time() % 1 + 0.02)
+            return int(time.time())
+        batch = lambda pk="burst": [{"PartitionKey": pk, "Data": b'{"n": 1}'} for _ in range(500)]
+        sec = second_start()
+        fails = [once.put_records(StreamName="bursts", Records=batch())["FailedRecordCount"] for _ in range(3)]
+        same = int(time.time()) == sec
+        assert (fails == [0, 0, 500]) if same else sum(fails) >= 1, fails
+        if same:
+            assert err(once.put_record, StreamName="bursts", PartitionKey="burst", Data=b"x") == "ProvisionedThroughputExceededException"
+            calls = []
+            patient.meta.events.register("before-send.kinesis.PutRecord", lambda **kw: calls.append(1))
+            assert patient.put_record(StreamName="bursts", PartitionKey="burst", Data=b"retried")["SequenceNumber"] and len(calls) >= 2, calls
+        print(f"     a burst of 1,500 records in a second on one shard: {fails} failed per PutRecords; the SDK retried PutRecord")
+        # 1 MiB/s per shard, 1 MiB per record, 5 MiB per PutRecords.
+        second_start()
+        once.put_record(StreamName="bursts", PartitionKey="big", Data=b"x" * 700_000)
+        assert err(once.put_record, StreamName="bursts", PartitionKey="big", Data=b"x" * 700_000) == "ProvisionedThroughputExceededException"
+        assert err(once.put_record, StreamName="bursts", PartitionKey="big", Data=b"x" * (1024 * 1024 + 1)) == "ValidationException"
+        assert err(once.put_records, StreamName="bursts", Records=[{"PartitionKey": "big", "Data": b"x" * 1_000_000}] * 6) == "InvalidArgumentException"
+        # 5 GetRecords per second per shard.
+        it = once.get_shard_iterator(StreamName="bursts", ShardId="shardId-000000000000", ShardIteratorType="LATEST")["ShardIterator"]
+        second_start()
+        codes = []
+        for _ in range(6):
+            try:
+                once.get_records(ShardIterator=it); codes.append("ok")
+            except ClientError as e:
+                codes.append(e.response["Error"]["Code"])
+        assert codes[:5] == ["ok"] * 5 and codes[5] == "ProvisionedThroughputExceededException", codes
+        # On-demand: 4,000 records/s for the stream, one partition key or many.
+        sec = second_start()
+        fails = [once.put_records(StreamName="bursts-od", Records=batch())["FailedRecordCount"] for _ in range(9)]
+        if int(time.time()) == sec:
+            assert sum(fails) == 500 and fails[:8] == [0] * 8, fails
+        print(f"     on-demand, 4,500 records in a second with one partition key: {sum(fails)} failed")
+        # Off: the same burst goes through.
+        s.call("PUT", "/kinesis/config", {"limits": "off"})
+        second_start()
+        assert [once.put_records(StreamName="bursts", Records=batch())["FailedRecordCount"] for _ in range(3)] == [0, 0, 0]
+        print("ok   limits: 1,000 records/s and 1 MiB/s per shard (PutRecords fails the extra records, PutRecord retried by the SDK), 1 MiB records, 5 MiB PutRecords, 5 GetRecords/s; on-demand 4,000 records/s; limits off")
+
+        # ---- The AWS SDKs for Java v2 (CBOR) and JavaScript v3, when installed; streams take 1 s to create again.
+        s.call("PUT", "/kinesis/config", {"transition_ms": 1000})
+        if shutil.which("mvn"):
+            out = subprocess.run(["mvn", "-q", "compile", "exec:java", f"-Dexec.args={url}"], cwd=os.path.join(HERE, "kinesis_java"), capture_output=True, text=True, timeout=900)
+            assert out.returncode == 0 and "java ok 3 records" in out.stdout, out.stdout + out.stderr
+            print("ok   Java SDK v2 (CBOR): CreateStream, waitUntilStreamExists, PutRecord, DescribeStream, PutRecords, GetShardIterator, GetRecords, ResourceNotFoundException")
+        else:
+            print("skip Java SDK v2 (mvn not installed)")
+        node_dir = os.path.join(HERE, "kinesis_node")
+        if shutil.which("node") and shutil.which("npm"):
+            if not os.path.isdir(os.path.join(node_dir, "node_modules")):
+                subprocess.run(["npm", "install", "--no-audit", "--no-fund"], cwd=node_dir, check=True, capture_output=True, timeout=600)
+            out = subprocess.run(["node", "main.mjs", url], cwd=node_dir, capture_output=True, text=True, timeout=120)
+            assert out.returncode == 0 and "node ok 4 records" in out.stdout, out.stdout + out.stderr
+            print("ok   JavaScript SDK v3: CreateStream, waitUntilStreamExists, DescribeStream, PutRecord, PutRecords, GetShardIterator, GetRecords")
+        else:
+            print("skip JavaScript SDK v3 (node not installed)")
+
+        s.call("PUT", "/kinesis/config", {"transition_ms": 0})
 
         # ---- Pub/Sub import topic reading a Kinesis stream.
         os.environ["PUBSUB_EMULATOR_HOST"] = f"127.0.0.1:{s.PUBSUB_PORT}"

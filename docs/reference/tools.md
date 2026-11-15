@@ -5,16 +5,20 @@ Every action in Stuntman is one tool. Each tool is an **MCP tool** (same name) a
 
 _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit by hand._
 
-**306 tools** in 11 areas.
+**356 tools** in 15 areas.
 
 - [Environments and timeline](#environments-and-timeline) · 12 tools
-- [Email](#email) · 35 tools
+- [Email and mailboxes](#email-and-mailboxes) · 39 tools
 - [SMS](#sms) · 17 tools
 - [WhatsApp](#whatsapp) · 28 tools
-- [HTTP APIs (plugins)](#http-apis-plugins) · 59 tools
+- [HTTP APIs (plugins)](#http-apis-plugins) · 68 tools
+- [AI models](#ai-models) · 9 tools
+- [Product events](#product-events) · 8 tools
 - [Storage (Azure Blob, S3)](#storage-azure-blob-s3) · 45 tools
 - [Messaging (Service Bus, RabbitMQ)](#messaging-service-bus-rabbitmq) · 19 tools
-- [Identity (OIDC / OAuth2)](#identity-oidc-oauth2) · 26 tools
+- [Identity (OIDC, OAuth2, SAML, LDAP, Bot Framework)](#identity-oidc-oauth2-saml-ldap-bot-framework) · 28 tools
+- [Files (FTP, SFTP)](#files-ftp-sftp) · 8 tools
+- [Streams (Kafka, Schema Registry)](#streams-kafka-schema-registry) · 10 tools
 - [Secrets (Key Vault)](#secrets-key-vault) · 31 tools
 - [Webhook inboxes](#webhook-inboxes) · 9 tools
 - [Telemetry (OpenTelemetry)](#telemetry-opentelemetry) · 25 tools
@@ -36,7 +40,7 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `get_timeline_row` | `GET /api/timeline/{id}` | id | — | One Timeline row and the rest of its journey (rows with the same trace id). |
 | `wait_for_timeline` | `POST /api/timeline/wait` | — | service, who, show, q, since, timeout | Waits until a row that matches appears (after `since`, default now) and returns it; 408 after the timeout. |
 
-## Email
+## Email and mailboxes
 
 | Tool | HTTP | Required | Optional | What it does |
 |---|---|---|---|---|
@@ -75,6 +79,10 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `delete_extractor` | `DELETE /api/channels/{channel}/extractors/{name}` | name | channel | Deletes it; tells you who used it. |
 | `tune_builtin` | `PATCH /api/channels/{channel}/extractors/builtin/code` | — | channel, on, min_digits, max_digits, words, prefer_prominent | Settings of the built-in “code” extractor. |
 | `put_extractors_yaml` | `PUT /api/channels/{channel}/extractors.yaml` | yaml | channel | Replaces email/extractors.yaml. |
+| `list_mailboxes` | `GET /api/mailboxes` | — | — | The mailboxes the app reads over IMAP or POP3, with their messages and unread counts, and how to connect. |
+| `set_mailbox` | `PUT /api/mailboxes/{address}` | address | password, provoke | Creates or changes a mailbox the app reads: its address (the login), a password (empty: any but "wrong") and a provocation: login_refused, busy, drop_fetch, tls_required, token_expired (none clears). |
+| `put_mail` | `POST /api/mailboxes/{address}/messages` | address | from, subject, text, html, attachments, raw, folder | Puts a message in a mailbox as if someone sent it: from, subject, text (and html), attachments [{filename, content_type, base64 or text}] — or raw (a whole RFC 822 message). The app finds it on its next poll. |
+| `list_mailbox_messages` | `GET /api/mailboxes/{address}/messages` | address | folder | The messages in a mailbox (a folder): sender, subject, flags (read, deleted), size; and what the app did on it (IMAP/POP3 commands, without passwords). |
 
 ## SMS
 
@@ -155,13 +163,16 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `try_route` | `POST /api/plugins/{service}/try` | service, method, path | request, steps | Runs a route's steps on a sample request; nothing is kept, counted, billed or sent. steps= tries an unsaved version of the route. |
 | `validate_plugin` | `POST /api/plugins/{service}/validate` | service | yaml | Schema and expression errors with line numbers; answers checked against the routes' schema. yaml= checks text before saving. |
 | `list_answers` | `GET /api/plugins/{service}/answers` | service | — | Named answers: status, body, and which route step uses each (an answer used by none exists only to be forced). |
-| `set_answer` | `PUT /api/plugins/{service}/answers/{name}` | service, name | status, body, headers, raw, sentence, note, old_name, fault | Creates or replaces a named answer (status, body template, headers, sentence); checked against the schema unless raw=true (malformed on purpose); fault={code, reason} makes it a SOAP fault. |
+| `set_answer` | `PUT /api/plugins/{service}/answers/{name}` | service, name | status, body, headers, raw, stream, stream_format, template, latency, rpc_error, sentence, note, old_name, fault | Creates or replaces a named answer (status, body template, headers, sentence); checked against the schema unless raw=true (malformed on purpose); fault={code, reason} makes it a SOAP fault; stream=[{after, event, data}] sends it in parts (stream_format sse \| ndjson \| chunks); template=handlebars renders WireMock templates; latency waits before answering. |
 | `delete_answer` | `DELETE /api/plugins/{service}/answers/{name}` | service, name | — | Deletes a named answer that no route uses. |
 | `get_data` | `GET /api/plugins/{service}/data` | service | table | A data table the answers read (irregular_cpfs, people, selfies…), or every table. |
 | `set_data` | `PUT /api/plugins/{service}/data/{table}` | service, table, rows | add | Replaces (or with add=true appends to) a data table as the plugin declares it. |
 | `synthetic_cpf` | `GET /api/apis/synthetic-cpf` | — | — | A CPF that passes the check digits and is not a real person's (for data tables and tests). |
 | `get_api_service` | `GET /api/plugins/{service}/service` | service | — | A service block: base URL and real host, auth (OAuth2 client credentials, Basic), billing, limits; plus Stuntman's URLs. |
-| `set_service` | `PUT /api/plugins/{service}/service` | service | any_client, token_ttl, client_certificate, session_ttl, billing, per_call, warn_above, latency, rate, fail_share, base_url, real_host, title, version | Changes the service block: any_client, token_ttl, billing (enabled, per_call, warn_above), latency, rate, fail_share, base_url, real_host, title. |
+| `set_service` | `PUT /api/plugins/{service}/service` | service | any_client, token_ttl, client_certificate, client_certificate_icp, session_ttl, billing, per_call, warn_above, latency, rate, fail_share, base_url, real_host, title, version, webhook_signing, webhook_secret, webhook_header, webhook_tolerance, webhook_provoke, idempotency, xml_signature_check, xml_signature_sign, xml_signature_invalid, xml_signature_sha256 | Changes the service block: any_client, token_ttl, billing (enabled, per_call, warn_above), latency, rate, fail_share, base_url, real_host, title; webhook signing (webhook_signing, webhook_header, webhook_secret, webhook_tolerance, webhook_provoke), idempotency, xml_signature_* and client_certificate_icp. |
+| `clock` | `GET /api/clock` | — | — | The environment's clock (real time plus what advance_clock moved) and the webhooks waiting for their time. |
+| `advance_clock` | `POST /api/clock/advance` | — | by, reset | Moves the environment's clock forward (1h, 1d, 30d): sends that wait (delay) and now() in templates follow it. reset=true goes back to real time. |
+| `set_mcp_tool` | `PUT /api/plugins/{service}/mcp-tools` | service, name | description, input_schema, decide | Adds or changes a tool of a service's MCP server (the service gets an mcp: block on /mcp if it has none). decide: [{when, answer}] like a route; answers are the tool results (status >= 400 gives isError). |
 | `get_test_ca` | `GET /api/apis/test-ca` | — | — | The Stuntman Test CA (PEM): trust it in the app's machine or container and the providers' real host names work over HTTPS against Stuntman. |
 | `issue_client_certificate` | `POST /api/apis/client-certificates` | name | — | A client certificate signed by the Stuntman Test CA, for an app calling a provider that requires mTLS. Returns certificate and key PEM. |
 | `issue_person_certificate` | `POST /api/apis/people/{cpf}/certificate` | cpf | name, not_before, not_after | (Re)issues a person's cloud certificate (BirdID, ViDaaS people) by CPF with a validity window, signed by the Stuntman Test CA with the person's own key: expired yesterday by default, or not yet valid. Every plugin answers it until clear_person_certificate. Returns the chain PEM; keys stay in Stuntman. |
@@ -194,6 +205,39 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `pause_recording` | `POST /api/plugins/{service}/recording/pause` | service | resume | Pauses a recording (calls get 404 “no route”, or the routes' answers) or, with resume=true, goes on. |
 | `stop_recording` | `DELETE /api/plugins/{service}/recording` | service | — | Stops a recording and returns the review: calls grouped into routes, the answers each gave, ids and dates made templates, and the rules that tell the answers apart. make_plugin writes it. |
 | `make_plugin` | `POST /api/plugins/{service}/recording/plugin` | service | routes, rules | Writes the plugin from a recording: the routes it found (routes= only these, “METHOD /path”), their answers (binary ones as files) and the suggested rules (rules=false: each route gives its usual answer). Routes the service has stay as they are. The recording ends; the provider is no longer needed. |
+| `import_mocks` | `POST /api/plugins/import` | source | kind, group_by, name, dry, replace | Services from mocks you already have. kind=wiremock: a folder with mappings/*.json (and __files/) becomes plugins: request patterns → routes (regex paths kept), matchers → rules, responses → answers, fixedDelay → latency, faults → reset/empty, scenarios → set_scenario. kind=wsdl: every .wsdl under the folder becomes a SOAP service. dry=true only shows what it would make. |
+| `set_scenario` | `PUT /api/plugins/{service}/scenario` | service | scenario | Moves a service to a scenario (imported WireMock scenarios: rules with `scenario == 'x'`). Started is the normal one. |
+| `new_test_certificate` | `POST /api/apis/test-certificates` | holder | cnpj, cpf, valid_days, expired, not_yet_valid, untrusted, password | An ICP-Brasil style A1 test certificate: an e-CNPJ (cnpj) or e-CPF (cpf) with an RSA 2048 key, signed by the Stuntman Test CA (or an unknown CA with untrusted=true), valid for valid_days or already expired. Returns the .pfx (base64) and its password, the certificate and key PEM. For mTLS to services with client_certificate_icp and for signing XML. |
+| `list_test_certificates` | `GET /api/apis/test-certificates` | — | — | The test certificates made in this environment (holder, CNPJ or CPF, validity, state). Keys are not shown. |
+| `sign_xml` | `POST /api/apis/xml/sign` | xml, id, certificate | sha256, exclusive, place, prefix | Signs an XML document's element (by Id) with a test certificate, as an app would sign an NF-e or CT-e: enveloped ds:Signature after the element (or inside it for SAML-like documents), RSA-SHA1 by default. |
+| `verify_xml_signature` | `POST /api/apis/xml/verify` | xml | — | Checks every ds:Signature of an XML document: digests and signature value, with the certificate in KeyInfo. Says what was signed and by which CNPJ. |
+
+## AI models
+
+| Tool | HTTP | Required | Optional | What it does |
+|---|---|---|---|---|
+| `list_ai_calls` | `GET /api/ai/calls` | — | provider, since, limit | The calls the app made to the simulated models, newest first: provider, API, model, tokens in and out, cost, why (the rule, the default, a forced failure). |
+| `get_ai_call` | `GET /api/ai/calls/{id}` | id | — | One model call with the whole request and response. |
+| `wait_for_ai_call` | `GET /api/ai/calls/wait` | — | provider, contains, timeout, within | Waits until the app calls a model (optionally a provider, and a prompt containing a text). Returns the call. |
+| `list_ai_rules` | `GET /api/ai/rules` | — | — | The rules that shape the simulated answers (first match wins), the default answer and the prices per million tokens. |
+| `set_ai_rule` | `PUT /api/ai/rules` | name | when, contains, provider, model, answer, text, tool_call, json, tokens, stop, position | Adds or changes a rule (by name). when: provider, api, model (prefix*), contains (the last user message), system_contains, tool (offered). answer: text, tool_call {name, arguments} (the model calls the tool first; text comes after the tool's result), json, tokens, stop=length. position: where in the list (0 = first). |
+| `delete_ai_rule` | `DELETE /api/ai/rules/{name}` | name | — | Removes a rule. |
+| `force_ai_failure` | `POST /api/ai/force` | kind | provider, count | The next calls (count) to a provider (or any) fail on purpose: 429 (rate limit), 500, 529 (overloaded), filter (content filtered), length (cut by max_tokens), bad_json (broken tool arguments), slow (40 ms per token), cut (the stream stops halfway). kind=none clears. |
+| `ai_spend` | `GET /api/ai/spend` | — | since | Calls, tokens in/out, cached tokens, cost and failures per provider since a time (default: today). |
+| `set_ai_price` | `PUT /api/ai/prices` | — | model, in, out, cached, default_text | The price of a model (or a pattern with *) per million tokens, for the spend counter. default_text changes the answer when no rule matches. |
+
+## Product events
+
+| Tool | HTTP | Required | Optional | What it does |
+|---|---|---|---|---|
+| `list_product_events` | `GET /api/events` | — | source, name, user, since, limit | Product events the app sent (PostHog, Segment, Mixpanel, GA4), newest first, with the user, the properties and any personal data found in them. |
+| `event_people` | `GET /api/events/people` | — | since | The users events arrived for, with counts. |
+| `wait_for_event` | `GET /api/events/wait` | name | source, user, props, timeout, within | Waits until the app sends an event (by name; optionally a property value). Returns it. |
+| `check_events` | `POST /api/events/check` | — | plan, events, since, within, source, user | Checks what the app sent against a plan (by name) or a list of events: each expected event, how many arrived and the properties some lacked. ok=false names the missing ones, so a test or CI run can fail on it. |
+| `list_event_plans` | `GET /api/events/plans` | — | — | The plans: which events (and properties) each flow must send. |
+| `set_event_plan` | `PUT /api/events/plans` | name, events | — | Adds or replaces a plan: a name and its events (names, or {event, props, min}). |
+| `delete_event_plan` | `DELETE /api/events/plans/{name}` | name | — | Removes a plan. |
+| `force_events_failure` | `POST /api/events/force` | kind | source, count | The collector's next answers fail on purpose (count): 400, 413, 429, slow (3 s), drop_half (half the events lost, 200 anyway). kind=none clears. |
 
 ## Storage (Azure Blob, S3)
 
@@ -269,12 +313,12 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `set_throughput` | `PUT /api/messaging/{namespace}/throughput` | namespace, per_second | — | Messages a second the namespace takes before ServerBusy; none, a number, or throttle_now (every send ServerBusy). |
 | `set_auto_create` | `PUT /api/messaging/{namespace}/auto-create` | namespace, on | — | On: queues and topics the app declares or sends to are created. Off: they answer 404 (test a missing entity). |
 
-## Identity (OIDC / OAuth2)
+## Identity (OIDC, OAuth2, SAML, LDAP, Bot Framework)
 
 | Tool | HTTP | Required | Optional | What it does |
 |---|---|---|---|---|
 | `list_providers` | `GET /api/identity/providers` | — | — | Identity providers in this environment: flavour, tenant, Authority, users, apps and sign-ins in the last hour. |
-| `set_provider` | `PUT /api/identity/providers/{name}` | name | tenant, flavour, other_tenants | Creates an identity provider (or changes its flavour/tenant): entra-v2, google, okta or oidc. Users and apps are added with set_user and set_app. |
+| `set_provider` | `PUT /api/identity/providers/{name}` | name | tenant, flavour, other_tenants, saml, saml_sign_response, saml_sign_assertion, saml_name_id, ldap, ldap_base_dn, ldap_provoke, password_grant | Creates an identity provider (or changes its flavour/tenant): entra-v2, google, okta or oidc. Users and apps are added with set_user and set_app. |
 | `remove_provider` | `DELETE /api/identity/providers/{name}` | name | — | Removes an identity provider: its file (users, apps, tenant) and its sign-ins, keys and provocations. Apps pointed at its Authority get 404. |
 | `list_sign_ins` | `GET /api/identity/sign-ins` | — | provider, user, result, since, limit | Sign-ins and tokens issued: the sentence, the result or error code (AADSTS…), newest first. |
 | `get_sign_in` | `GET /api/identity/sign-ins/{id}` | id | — | One sign-in: steps, tokens issued (decoded) and the claims. |
@@ -283,7 +327,7 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `pending_logins` | `GET /api/identity/pending` | — | provider | Login pages waiting for a person, with the app and the scopes. |
 | `cancel_login` | `POST /api/identity/pending/{id}/cancel` | id | — | The person cancels a waiting login page: the app gets error=access_denied. |
 | `list_users` | `GET /api/identity/{provider}/users` | — | provider | Synthetic people of a provider: tenant, groups, roles, MFA, state, consents. |
-| `set_user` | `PUT /api/identity/{provider}/users/{user}` | user | name, email, tenant, guest, groups, roles, mfa, phone_lost, enabled, extra, provider | Creates or changes a user; the next tokens carry the claims. groups may be a number (210 makes synthetic groups: the overage path). |
+| `set_user` | `PUT /api/identity/{provider}/users/{user}` | user | name, email, tenant, guest, groups, roles, mfa, phone_lost, enabled, password, locked, extra, provider | Creates or changes a user; the next tokens carry the claims. groups may be a number (210 makes synthetic groups: the overage path). |
 | `remove_user` | `DELETE /api/identity/{provider}/users/{user}` | user | provider | Removes a user from the provider (their refresh tokens stop). |
 | `revoke_consent` | `DELETE /api/identity/{provider}/users/{user}/consents/{app}` | user, app | provider | The user's consent to an app is revoked: the next sign-in asks again; refresh tokens stop. |
 | `set_user_state` | `PUT /api/identity/{provider}/users/{user}/state` | user, enabled | provider | Disables or enables a user: sign-ins stop at the login page (AADSTS50057); refresh tokens are refused. |
@@ -299,6 +343,36 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `run_client_checks` | `POST /api/oauth-clients/{client}/runs` | client | resource_url | Runs the ten MCP authorization checks against an MCP server; pauses at the app's own sign-in page (open authorizeUrl, or sign in through the app's IdP) and continues when the code comes back. |
 | `get_run` | `GET /api/oauth-clients/runs/{run_id}` | run_id | — | One run: each check with what Stuntman sent and got; authorizeUrl while it waits for the sign-in. |
 | `serve_client_metadata` | `PUT /api/oauth-clients/{client}` | client | name, kind, resource_url, client_name, client_id, client_secret | Creates or changes a simulated client: kind (dcr, metadata_url, preregistered), the MCP server it checks, the name in its metadata document; client_id/secret when pre-registered. |
+| `send_bot_activity` | `POST /api/identity/bot/activities` | endpoint, bot_app_id | text, value, activity, conversation, from, from_name, tenant_id, service_url, twist | Sends the app's bot an activity as Microsoft Teams would: a message (text) or a card action (value), signed by the Bot Connector (JWT with aud = the bot's app id and the serviceurl claim). twist: bad_signature \| expired \| wrong_audience \| no_token. Returns the bot's answer; its replies land in list_bot_messages. |
+| `list_bot_messages` | `GET /api/identity/bot/messages` | — | conversation | What went between Teams (Stuntman) and the app's bot: activities sent to the bot and the bot's replies and cards to the connector. |
+
+## Files (FTP, SFTP)
+
+| Tool | HTTP | Required | Optional | What it does |
+|---|---|---|---|---|
+| `list_file_servers` | `GET /api/files/servers` | — | — | The FTP/FTPS/SFTP servers of this environment: users, provocation, how to connect, file counts. |
+| `set_file_server` | `PUT /api/files/servers/{name}` | name | title, users, folders, provoke | Creates or changes a file server: users [{user, password, read_only}], folders to make (/in, /out), and a provocation for the next sessions: login_refused, disk_full, permission_denied, drop_mid, slow, host_key_changed (none clears). |
+| `list_files` | `GET /api/files/servers/{server}/files` | server | path | The files and folders on a server (or under a path). |
+| `get_file` | `GET /api/files/servers/{server}/file` | server, path | — | A file's content (text, or base64 for binary). |
+| `put_file` | `POST /api/files/servers/{server}/put` | server, path | text, base64 | Puts a file on a server as if the partner dropped it (text, or base64 for binary). The app finds it on its next poll. |
+| `delete_file` | `DELETE /api/files/servers/{server}/file` | server, path | — | Deletes a file from a server. |
+| `list_transfers` | `GET /api/files/transfers` | — | server, limit | Logins and transfers on the file servers, newest first. |
+| `wait_for_file` | `GET /api/files/servers/{server}/wait` | server, path | timeout | Waits until a file whose path contains a text (or matches a * pattern) is on a server: what the app uploaded. |
+
+## Streams (Kafka, Schema Registry)
+
+| Tool | HTTP | Required | Optional | What it does |
+|---|---|---|---|---|
+| `list_topics` | `GET /api/streams/topics` | — | — | The Kafka topics of this environment with their partitions, messages and high watermarks; how to connect. |
+| `create_topic` | `PUT /api/streams/topics/{name}` | name | partitions | Creates a topic with N partitions. |
+| `delete_topic` | `DELETE /api/streams/topics/{name}` | name | — | Deletes a topic and its messages. |
+| `list_stream_messages` | `GET /api/streams/topics/{topic}/messages` | topic | partition, limit | The newest messages of a topic: partition, offset, key, headers and the value decoded (Avro with its registry schema, JSON or text). |
+| `produce` | `POST /api/streams/topics/{topic}/produce` | topic | key, value, headers, partition, subject, schema_id, bad_schema | Produces a message as the partner would: key, value (JSON or text), headers, partition; with subject (or schema_id) the value is Avro-encoded with that registry schema in Confluent framing. bad_schema=true sends one the schema rejects (an unknown schema id). |
+| `list_consumer_groups` | `GET /api/streams/groups` | — | — | Consumer groups: state, generation, members (client, host, assigned partitions) and the lag of each partition (committed offset vs high watermark). |
+| `rebalance` | `POST /api/streams/groups/{group}/rebalance` | group | — | Starts a rebalance of a consumer group: members get REBALANCE_IN_PROGRESS on their next heartbeat and must join again. |
+| `set_streams` | `PUT /api/streams/config` | — | default_partitions, auto_create, advertised_host, sasl_required, sasl_users, provoke | Broker settings: default_partitions, auto_create, advertised_host, sasl_required, sasl_users [{user, password}], and a provocation: leader_not_available, sasl_refused, slow_fetch, duplicate, registry_down (none clears). |
+| `list_schemas` | `GET /api/streams/schemas` | — | — | The Schema Registry's subjects with their versions and ids. |
+| `register_schema` | `POST /api/streams/schemas` | subject, schema | schema_type | Registers a schema under a subject (Avro by default; JSON or PROTOBUF as schema_type). The same schema keeps its id. |
 
 ## Secrets (Key Vault)
 

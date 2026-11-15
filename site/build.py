@@ -11,7 +11,8 @@ PAGES = [("index", "Home"), ("agents", "Agents"), ("providers", "Providers"), ("
 TITLES = {"index": "Stuntman — the stunt double for every provider your app calls", "agents": "Agents", "providers": "Providers",
           "failures": "Failures on cue", "timeline": "Timeline and proof", "plugins": "Plugins", "environments": "Environments",
           "start": "Get started"}
-DESC = {"index": "Stuntman stands in for SMS, WhatsApp, email, storage, queues, identity, secrets and any HTTP API, "
+DESC = {"index": "Stuntman stands in for SMS, WhatsApp, email, mailboxes, storage, file servers, queues, Kafka, identity, "
+                 "secrets, AI models, product analytics and any HTTP API, "
                  "so you and your coding agents can test the hard cases end to end, over MCP or HTTP.",
         "agents": "Claude Code, Codex, Gemini CLI, OpenCode, Cursor and GitHub Copilot test their own work against Stuntman over MCP or HTTP.",
         "providers": "Every kind of provider Stuntman stands in for, what it keeps and what you can provoke.",
@@ -280,15 +281,16 @@ def agents():
                ("Cursor · .cursor/mcp.json", '{ "mcpServers": { "stuntman":\n  { "url": "http://localhost:8025/mcp" } } }'),
                ("GitHub Copilot · .vscode/mcp.json", '{ "servers": { "stuntman": { "type": "http",\n  "url": "http://localhost:8025/mcp" } } }')]
     cl = "".join(f"<div><h3>{n}</h3>{code(c)}</div>" for n, c in clients)
-    groups = [("Watch", "list_sms · list_whatsapp_messages · list_api_calls · list_traces · wait_for_object · wait_for_api_call"),
-              ("Provoke", "create_rule · set_rule_enabled · force_answer · force_sms_failure · force_whatsapp_failure · expire_tokens · send_bad_webhook · provoke_sign_in"),
-              ("Play the people", "reply_as_user · reply_sms_as_user · simulate_recipient"),
-              ("Set up", "list_plugins · install_plugin · import_spec · start_recording · make_plugin · set_provider · create_environment"),
-              ("Check", "real_provider_calls · validate_plugin · list_forced · would_fail")]
+    groups = [("Watch", "list_sms · list_whatsapp_messages · list_api_calls · list_ai_calls · list_product_events · list_traces · wait_for_object · wait_for_api_call · wait_for_file"),
+              ("Provoke", "create_rule · set_rule_enabled · force_answer · force_sms_failure · force_whatsapp_failure · force_ai_failure · force_events_failure · expire_tokens · send_bad_webhook · provoke_sign_in"),
+              ("Play the people", "reply_as_user · reply_sms_as_user · simulate_recipient · put_mail · put_file · produce · send_bot_activity"),
+              ("Set up", "list_plugins · install_plugin · import_spec · import_mocks · start_recording · make_plugin · set_provider · create_environment"),
+              ("Move time", "clock · advance_clock"),
+              ("Check", "real_provider_calls · validate_plugin · list_forced · would_fail · check_events · verify_xml_signature")]
     return doc(p, f"""
 {hero(p, "Built for agents that test their own work.",
       "Claude Code, Codex, Gemini CLI, OpenCode, Cursor and GitHub Copilot connect over MCP. Anything else uses plain HTTP. "
-      "Both reach the same 306 tools, and the timeline records who acted.")}
+      "Both reach the same 356 tools, and the timeline records who acted.")}
 {agents_strip(p)}
 <section class="wrap section">
   {head(2, "The loop it runs on its own.")}
@@ -328,9 +330,10 @@ def agents():
 
 def providers():
     p = "providers"
-    L = [("blue", "HTTP APIs", "REST · OAuth2 client credentials · Basic · session cookies · mTLS · browser steps",
-          "Routes, state per route and data tables, written in YAML.", "Named answers, latency, 5xx, reset, timeout, expired tokens, rate limits.", "route-editor",
-          "Point your app at <code>http://localhost:8028/&lt;service&gt;</code>."),
+    L = [("blue", "HTTP APIs", "REST · GraphQL · OAuth2 · Basic · session cookies · mTLS · browser steps · streamed answers · MCP servers",
+          "Routes, state per route and data tables, written in YAML; webhooks signed like Stripe, Svix, GitHub or CloudEvents; idempotency keys; scenarios.",
+          "Named answers, latency, 5xx, reset, timeout, cut streams, expired tokens, rate limits, badly signed or repeated webhooks.", "route-editor",
+          f"Point your app at <code>http://localhost:8028/&lt;service&gt;</code>. 26 plugins in the catalog, from Stripe to Microsoft Graph. <a href='{DOCS}/plugins.md'>Plugins guide</a>."),
          ("blue", "SOAP services", "SOAP 1.1 and 1.2 · made from the WSDL · WS&#8209;Security UsernameToken",
           "Operations from the WSDL with the same steps as routes; bodies checked against its XSD; the WSDL served back.",
           "Any fault the WSDL declares, the provider's validation fault, refused credentials, slow or failed calls.", "soap",
@@ -343,24 +346,43 @@ def providers():
           "Each call goes to the sandbox and back, with secrets, cards, CPFs and e-mails masked; the review groups calls into routes, answers and rules.",
           "Once the plugin is written: every answer the sandbox gave, plus anything a plugin can provoke. The sandbox is no longer called.", "recording",
           f"Start it with <code>start_recording</code> or <b>+ New service</b>, stop, review, <code>make_plugin</code>. <a href='{DOCS}/recording.md'>Recording guide</a>."),
+         ("blue", "WireMock mocks", "WireMock mappings and __files · response templates",
+          "Request patterns become routes, matchers become rules, responses become answers; scenarios, delays and faults come along.",
+          "Every answer the mocks gave, the scenario you pick, plus anything a plugin can provoke.", None,
+          f"Import the folder with <code>import_mocks</code>; move scenarios with <code>set_scenario</code>. <a href='{DOCS}/mocks.md'>WireMock guide</a>."),
+         ("orange", "AI models", "OpenAI · Azure OpenAI · Anthropic · Gemini · OpenRouter · DeepSeek",
+          "Every call with its prompt, answer, tokens and cost; rules that pick the text, a tool call or JSON.",
+          "429, 500, 529 overloaded, content filter, cut by max_tokens, broken tool arguments, slow or cut streams.", "ai",
+          "SDK base URL <code>http://localhost:8025/openai/v1</code>, <code>…/anthropic</code>, <code>…/gemini</code>; any key."),
          ("red", "SMS", "Zenvia API v2", "Messages, delivery steps per recipient, opt-outs.", "500, 400, reset, empty reply, timeout; the person texts back, STOP and START.", None,
           "Point your app at <code>http://localhost:8025/zenvia/v2/channels/{0}/messages</code>."),
          ("green", "WhatsApp", "Meta WhatsApp Cloud API (Graph)", "Conversations, templates, the 24-hour window and the recipients.",
           "500, 400, connection failures, expired tokens, replies, wrongly signed or replayed webhooks.", "whatsapp", "Graph base URL <code>http://localhost:8025/whatsapp</code>."),
          ("amber", "Email", "SMTP with STARTTLS · SendGrid v3 · signed Event Webhook", "Every message with its HTML, attachments and extracted codes and links.",
           "Hold and decide: deliver, defer, bounce, drop; open, click, spam report, unsubscribe.", "email", "SMTP <code>localhost:2525</code> · SendGrid <code>http://localhost:8025/sendgrid</code>."),
+         ("amber", "Mailboxes", "IMAP4rev1 (STARTTLS, XOAUTH2, IDLE, MOVE) · POP3", "Mailboxes the app reads: folders, flags, and every command it sent.",
+          "Logins refused, mailbox in use, a connection dropped during FETCH, TLS required, XOAUTH2 token expired.", "mailboxes",
+          "IMAP <code>localhost:1143</code> · POP3 <code>localhost:1110</code>; put mail in with <code>put_mail</code>."),
          ("brown", "Storage", "Azure Blob (SharedKey, SAS) · Amazon S3 (SigV4)", "Accounts, containers, objects, uploads, presigned links and their events.",
           "503 on the first N attempts, 403/404, slow or truncated reads, bad links, lost or duplicated events.", "objects", "Blob <code>:10000/&lt;account&gt;</code> · S3 <code>:9000</code>."),
-         ("teal", "Messaging", "Azure Service Bus · RabbitMQ (AMQP)", "Queues, topics, subscriptions, every message with its deliveries, consumers and locks.",
-          "Lost locks, duplicates, held, dropped, dead-lettered or out-of-order messages; a busy or refusing namespace.", "queues", "AMQP <code>:5673</code> (TLS <code>:5671</code>)."),
-         ("green", "Identity", "OIDC / OAuth2: Microsoft Entra ID, Google, Okta, generic OIDC", "Tenants, apps, synthetic users and their claims; a sign-in page you can drive.",
-          "MFA, consent, user cancels, wrong tenant, expired tokens, bad signatures, IdP down.", "login-page", "Use the authority shown in the provider's settings in the UI."),
+         ("brown", "Files", "FTP · explicit FTPS · SFTP", "Servers as folders, their users, and every login and transfer.",
+          "Logins refused, disk full, permission denied, a transfer cut halfway or crawling, a changed SFTP host key.", "files",
+          "FTP <code>localhost:2121</code> · SFTP <code>localhost:2222</code>; drop files with <code>put_file</code>."),
+         ("teal", "Messaging", "Azure Service Bus · RabbitMQ (AMQP) · RabbitMQ management API", "Queues, topics, subscriptions, every message with its deliveries, consumers and locks.",
+          "Lost locks, duplicates, held, dropped, dead-lettered or out-of-order messages; a busy or refusing namespace.", "queues", "AMQP <code>:5673</code> (TLS <code>:5671</code>) · management API <code>:15672</code>."),
+         ("teal", "Streams", "Kafka (SASL PLAIN, SCRAM) · Confluent Schema Registry · Avro", "Topics, partitions, consumer groups with their lag, schemas and decoded messages.",
+          "Leader not available, SASL refused, slow fetches, duplicated records, rebalances, registry down, a bad schema id.", "streams",
+          "<code>bootstrap.servers=localhost:9092</code> · <code>schema.registry.url=http://localhost:8081</code>."),
+         ("green", "Identity", "OIDC / OAuth2: Microsoft Entra ID, Google, Okta, generic OIDC · password grant · SAML 2.0 · LDAP · Bot Framework", "Tenants, apps, synthetic users and their claims; a sign-in page you can drive; signed SAML assertions; an LDAP directory of the same people.",
+          "MFA, consent, user cancels, wrong tenant, expired tokens, bad signatures, IdP down, locked accounts.", "login-page", "Use the authority shown in the provider's settings in the UI; LDAP on <code>localhost:3389</code>."),
          ("graphite", "Secrets", "Azure Key Vault · managed identity", "Versions, keys that really sign and wrap, certificates, read counts that prove caching.",
           "403, 404, 429, disabled, slow, expired or untrusted certificates, wrong signatures.", "secrets", "<code>https://&lt;vault&gt;.vault.&lt;base domain&gt;:8444</code>; trust the Test CA."),
          ("orange", "Webhook inboxes", "Endpoints your app sends its own webhooks to", "Every delivery with its signature check; inboxes that expire by themselves.",
           "200, 500, timeout, hang, delay, fail twice then succeed.", "inbox-behaviour", "<code>http://localhost:8027/in/&lt;inbox&gt;</code>."),
-         ("amber", "Telemetry", "OpenTelemetry: OTLP logs, traces, metrics", "Spans joined to the provider calls that caused them.",
-          "A collector that refuses, rejects, throttles, slows or drops half; hosts still called directly.", "traces", "<code>OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318</code>.")]
+         ("red", "Product events", "PostHog · Segment · Mixpanel · GA4 Measurement Protocol", "Every event per user, personal data flagged; tracking plans a CI run can check.",
+          "400, 413, 429, a slow collector, half the events lost.", "events", "SDK host <code>http://localhost:8025/posthog</code>, <code>…/segment</code>, <code>…/mixpanel</code>, <code>…/ga4</code>."),
+         ("amber", "Telemetry", "OpenTelemetry: OTLP logs, traces, metrics · GELF · StatsD", "Spans joined to the provider calls that caused them.",
+          "A collector that refuses, rejects, throttles, slows or drops half; hosts still called directly.", "traces", "<code>OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318</code> · GELF <code>:12201/udp</code> · StatsD <code>:8125/udp</code>.")]
     secs = []
     for i, (c, name, flav, keeps, prov, sc, point) in enumerate(L):
         txt = (f'<div class="stack"><p>{chip(c, "")}</p><h2 class="display" id="{name.lower().replace(" ", "-")}">{name}</h2>'
@@ -377,17 +399,22 @@ def providers():
 
 def failures():
     p = "failures"
-    rows = [("HTTP APIs", "force_answer · expire_tokens", "any named answer or SOAP fault; reset, empty, timeout, 500, 503, HTML; invalid tokens"),
+    rows = [("HTTP APIs", "force_answer · expire_tokens", "any named answer or SOAP fault; reset, empty, timeout, 500, 503, HTML; cut or slow streams; invalid tokens"),
+            ("AI models", "force_ai_failure", "429, 500, 529, content filter, length, broken tool arguments, slow, cut"),
             ("SMS", "force_sms_failure · reply_sms_as_user", "500, 400, reset, empty, timeout; the person texts back"),
             ("WhatsApp", "force_whatsapp_failure · send_bad_webhook", "500, 400, reset, empty, timeout; wrong, missing or old signature, replay"),
             ("Email", "decide_held · simulate_recipient", "deliver, defer, bounce, drop; open, click, spam report, unsubscribe"),
+            ("Mailboxes", "set_mailbox", "login refused, busy, dropped fetch, TLS required, token expired"),
             ("Storage", "create_rule · set_next_read · set_next_use", "any status, first N or a percentage; slow, truncated, bad MD5; bad links"),
+            ("Files", "set_file_server", "login refused, disk full, permission denied, cut halfway, slow, host key changed"),
             ("Messaging", "set_next_delivery (namespace) · set_namespace_reachability", "lose lock, duplicate, hold, drop, dead-letter, out of order; refuse, busy"),
+            ("Streams", "set_streams · rebalance", "leader not available, SASL refused, slow fetch, duplicate, registry down; rebalance"),
             ("Identity", "provoke_sign_in · provoke_idp", "MFA, consent, user cancels, wrong tenant, expired, IdP down"),
             ("Secrets", "provoke_secret · provoke_key · provoke_certificate", "403, 404, 429, disabled, slow, expired, untrusted"),
             ("Webhook inboxes", "set_inbox", "fail N times then succeed, delay, hang, redirect"),
+            ("Product events", "force_events_failure", "400, 413, 429, slow, drop half"),
             ("Telemetry", "provoke_collector", "401, 403, 429, 503, refused, slow, drop half")]
-    colors = ["blue", "red", "green", "amber", "brown", "teal", "green", "graphite", "orange", "amber"]
+    colors = ["blue", "orange", "red", "green", "amber", "amber", "brown", "brown", "teal", "teal", "green", "graphite", "orange", "red", "amber"]
 
     def dots(pattern):
         return '<span class="dots">' + "".join(f'<i class="{"on" if x else ""}"></i>' for x in pattern) + "</span>"
@@ -414,7 +441,7 @@ def failures():
   {shot(p, "rules", "The rule editor: when, then, how often and what the app will see", [pin(1, 470, 137)])}
 </div></section>
 <section class="wrap section"><div class="split">
-  <div class="stack">{head(2, "Callbacks your app must verify.", "Stuntman signs callbacks the way each provider does: ECDSA for SendGrid, the app secret for Meta, HMAC for your own inboxes. Ask for a badly signed or replayed one and check that your app rejects it.")}
+  <div class="stack">{head(2, "Callbacks your app must verify.", "Stuntman signs callbacks the way each provider does: ECDSA for SendGrid, the app secret for Meta, HMAC for your own inboxes, and Stripe, Svix, GitHub or CloudEvents signatures for plugin webhooks. Ask for a badly signed, old, repeated or replayed one and check that your app rejects it.")}
   {code('send_bad_webhook {"kind": "wrong_signature"}\n→ acme-api answered 401')}</div>
   {shot(p, "inbox-deliveries", "Webhook deliveries with their signature checks and attempts")}
 </div></section>
@@ -447,8 +474,8 @@ def timeline():
 </div></section>
 <section class="wrap section">
   {head(2, "For agents and tests.", "Read the same timeline over MCP or HTTP, and wait instead of sleeping.")}
-  {table(["Need", "Tools"], [("Wait for it", "<code>wait_for_object · wait_for_api_call · wait_for_delivery · wait_for_link</code>"),
-                             ("Read calls", "<code>list_api_calls · list_sms · list_whatsapp_messages · list_events · list_sign_ins</code>"),
+  {table(["Need", "Tools"], [("Wait for it", "<code>wait_for_object · wait_for_api_call · wait_for_delivery · wait_for_link · wait_for_ai_call · wait_for_event · wait_for_file</code>"),
+                             ("Read calls", "<code>list_api_calls · list_sms · list_whatsapp_messages · list_events · list_sign_ins · list_ai_calls · list_product_events · list_transfers</code>"),
                              ("Who forced what", "<code>list_forced</code>"), ("What escaped", "<code>list_unmatched · real_provider_calls</code>")])}
 </section>
 {next_link(p)}""")
@@ -472,6 +499,29 @@ def plugins():
       <div><dt>keep</dt><dd>the state the provider remembers between calls</dd></div>
       <div><dt>decide</dt><dd>plain expressions; the first match wins; no code</dd></div>
       <div><dt>answers</dt><dd>the provider's bodies, and the sentence the timeline shows</dd></div></dl></div>
+</section>
+<section class="wrap section">
+  {head(2, "More than request and answer.", "The same file describes the parts of a provider that are hard to fake by hand. Details in <a href='" + DOCS + "/plugins.md'>docs/plugins.md</a>.")}
+  {table(["Feature", "In the YAML", "What it gives you"], [
+      ("Regex and GraphQL routes", "<code>GET ~/v2/(?&lt;id&gt;[0-9]+)</code> · <code>graphql: CreateCharge</code>", "one route for a family of paths; one route per GraphQL operation"),
+      ("Streamed answers", "<code>stream:</code> · <code>stream_format: sse | ndjson | chunks</code>", "server-sent events and NDJSON, part by part; cut or slow on cue"),
+      ("Signed webhooks", "<code>service.webhooks.sign: stripe | svix | github | cloudevents | hex | hex_ts</code>", "callbacks your app must verify, broken on purpose when you ask"),
+      ("Idempotency keys", "<code>service.idempotency</code>", "a repeated key replays the first answer; another body gets 409"),
+      ("Scenarios", "<code>when: scenario == 'gps_down'</code> · <code>scenario:</code>", "a provider that changes state, moved by a call or by <code>set_scenario</code>"),
+      ("An MCP server", "<code>mcp:</code> · routes with <code>tool:</code>", "a provider's own MCP tools, for apps that call them"),
+      ("WireMock templates", "<code>template: handlebars</code>", "imported mocks keep their <code>{{request.path}}</code> and <code>{{now}}</code>"),
+      ("The clock", "<code>send.delay: 30d</code> · <code>advance_clock</code>", "a renewal due in 30 days, sent now"),
+  ])}
+</section>
+<section class="wrap section"><div class="split">
+  {head(2, "A provider that is an MCP server.", "Declare <code>mcp:</code> and give routes a <code>tool:</code>. Your app's agent lists the tools, calls them, and gets the answers and failures you set, like any other route.")}
+  {shot(p, "mcp-tools", "The Tools tab of an HTTP API: search_docs with its input schema, the MCP URL and the last calls")}
+</div></section>
+<section class="wrap section">
+  {head(2, "Or make it from what you have.")}
+  <div class="trio"><div><h3>An OpenAPI spec or a WSDL</h3>{code("import_spec  service=acme-kyc\n  source=https://api.example.com/openapi.json")}</div>
+    <div><h3>WireMock mappings</h3>{code("import_mocks source=/mocks/partners")}</div>
+    <div><h3>The real sandbox</h3>{code("start_recording service=acme-kyc\n  upstream=https://sandbox.example.com")}</div></div>
 </section>
 <section class="wrap section"><div class="split">
   {head(2, "Edit in the UI. Keep the YAML.", "The UI edits the same file. Every change is validated before it is saved, and the YAML beside the editor shows the exact lines that changed.")}
@@ -524,7 +574,7 @@ def start():
     steps = [("Run it", "One container serves the web UI, the HTTP API and MCP. Data lives in one volume.",
               "docker run -d --name stuntman -p 127.0.0.1:8025:8025 \\\n  -p 127.0.0.1:2525:2525 -p 127.0.0.1:8028:8028 \\\n  -v stuntman-data:/data edivanteixeira/stuntman\n\n# web UI, /api and /mcp on http://localhost:8025", True),
              ("Point your app at it", "Change base URLs only. Your app keeps its code and every other setting.",
-              "WhatsApp (Graph)   http://localhost:8025/whatsapp\nSendGrid           http://localhost:8025/sendgrid\nSMTP               localhost:2525\nHTTP API plugins   http://localhost:8028/<service>\nAzure Blob         http://127.0.0.1:10000/<account>\nAmazon S3          http://127.0.0.1:9000\nOpenTelemetry      http://localhost:4318", False),
+              "WhatsApp (Graph)   http://localhost:8025/whatsapp\nSendGrid           http://localhost:8025/sendgrid\nSMTP               localhost:2525\nHTTP API plugins   http://localhost:8028/<service>\nAzure Blob         http://127.0.0.1:10000/<account>\nAmazon S3          http://127.0.0.1:9000\nOpenTelemetry      http://localhost:4318\nOpenAI SDK         http://localhost:8025/openai/v1\nKafka              localhost:9092", False),
              ("Connect your agent", "Claude Code, Codex, Gemini CLI, OpenCode, Cursor or GitHub Copilot over MCP; anything else over HTTP.",
               "claude mcp add --transport http stuntman \\\n  http://localhost:8025/mcp", False),
              ("Ask for the hard case", "Not the happy path. The agent sets up, provokes, reads and checks, then reports back.",

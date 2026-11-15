@@ -66,7 +66,16 @@ Change **base URLs only**. Your app keeps its code, its SDKs and its settings.
 | Key Vault | vault URL | `https://<vault>.vault.<base domain>:8444` (trust the Test CA) |
 | OIDC / OAuth2 | authority | from **Logins › provider settings** (Entra ID, Google, Okta or generic OIDC) |
 | OpenTelemetry | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` (or gRPC `:4317`) |
+| GELF / StatsD | host and port | `localhost:12201` / `localhost:8125` (UDP) |
 | Your own webhooks | target URL | `http://localhost:8027/in/<inbox>` |
+| OpenAI / Anthropic / Gemini | SDK base URL | `http://localhost:8025/openai/v1`, `http://localhost:8025/anthropic`, `http://localhost:8025/gemini` (any key); Azure OpenAI, OpenRouter and DeepSeek in [Providers](providers.md#ai-models) |
+| PostHog / Segment / Mixpanel / GA4 | SDK host | `http://localhost:8025/posthog`, `/segment`, `/mixpanel`, `/ga4` |
+| IMAP / POP3 mailboxes | host and port | `localhost:1143` / `localhost:1110`; the login is the mailbox address |
+| FTP / FTPS / SFTP | host and port | `localhost:2121` / `localhost:2222`; users from **Files** |
+| Kafka and Schema Registry | `bootstrap.servers`, `schema.registry.url` | `localhost:9092`, `http://localhost:8081` |
+| RabbitMQ management | API URL | `http://localhost:15672` |
+| SAML 2.0 | IdP metadata URL | `http://localhost:8025/login/<tenant>/saml/metadata` |
+| LDAP / Active Directory | host and port | `localhost:3389`, base DN from **Identity › Protocols** |
 
 The web UI shows each value ready to copy, with your host name filled in.
 Azure SDKs need an IP address (`127.0.0.1`) in blob endpoints, as with Azurite.

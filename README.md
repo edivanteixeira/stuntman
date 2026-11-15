@@ -6,7 +6,8 @@
 
 <p align="center">
   <strong>The stunt double for every provider your app calls.</strong><br>
-  SMS, WhatsApp, email, storage, queues, identity, secrets, webhooks and any HTTP API,<br>
+  SMS, WhatsApp, email, mailboxes, storage, file servers, queues, Kafka, identity, secrets, AI models,<br>
+  product analytics, webhooks and any HTTP API,<br>
   answering like the real thing, so you and your coding agents can test the hard cases end to end.
 </p>
 
@@ -51,7 +52,7 @@ callbacks back and **fails exactly when you ask it to**.
 
 <p align="center"><img src="docs/images/agent-loop.png" alt="The loop an agent runs on its own: read the code, set up Stuntman, change the code, run the real flow, provoke failures, read what the app sent, check the result" width="100%"></p>
 
-Every action in Stuntman is a tool: **306 of them**, each one both an **MCP tool** and an **HTTP route**.
+Every action in Stuntman is a tool: **356 of them**, each one both an **MCP tool** and an **HTTP route**.
 Claude Code, Codex, Gemini CLI, OpenCode, Cursor, GitHub Copilot or a plain test script can:
 
 1. **Set it up.** Find the providers your app calls, install the matching plugins, point the base URLs at Stuntman.
@@ -98,6 +99,8 @@ Point your app's provider URLs at it (examples):
 | Azure Blob | `http://127.0.0.1:10000/<account>` |
 | Amazon S3 | `http://127.0.0.1:9000` (path style) |
 | OpenTelemetry | `http://localhost:4318` (or gRPC `:4317`) |
+| OpenAI, Anthropic, Gemini… | `http://localhost:8025/openai/v1`, `…/anthropic`, `…/gemini` |
+| Kafka | `localhost:9092` (Schema Registry `http://localhost:8081`) |
 
 Connect Claude Code:
 
@@ -111,16 +114,20 @@ claude mcp add --transport http stuntman http://localhost:8025/mcp
 
 | Line | Providers today | You can provoke |
 |---|---|---|
-| **HTTP APIs** | Any REST API, described as a YAML plugin: OAuth2 client credentials, Basic, session cookies, mTLS, browser steps. Any SOAP API, made from its WSDL. Made from an OpenAPI spec, or by recording the real provider | named answers, SOAP faults, latency, 5xx, reset, timeout, expired tokens, billing and rate limits |
+| **HTTP APIs** | Any REST, GraphQL or SOAP API, described as a YAML plugin: OAuth2, Basic, session cookies, mTLS (ICP-Brasil e-CNPJ too), browser steps, streamed answers, signed webhooks, idempotency keys, an MCP server. Made from an OpenAPI spec, a WSDL, WireMock mappings, or by recording the real provider. 26 plugins in the catalog | named answers, SOAP faults, XML signatures, latency, 5xx, reset, timeout, cut streams, expired tokens, badly signed or repeated webhooks, billing and rate limits |
+| **AI models** | OpenAI, Azure OpenAI, Anthropic, Gemini, OpenRouter, DeepSeek: chat, Responses, messages, embeddings, streaming, tool calls | 429, 500, 529, content filter, cut by max_tokens, broken tool arguments, slow or cut streams; spend per provider |
 | **SMS** | Zenvia API v2 | 500, 400, reset, empty reply, timeout; the person texts back, STOP / START |
 | **WhatsApp** | Meta WhatsApp Cloud API (Graph) | 500, 400, connection failures, expired tokens, user replies, badly signed or replayed webhooks |
-| **Email** | SMTP (STARTTLS) and SendGrid v3, signed event webhook | bounce, defer, drop, hold; open, click, spam report, unsubscribe events |
+| **Email** | SMTP (STARTTLS) and SendGrid v3, signed event webhook; IMAP and POP3 mailboxes the app reads | bounce, defer, drop, hold; open, click, spam report, unsubscribe events; logins refused, mailbox busy, dropped fetches |
 | **Storage** | Azure Blob (SharedKey, SAS) and Amazon S3 (SigV4) | 503 on the first N attempts, 403/404, slow reads, bad MD5, expired or tampered links, lost or duplicated events |
-| **Messaging** | Azure Service Bus and RabbitMQ over AMQP | lost locks, duplicates, held, dropped, dead-lettered or out-of-order messages, refused or busy namespace |
-| **Identity** | OIDC / OAuth2: Microsoft Entra ID, Google, Okta, generic OIDC | MFA, consent, user cancels, wrong tenant, expired tokens, bad signature, IdP down, broken discovery or JWKS |
+| **Files** | FTP, FTPS and SFTP servers over shared folders | logins refused, disk full, permission denied, transfers cut or slow, a changed host key |
+| **Messaging** | Azure Service Bus and RabbitMQ over AMQP, RabbitMQ management API | lost locks, duplicates, held, dropped, dead-lettered or out-of-order messages, refused or busy namespace |
+| **Streams** | Kafka (SASL, consumer groups) and Confluent Schema Registry with Avro | leader not available, SASL refused, slow fetches, duplicates, rebalances, registry down |
+| **Identity** | OIDC / OAuth2 (Microsoft Entra ID, Google, Okta, generic OIDC, password grant), SAML 2.0, LDAP, Bot Framework | MFA, consent, user cancels, wrong tenant, expired tokens, bad signature, IdP down, broken discovery or JWKS, locked accounts |
 | **Secrets** | Azure Key Vault (secrets, keys, certificates) and managed identity | 403, 404, 429, disabled, slow, expired or untrusted certificates, wrong signatures |
 | **Webhook inboxes** | Endpoints your app sends its own webhooks to | 200, 500, timeout, hang, delay, fail N times then succeed, signature checks |
-| **Telemetry** | OpenTelemetry (OTLP logs, traces, metrics) | a collector that refuses, rejects, throttles, slows down or drops half |
+| **Product events** | PostHog, Segment, Mixpanel, GA4 Measurement Protocol, with tracking plans | 400, 413, 429, slow, half the events lost; personal data flagged |
+| **Telemetry** | OpenTelemetry (OTLP logs, traces, metrics), GELF, StatsD | a collector that refuses, rejects, throttles, slows down or drops half |
 
 → [Providers in detail](docs/providers.md) · [Every failure you can provoke](docs/failures.md)
 
@@ -153,11 +160,13 @@ claude mcp add --transport http stuntman http://localhost:8025/mcp
 | [Plugins](docs/plugins.md) | The YAML format, expressions, installing, validating |
 | [OpenAPI specs](docs/openapi.md) | A provider from its OpenAPI or Swagger spec: routes, answers, body checks |
 | [Recording](docs/recording.md) | Record the real provider's sandbox and turn the calls into a plugin |
-| [SOAP services](docs/soap.md) | A provider from its WSDL: operations, faults, WS-Security, callbacks |
+| [SOAP services](docs/soap.md) | A provider from its WSDL: operations, faults, WS-Security, XML signatures, ICP-Brasil certificates, callbacks |
+| [WireMock mocks](docs/mocks.md) | WireMock mappings made into plugins: matchers, scenarios, response templates |
+| [The clock](docs/clock.md) | Move an environment's time forward; scheduled webhooks |
 | [Environments](docs/environments.md) | One environment per branch: clone, pause, expire, route requests |
 | [Configuration](docs/configuration.md) | Environment variables, ports, Docker, data layout |
 | [Security](docs/security.md) | What is and is not protected today |
-| [Tool reference](docs/reference/tools.md) | All 306 tools, generated from the source |
+| [Tool reference](docs/reference/tools.md) | All 356 tools, generated from the source |
 
 ## How it is built
 
@@ -171,11 +180,13 @@ engine/
   crates/core       shared: storage, tools (MCP tool = HTTP route), signed callbacks, live events
   crates/server     wires the modules; one router per environment; /api, /mcp, the web UI
   crates/apis       the HTTP plugin engine (YAML + expressions) — plugins/ is the catalog
-  crates/email      SMTP and SendGrid        crates/sms        SMS (Zenvia)
-  crates/whatsapp   WhatsApp Cloud API       crates/storage    Azure Blob and S3
-  crates/messaging  Service Bus, RabbitMQ    crates/identity   OIDC / OAuth2
-  crates/keyvault   Key Vault, managed id.   crates/webhook    webhook inboxes
-  crates/telemetry  OTLP receiver
+  crates/email      SMTP, SendGrid, IMAP, POP3   crates/sms        SMS (Zenvia)
+  crates/whatsapp   WhatsApp Cloud API           crates/storage    Azure Blob and S3
+  crates/messaging  Service Bus, RabbitMQ        crates/identity   OIDC, SAML, LDAP, Bot Framework
+  crates/keyvault   Key Vault, managed id.       crates/webhook    webhook inboxes
+  crates/telemetry  OTLP, GELF, StatsD           crates/ai         AI model APIs
+  crates/events     product analytics            crates/files      FTP, FTPS, SFTP
+  crates/streams    Kafka, Schema Registry
   web/              the web UI (Leptos)
 ```
 
@@ -186,4 +197,4 @@ The most valuable contribution is a **plugin for a provider you know well**. Sta
 
 ## License
 
-Not chosen yet. Until a license is published, all rights are reserved by the authors.
+Apache License 2.0. See [LICENSE](LICENSE).

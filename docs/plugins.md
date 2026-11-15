@@ -6,10 +6,10 @@ once; everyone else installs it.
 
 <p align="center"><img src="images/plugin-anatomy.png" alt="Anatomy of a plugin: service, routes, keep, decide, answers" width="100%"></p>
 
-Plugins power the **HTTP APIs** line. SMS, WhatsApp, email, storage, messaging, identity, secrets, webhooks and
-telemetry are built into the engine. You do not have to write a plugin by hand: one can be made from the
-provider's [OpenAPI spec](openapi.md), from its [WSDL](soap.md) (SOAP), or by
-[recording the real provider](recording.md).
+Plugins power the **HTTP APIs** line. SMS, WhatsApp, email, mailboxes, storage, files, messaging, streams,
+identity, secrets, AI models, product events, webhooks and telemetry are built into the engine. You do not have to
+write a plugin by hand: one can be made from the provider's [OpenAPI spec](openapi.md), from its [WSDL](soap.md)
+(SOAP), from [WireMock mappings](mocks.md), or by [recording the real provider](recording.md).
 
 ## A complete example
 
@@ -64,10 +64,12 @@ duplicate.
 | `origin` | `official`, `community` or `yours` (default) |
 | `region` | optional, for regional providers |
 | `base_url`, `real_host` | the provider's real address; `real_host` lets you resolve the real name to Stuntman |
-| `auth` | `oauth` (client credentials: `client_id`, `client_secret`, `any_client`, `token_ttl`), `basic` (`users`, `any_user`, `challenge`), `session` (`cookie`, `ttl`, `users`), `client_certificate.required` (mTLS) |
+| `auth` | `oauth` (client credentials: `client_id`, `client_secret`, `any_client`, `token_ttl`), `basic` (`users`, `any_user`, `challenge`), `session` (`cookie`, `ttl`, `users`), `client_certificate.required` (mTLS) and `client_certificate.icp` (the certificate must carry a CNPJ, as ICP-Brasil e-CNPJ certificates do; see [SOAP › XML signatures](soap.md#xml-signatures-and-icp-brasil-certificates)) |
 | `billing` | `enabled`, `per_call`, `warn_above`: a counter, never real money |
 | `limits` | `latency` (e.g. `300ms..600ms`), `rate`, `fail_share` |
 | `cors`, `ignore_case` | request handling |
+| `webhooks` | how the `send` steps sign: `sign`, `header`, `secret`, `tolerance`, `provoke` ([Webhook signing](#webhook-signing)) |
+| `idempotency` | `header` (default `Idempotency-Key`) and `ttl` (default `24h`) ([Idempotency keys](#idempotency-keys)) |
 
 ### `routes`
 
@@ -75,20 +77,23 @@ Each route reads top to bottom: **receive → let → keep → wait → decide �
 
 | Key | Meaning |
 |---|---|
-| `route` | `METHOD /path`; `{name}` segments are path parameters |
+| `route` | `METHOD /path`; `{name}` segments are path parameters, a last `{*}` segment takes the rest as `path.rest`; `METHOD ~regex` matches the whole path with a regular expression, and its named groups are path parameters ([Regex routes](#regex-routes)) |
 | `receive.auth` | `none`, `bearer` (a token from this service's token route), `basic`, `session` |
 | `receive.body` | required body fields (dotted paths); a missing one answers 400, or the answer named by `missing` |
 | `receive.schema`, `receive.invalid` | the body is checked against this schema of `spec.schemas`; a body that does not match it gets the answer named by `invalid`, or 400 naming the field (see [OpenAPI](openapi.md)) |
 | `operation` | the spec's `operationId`, kept for reference |
-| `lets` | named values computed first, e.g. `person: lookup('people', 'id', body.document_id)` |
-| `keep` | `state` (a collection) and `key` (an expression): what the provider remembers between calls |
+| `let` | named values computed first, e.g. `person: lookup('people', 'id', body.document_id)`; one that names another is computed after it, whatever the order in the file |
+| `keep` | `state` (a collection) and `key` (an expression): what the provider remembers between calls. Only an accepted call (an answer below 400) is saved; a refused one leaves the state as it was |
 | `wait` | "answer `processing` 3 times, then `done`": counts calls per key |
-| `decide` | a list of `when` → `answer`; the first match wins; the last item usually has no `when` |
+| `decide` | a list of `when` → `answer`; the first match wins; the last item usually has no `when`. `scenario` moves the service to that scenario after this answer ([Scenarios](#scenarios)) |
 | `respond.latency` | e.g. `300ms..600ms` |
-| `send` | callbacks after answering: `url` (a template), `method`, `body`, `delay`, `secret` (HMAC-SHA256 into `header`) |
+| `send` | callbacks after answering: `url` (a template), `method`, `body`, `delay` (on the [environment's clock](clock.md)), `secret` (HMAC-SHA256 into `header`; may be a template), `sign` (overrides `service.webhooks.sign`), `event` (the event type), `headers` (names and values are templates; a name that renders empty is left out), `when` (an expression: sent only when it is true), `operation` (a SOAP callback) |
 | `fail` | a generic failure on this route only: `reset`, `empty`, `timeout`, `401`, `403`, `500`, `503`, `html` |
 | `schema` | response fields and their types; answers are checked against it |
 | `billable`, `token`, `login`, `grant`, `step` | billing, the OAuth2 token route, the session login route, people grants (authorization code with PKCE), push approvals polled by the app |
+| `graphql` | the GraphQL operation name, or first field of the query, this route answers ([GraphQL](#graphql)) |
+| `fallthrough` | when no rule matches, the next route with a matching path is tried, as WireMock does across mappings |
+| `tool`, `description`, `input_schema` | the route is a tool of the service's MCP server ([MCP server](#mcp-server)) |
 
 ### `answers`
 
@@ -101,6 +106,17 @@ Each route reads top to bottom: **receive → let → keep → wait → decide �
 | `file` | a file in `apis/<service>.files/` sent as the body, as is (a PDF, an image); recordings write these |
 | `sentence` | the timeline sentence, a template |
 | `note` | what this answer means, shown under its name |
+| `latency` | wait before this answer (`800ms`), instead of the route's latency |
+| `stream`, `stream_format` | send the answer in parts instead of `body`: `sse` (default), `ndjson` or `chunks` ([Streamed answers](#streamed-answers)) |
+| `template` | `handlebars`: the body is a WireMock response template ([WireMock mocks](mocks.md#response-templates)) |
+| `fault` | a SOAP fault instead of a response ([SOAP](soap.md)) |
+| `rpc_error` | for an MCP tool: a JSON-RPC error code (`-32602`) instead of a tool result; the body is its message |
+
+### `mcp`
+
+A top-level block that makes the service an MCP server too: `path` (default `/mcp`), `name`, `version`,
+`instructions`, `auth` (empty: open; `bearer`: a token from this service's token route) and `sse` (answer as
+`text/event-stream`). See [MCP server](#mcp-server).
 
 ### `spec` and `record`
 
@@ -119,13 +135,168 @@ Conditions and templates use a small, side-effect-free language (a CEL-like subs
 
 | | |
 |---|---|
-| **Read** | `body.x`, `query.x`, `path.x`, `headers.x`, `state.<collection>`, `person.x` |
-| **Operators** | `==`, `!=`, `<`, `>`, `&&`, `\|\|`, `!`, `in` |
-| **Methods** | `.startsWith()`, `.endsWith()`, `.contains()`, `.matches()`, `.size()`, `.upper()`, `.lower()`, `.digits()`, `.mask()` |
-| **Functions** | `size`, `exists`, `default`, `string`, `int`, `double`, `uuid`, `random_id`, `now`, `now_ms`, `matches`, `json`, `lookup` |
-| **Template filters** | `{{ value \| default('x') }}`, `mask`, `json`, `round`, `tz` |
+| **Read** | `body.x`, `query.x`, `path.x`, `headers.x`, `raw` (the body as text), `state.<collection>`, `data.<table>`, the `let` names (`person.x`), `caller`, `client_cert` and `client_cnpj` (mTLS), `scenario`; on GraphQL routes `variables` and `operation`; in `send`, `answer` |
+| **Operators** | `==`, `!=`, `<`, `>`, `<=`, `>=`, `+`, `-`, `*`, `/`, `%`, `&&`, `\|\|`, `!`, `in`, `cond ? a : b`, `x[0]`, `x['key']`; lists `[1, 2]` and maps `{'n': 2}` |
+| **Methods** | `.startsWith()`, `.endsWith()`, `.contains()`, `.matches()`, `.size()`, `.upper()`, `.lower()`, `.digits()`, `.mask()`, `.sha256()`, `.base64url()`, `.cpf_ok()`, `.string()`, `.int()` |
+| **Functions** | `size`, `exists` (or `has`), `default`, `string`, `int`, `double`, `upper`, `lower`, `trim`, `replace(s, from, to)`, `split(s, sep)`, `join(list, sep)`, `substring(s, start, end)`, `digits`, `mask`, `cpf_ok`, `sha256`, `base64`, `base64url`, `uuid`, `random_id`, `now`, `now_ms`, `matches(s, regex)`, `json`, `lookup(table, field, value)` |
+| **Template filters** | `{{ value \| default('x') }}`, `mask`, `json`, `round(2)`, `tz('America/New_York')` (a short list of zones, fixed offsets), and any one-argument function (`\| trim`, `\| upper`) |
 
-Templates use `{{ }}` inside answer bodies, sentences and callback URLs.
+Templates use `{{ }}` inside answer bodies, sentences, callback URLs, headers and secrets. `split` and `join`
+default to a comma; `substring` counts characters, and a negative start counts from the end. `now()` and `now_ms()`
+read the [environment's clock](clock.md).
+
+```text
+split(replace('X-Key:abc', 'X-', ''), ':')[1]        → "abc"
+substring('2026-11-15', 0, 4)                         → "2026"
+join(split('a b', ' '), '+')                          → "a+b"
+```
+
+## Regex routes
+
+A path that starts with `~` is a regular expression over the whole path (after `/<service>`). Named groups are
+path parameters. Imported WireMock mappings keep their `urlPathPattern` this way.
+
+```yaml
+routes:
+  - route: GET ~/v2/positions/(?<plate>[A-Z]{3}[0-9][A-Z0-9][0-9]{2})
+    decide:
+      - answer: position
+answers:
+  - name: position
+    body: '{"plate": "{{ path.plate }}", "at": "{{ now() }}"}'
+```
+
+Routes are tried in the order of the file, so put a broad pattern after the specific routes it would also
+match. `service.ignore_case` makes the regex case-insensitive.
+
+## GraphQL
+
+Several routes can share `POST /graphql`; `graphql:` picks the one that answers, by the request's `operationName`
+or by the first field of the query. The scope gets `variables` and `operation`. A query no route takes gets 404.
+
+```yaml
+routes:
+  - route: POST /graphql
+    graphql: CreateCharge
+    decide:
+      - when: variables.amount > 1000
+        answer: declined
+      - answer: charge
+answers:
+  - name: charge
+    body: '{"data": {"createCharge": {"id": "ch_9", "amount": {{ variables.amount }}}}}'
+  - name: declined
+    body: '{"errors": [{"message": "card declined"}]}'
+```
+
+## Streamed answers
+
+An answer with `stream` is sent in parts, each one `after` the previous one. `stream_format` is `sse` (the default:
+`event:` and `data:` lines), `ndjson` (one line per part) or `chunks` (plain text). `data` is a template.
+
+```yaml
+answers:
+  - name: charge_events
+    stream:
+      - event: charge.pending
+        data: '{"id": "ch_1"}'
+      - after: 300ms
+        event: charge.succeeded
+        data: '{"status": "succeeded"}'
+      - after: 100ms
+        data: '[DONE]'
+```
+
+`force_answer` with `cut` sends half the parts and breaks the connection; `slow` waits 2 s more before each part.
+
+## MCP server
+
+With a top-level `mcp:` block, the service is also an MCP server: JSON-RPC 2.0 over streamable HTTP on
+`:8028/<service>/mcp` (protocol `2025-06-18`): `initialize`, `ping`, `tools/list`, `tools/call` and notifications.
+Its tools are the routes that have `tool:`. The arguments are the `body`, so a tool decides like any route.
+
+```yaml
+mcp:
+  name: example-docs
+  instructions: Search the Example docs.
+routes:
+  - tool: search_docs
+    description: Search the docs by words.
+    input_schema:
+      type: object
+      required: [query]
+      properties:
+        query: {type: string}
+    decide:
+      - when: body.query.contains('refund')
+        answer: refund_pages
+      - answer: no_results
+answers:
+  - name: refund_pages
+    body: 'Refunds take 5 days.'
+  - name: no_results
+    status: 404
+    body: 'Nothing found.'
+```
+
+The answer's body is the tool result's text. A status of 400 or more gives `isError: true`; arguments that break
+`input_schema` do too. `rpc_error: -32602` answers a JSON-RPC error instead. `force_answer` with `session_expired`
+answers the next request with 404, so the client must start a new session. `set_mcp_tool` adds or changes a tool;
+the web UI shows them on the service's **Tools** tab, and calls appear as `MCP <tool>`.
+
+## Webhook signing
+
+`service.webhooks` sets how the `send` steps sign, in the provider's own format:
+
+| `sign` | Headers |
+|---|---|
+| `hex` (default) | `X-Signature`: HMAC-SHA256 of the body, hex |
+| `hex_ts` | `X-Webhook-Timestamp`, and `X-Webhook-Signature`: HMAC-SHA256 of `{timestamp}.{body}` |
+| `stripe` | `Stripe-Signature: t=…,v1=…` |
+| `svix` | `svix-id`, `svix-timestamp`, `svix-signature: v1,<base64>`; the secret is `whsec_<base64>` |
+| `github` | `X-Hub-Signature-256: sha256=<hex>` |
+| `cloudevents` | `ce-specversion`, `ce-type` (the send's `event`), `ce-source`, `ce-id`, `ce-time`; an HMAC into `header` when both `secret` and `header` are set |
+
+`header` renames the signature header, `secret` is a literal or `secret://name`, and `tolerance` (default 300 s)
+is how old a timestamp the app should accept. `provoke` breaks every send while it is set: `wrong_signature`,
+`old_timestamp` (past the tolerance), `no_signature`, `twice` (each webhook sent two times) and `out_of_order` (the
+first webhook of a route waits 2 s, so the next one arrives first). A send's own `sign` overrides the service's.
+
+```yaml
+service:
+  name: example-payments
+  webhooks:
+    sign: stripe
+    secret: secret://example-payments-webhook
+```
+
+## Idempotency keys
+
+With `service.idempotency`, a `POST`, `PUT`, `PATCH` or `DELETE` that repeats an `Idempotency-Key` gets the first
+answer again, with `idempotent-replayed: true`, and sends no webhook. The same key with another body gets 409
+`idempotency_error`. Keys are kept for `ttl` (default `24h`).
+
+## Scenarios
+
+A service is in one scenario at a time; it starts in `Started`. Rules read it as `scenario`, a `decide` item with
+`scenario:` moves the service after its answer, and `set_scenario` moves it by hand. Imported WireMock scenarios
+work this way.
+
+```yaml
+decide:
+  - when: scenario == 'gps_down'
+    answer: gps_down
+  - when: body.kind == 'panic'
+    answer: alert
+    scenario: gps_down
+  - answer: alert
+```
+
+## WireMock templates
+
+An answer with `template: handlebars` renders its body as a WireMock response template (`request.path`,
+`request.headers.X`, `{{now format='yyyy-MM-dd'}}`, `{{randomInt lower=1 upper=9}}`, `jsonPath`, `xPath`…). See
+[WireMock mocks](mocks.md#response-templates) for the helpers.
 
 ## Edit in the UI, keep the YAML
 

@@ -4,8 +4,9 @@ You are a coding agent (Claude Code, Codex, Gemini CLI, OpenCode, Cursor, GitHub
 pasted a short prompt that sent you here. Your job: **set Stuntman up for the project in the current working
 directory, end to end, and leave the developer with a working staging environment that never calls a real provider.**
 
-Stuntman stands in for the external providers an app calls (SMS, WhatsApp, email, storage, queues, identity,
-secrets, webhooks, telemetry and any REST or SOAP API through YAML plugins). It answers like the provider, keeps state,
+Stuntman stands in for the external providers an app calls (SMS, WhatsApp, email and mailboxes, storage, file
+servers, queues, Kafka, identity, secrets, AI models, product analytics, webhooks, telemetry and any REST, GraphQL or
+SOAP API through YAML plugins). It answers like the provider, keeps state,
 sends callbacks and fails on cue. Every action is an MCP tool and an HTTP route.
 
 - Site: https://edivanteixeira.github.io/stuntman/
@@ -68,8 +69,14 @@ docker run -d --name stuntman --restart unless-stopped \
   -p 127.0.0.1:8025:8025 -p 127.0.0.1:2525:2525 -p 127.0.0.1:8027:8027 -p 127.0.0.1:8028:8028 \
   -p 127.0.0.1:8443:8443 -p 127.0.0.1:8444:8444 -p 127.0.0.1:5673:5673 -p 127.0.0.1:5671:5671 \
   -p 127.0.0.1:10000:10000 -p 127.0.0.1:9000:9000 -p 127.0.0.1:4317:4317 -p 127.0.0.1:4318:4318 \
+  -p 127.0.0.1:3389:3389 -p 127.0.0.1:2121:2121 -p 127.0.0.1:30000-30009:30000-30009 -p 127.0.0.1:2222:2222 \
+  -p 127.0.0.1:1143:1143 -p 127.0.0.1:1110:1110 -p 127.0.0.1:9092:9092 -p 127.0.0.1:8081:8081 \
+  -p 127.0.0.1:15672:15672 -p 127.0.0.1:12201:12201/udp -p 127.0.0.1:8125:8125/udp \
   -v stuntman-data:/data edivanteixeira/stuntman
 ```
+
+   The second half of the ports (LDAP, FTP and its passive range, SFTP, IMAP, POP3, Kafka, Schema Registry,
+   RabbitMQ management, GELF, StatsD) is only needed when the project uses those lines; leave them in when unsure.
 
 4. Wait until `http://localhost:8025/api/env` answers `200` (poll every 2 s, up to 60 s).
 5. If a container named `stuntman` already exists but is stopped, run `docker start stuntman` instead.
@@ -107,17 +114,22 @@ hosts, SDK packages and setting names. Do not print secret values you come acros
 |---|---|
 | **Email (SMTP)** | `SMTP_HOST`, `smtp.*`, MailKit, nodemailer, smtplib, `spring.mail`, ActionMailer `smtp_settings` |
 | **Email (SendGrid)** | `api.sendgrid.com`, `@sendgrid/mail`, `sendgrid` packages, `SENDGRID_API_KEY` |
+| **Mailboxes the app reads** | `IMAP_HOST`, `imap.*`, `pop.*`, MailKit `ImapClient`/`Pop3Client`, imaplib, poplib, `imapflow`, XOAUTH2 settings |
 | **SMS** | `api.zenvia.com`, Zenvia SDKs (Stuntman speaks Zenvia API v2) |
 | **WhatsApp** | `graph.facebook.com`, WhatsApp Cloud API, phone number ID / WABA settings |
 | **Azure Blob** | `blob.core.windows.net`, `Azure.Storage.Blobs`, `@azure/storage-blob`, `azure-storage-blob`, storage connection strings |
 | **Amazon S3 / R2** | `s3.amazonaws.com`, `AWS_ENDPOINT_URL`, aws-sdk S3 clients, `boto3.client("s3")`, R2 endpoints |
 | **Azure Service Bus** | `servicebus.windows.net`, `Azure.Messaging.ServiceBus`, `@azure/service-bus` |
-| **RabbitMQ** | `amqp://`, `RabbitMQ.Client`, `amqplib`, `pika`, `bunny` |
-| **Identity** | `login.microsoftonline.com` (Entra ID), `accounts.google.com`, `*.okta.com`, OIDC `Authority` / `issuer` settings |
+| **RabbitMQ** | `amqp://`, `RabbitMQ.Client`, `amqplib`, `pika`, `bunny`; the management API (`:15672`, MassTransit) |
+| **Kafka** | `bootstrap.servers`, `Confluent.Kafka`, `kafkajs`, `kafka-python`, `confluent-kafka`, `schema.registry.url` |
+| **File servers** | `ftp://`, `sftp://`, FluentFTP, SSH.NET, paramiko, `ssh2-sftp-client`, EDI drop folders |
+| **Identity** | `login.microsoftonline.com` (Entra ID), `accounts.google.com`, `*.okta.com`, OIDC `Authority` / `issuer` settings; SAML metadata URLs and ACS settings; `ldap://`, `DirectoryServices`, `ldap3`; Bot Framework / Teams bots (`MicrosoftAppId`) |
 | **Secrets** | `vault.azure.net`, `Azure.Security.KeyVault.*`, `DefaultAzureCredential`, managed identity |
-| **Telemetry** | `OTEL_EXPORTER_OTLP_ENDPOINT`, OpenTelemetry exporters |
+| **Telemetry** | `OTEL_EXPORTER_OTLP_ENDPOINT`, OpenTelemetry exporters; GELF / Graylog sinks; StatsD / DogStatsD clients |
+| **AI models** | `api.openai.com`, `*.openai.azure.com`, `api.anthropic.com`, `generativelanguage.googleapis.com`, `openrouter.ai`, `api.deepseek.com`; `openai`, `anthropic`, `@google/genai` SDKs |
+| **Product analytics** | PostHog, Segment, Mixpanel, GA4 Measurement Protocol (`google-analytics.com/mp/collect`) |
 | **Webhook inboxes** | URLs the app **sends** webhooks to (partner callbacks, notification targets) |
-| **HTTP API plugins** | reCAPTCHA (`google.com/recaptcha`), Cloudflare Turnstile (`challenges.cloudflare.com`) and **any other external base URL** |
+| **HTTP API plugins** | reCAPTCHA, Turnstile, Stripe, Resend, OneSignal, Microsoft Graph, Google Drive, Google Maps, Calendly, lemlist, Azure DevOps, New Relic and the others in `list_plugins`, and **any other external base URL**; a WireMock `mappings/` folder in the repository |
 
 Call `list_plugins` to see which HTTP providers already have a plugin in the catalog.
 
@@ -139,12 +151,16 @@ Use the default environment (`stg-a`) unless the developer asks for another one.
 
 | Line | What to do |
 |---|---|
-| Email, SMS, WhatsApp, Webhook inboxes, Telemetry | Built in; nothing to install. Create webhook inboxes with `create_webhook_inbox` when the app sends its own webhooks. |
+| Email, SMS, WhatsApp, Webhook inboxes, Telemetry, AI models, Product events | Built in; nothing to install. Create webhook inboxes with `create_webhook_inbox` when the app sends its own webhooks. For AI models, add a few rules with `set_ai_rule` so the app's prompts get useful answers; for analytics, write the expected events as a plan with `set_event_plan`. |
+| Mailboxes | `set_mailbox` for each address the app reads; `put_mail` to drop a test message. |
+| File servers | `set_file_server` with the users and folders the app uses; `put_file` for files a partner would drop. |
+| Kafka | `create_topic` for the topics the app uses (or let clients create them); `register_schema` for Avro subjects. |
 | Azure Blob / S3 | `create_account` (service `azure-blob` or `s3`) with the account and containers the app uses; `add_container` for more. |
 | Service Bus / RabbitMQ | Create the namespace and the queues or topics the app uses (see the Messaging tools in the reference). |
-| Identity | `set_provider` with flavor `entra-v2`, `google`, `okta` or `oidc`; add the app registration and a few synthetic users. |
+| Identity | `set_provider` with flavor `entra-v2`, `google`, `okta` or `oidc` (plus `saml`, `ldap` or `password_grant` when the app uses them); add the app registration and a few synthetic users. |
 | Secrets | Create the vault and the secret names the app reads (values are synthetic). |
 | A provider in the catalog | `install_plugin` (or `install_collection`). |
+| A provider the repository already mocks with WireMock | `import_mocks` with the folder that holds `mappings/` (try `dry: true` first and read the gaps). Guide: https://github.com/edivanteixeira/stuntman/blob/main/docs/mocks.md |
 | A provider with an OpenAPI or Swagger spec (an `openapi.yaml`, `swagger.json` or a spec URL in the repository or the provider's docs) | `import_spec` with the spec's URL, a file path or its text. Routes, answers and body checks come from it; add rules with `set_route` and check them with `try_route`. Point the app at `http://localhost:8028/<service>`. Guide: https://github.com/edivanteixeira/stuntman/blob/main/docs/openapi.md |
 | A SOAP provider (the app sends XML envelopes, or the repository has a `.wsdl` file or a WSDL URL) | `import_wsdl` with the WSDL's URL, a file path or its text. Operations, types and faults come from it; add rules with `set_operation` and check them with `try_operation`. Point the app at `http://localhost:8028/<service><endpoint>`. Guide: https://github.com/edivanteixeira/stuntman/blob/main/docs/soap.md |
 | Any other HTTP API | Write a plugin: read one from the catalog with `get_plugin` as a model, describe the routes the app calls (paths, bodies, the provider's real status codes and errors, a clear `sentence` per answer), save it with `put_plugin` and check it with `validate_plugin`. If you do not know the provider's API well and it has a sandbox the user can reach, ask the user for the sandbox URL and a sandbox key (never a production one), then `start_recording` with that URL, run the app's flows, `stop_recording` and `make_plugin`. Guide: https://github.com/edivanteixeira/stuntman/blob/main/docs/recording.md. With no sandbox, install a recorder (`install_plugin` with `plugin=empty, service=<name>`), run the app and build the plugin from what it sent. |
@@ -171,7 +187,18 @@ Change **base URLs only**; the app keeps its code and SDKs.
 | Key Vault | `https://<vault>.vault.<base domain>:8444`, trusting the Test CA from `http://localhost:8025/api/test-ca.pem` |
 | Identity | the authority returned by `list_providers` |
 | OpenTelemetry | `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` |
+| GELF / StatsD | `localhost:12201` (UDP) / `localhost:8125` (UDP) |
 | The app's own webhooks | `http://localhost:8027/in/<inbox>` |
+| OpenAI / Azure OpenAI | `http://localhost:8025/openai/v1` / `http://localhost:8025/azure-openai`, any key |
+| Anthropic / Gemini | `http://localhost:8025/anthropic` / `http://localhost:8025/gemini`, any key |
+| OpenRouter / DeepSeek | `http://localhost:8025/openrouter` / `http://localhost:8025/deepseek`, any key |
+| PostHog, Segment, Mixpanel, GA4 | `http://localhost:8025/posthog`, `/segment`, `/mixpanel`, `/ga4` |
+| IMAP / POP3 | `localhost:1143` / `localhost:1110`, login = the mailbox address (STARTTLS uses a self-signed certificate) |
+| FTP / FTPS / SFTP | `localhost:2121` / `localhost:2222`, users from `set_file_server` |
+| Kafka / Schema Registry | `bootstrap.servers=localhost:9092`, `schema.registry.url=http://localhost:8081` |
+| RabbitMQ management API | `http://localhost:15672` |
+| SAML 2.0 | IdP metadata `http://localhost:8025/login/<tenant>/saml/metadata` |
+| LDAP | `ldap://localhost:3389`, base DN from `set_provider` |
 
 How to write it, in this order of preference:
 
@@ -187,7 +214,8 @@ it: explain and propose an environment-variable override instead.
 1. Run the app's own smoke path if one exists (a test, a seed script, a health check), or ask the developer to use
    the app for a minute.
 2. Read what arrived: `list_api_calls`, `list_messages`, `list_sms`, `list_whatsapp_messages`, `list_objects`,
-   `list_deliveries`, `list_traces` — whichever lines apply.
+   `list_deliveries`, `list_traces`, `list_ai_calls`, `list_product_events`, `list_transfers`,
+   `list_mailbox_messages`, `list_stream_messages` — whichever lines apply.
 3. Check for leaks: `real_provider_calls` (needs telemetry) and `list_unmatched`. Anything listed still goes
    to a real provider or has no route: fix it or tell the developer.
 4. Show one small provocation, then undo it. For example: `force_sms_failure {"answer": "500", "count": 1}`,
@@ -235,7 +263,9 @@ Keep the frame, translate the words, fill in the real values and list only what 
 | `docker: command not found` | Docker is not installed. Ask the developer to install Docker Desktop, OrbStack or Colima, then continue. |
 | Port already in use | `lsof -i :<port>`; ask whether to stop that process or map Stuntman to another host port (`-p 127.0.0.1:18025:8025`) and use that port in every URL. |
 | Azure SDK rejects the blob endpoint | Use `http` and `127.0.0.1` (not `localhost`), exactly as in the table. |
-| TLS errors (Key Vault, `:8443`, AMQPS) | Trust the Stuntman Test CA (`/api/test-ca.pem`) for the app's process only — never system-wide on a machine that talks to real providers. |
+| Kafka clients connect, then time out | The broker advertises `localhost`. When the app runs in another container, start Stuntman with `-e STUNTMAN_KAFKA_ADVERTISED_HOST=<name the app uses>`. |
+| FTP listings hang | Passive mode needs ports `30000-30009` published as well as `2121`. |
+| TLS errors (Key Vault, `:8443`, AMQPS, FTPS) | Trust the Stuntman Test CA (`/api/test-ca.pem`) for the app's process only — never system-wide on a machine that talks to real providers. |
 | A call shows up in `list_unmatched` | The plugin has no route for it: add the route with `put_plugin`. |
 | The MCP server does not appear | Continue over HTTP (`/api`); tell the developer to restart their agent later to get MCP. |
 

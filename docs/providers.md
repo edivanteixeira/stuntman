@@ -7,8 +7,9 @@ provoke the provider's failures.
 Addresses below assume the default ports on `localhost`. In another environment, add `/e/<env>` after the port
 (or use its host names); see [Environments](environments.md). All ports are listed in [Configuration](configuration.md#ports).
 
-- [HTTP APIs](#http-apis) · [SMS](#sms) · [WhatsApp](#whatsapp) · [Email](#email) · [Storage](#storage)
-- [Messaging](#messaging) · [Identity](#identity) · [Secrets](#secrets) · [Webhook inboxes](#webhook-inboxes) · [Telemetry](#telemetry)
+- [HTTP APIs](#http-apis) · [AI models](#ai-models) · [SMS](#sms) · [WhatsApp](#whatsapp) · [Email](#email) · [Mailboxes](#mailboxes-imap-and-pop3)
+- [Storage](#storage) · [Files](#files-ftp-ftps-and-sftp) · [Messaging](#messaging) · [Streams](#streams-kafka-and-schema-registry)
+- [Identity](#identity) · [Secrets](#secrets) · [Webhook inboxes](#webhook-inboxes) · [Product events](#product-events) · [Telemetry](#telemetry)
 
 ---
 
@@ -27,13 +28,47 @@ Stuntman write it.
 | **OpenAPI** | OpenAPI 3.x and Swagger 2.0: routes, answers from the examples or the schemas, bodies checked against the schemas, the OAuth token route, the spec served back |
 | **Recording** | calls go to the provider's sandbox and back, secrets masked; the review groups them into routes, answers and rules, and writes the plugin |
 | **SOAP** | SOAP 1.1 and 1.2 from a WSDL: operations by SOAPAction, bodies checked against the XSD, faults, WS-Security UsernameToken, callbacks, `?wsdl` served back |
-| **Auth it understands** | OAuth2 client credentials (a token route), Basic, session cookies (a login route), mTLS client certificates, browser steps (authorize pages, push approvals) |
+| **Auth it understands** | OAuth2 client credentials (a token route), Basic, session cookies (a login route), mTLS client certificates (optionally ICP-Brasil style, with a CNPJ), browser steps (authorize pages, push approvals) |
+| **Shapes** | JSON, form and XML bodies; GraphQL routes; streamed answers (SSE, NDJSON, chunks); a plugin can also be an MCP server ([Plugins](plugins.md#mcp-server)) |
+| **Webhooks** | sends after answering, signed like the provider: HMAC hex, Stripe, Svix, GitHub or CloudEvents; delays follow the [environment's clock](clock.md) |
+| **WireMock** | a folder of WireMock mappings becomes plugins, templates included ([WireMock mocks](mocks.md)) |
 | **It keeps** | state collections per route, data tables (people, documents…), every call with its answer and sentence |
-| **You can provoke** | any named answer or SOAP fault, latency, `reset`, `empty`, `timeout`, `401`, `403`, `500`, `503`, an HTML error page with 200; expired tokens; rate limits; a share of failures |
-| **Also** | per-call billing counters, unmatched requests with "create a route from this request" |
+| **You can provoke** | any named answer or SOAP fault, latency, `reset`, `empty`, `timeout`, `401`, `403`, `500`, `503`, an HTML error page with 200; expired tokens; rate limits; a share of failures; a stream that is `cut` or `slow`; webhooks badly signed, too old, sent twice or out of order |
+| **Also** | per-call billing counters, `Idempotency-Key` replays, unmatched requests with "create a route from this request" |
 
-Catalog today: `recaptcha`, `turnstile`, `bank-gateway`, `orders-partner`, `partner-portal`, and a regional pack for
-Brazil. Writing your own: [Plugins](plugins.md).
+The catalog, by collection:
+
+| Collection | Plugins |
+|---|---|
+| General | `recaptcha`, `turnstile`, `bank-gateway`, `orders-partner`, `partner-portal` |
+| Brazil · ICP-Brasil | `serpro-datavalid`, `gcc-consent`, `birdid`, `vidaas`, `restpki` |
+| Logistics & fiscal | `osrm`, `google-maps`, `nominatim`, `ocr-space`, `receitaws`, `sefaz-nfe`, `comtele` |
+| Payments & notifications | `stripe`, `resend`, `onesignal` |
+| Workplace & dev tools | `microsoft-graph`, `google-drive`, `calendly`, `lemlist`, `azure-devops`, `newrelic` |
+
+`install_collection` installs a whole row. Writing your own: [Plugins](plugins.md).
+
+## AI models
+
+The model APIs your app calls, answered without a model. Any key works and is never sent anywhere.
+
+| | |
+|---|---|
+| **Speaks** | OpenAI (chat completions, Responses, embeddings, models), Azure OpenAI (deployments and v1), Anthropic (messages, `count_tokens`), Gemini (`generateContent`, `streamGenerateContent`, `embedContent`, `countTokens`), and the OpenAI-compatible OpenRouter and DeepSeek; streamed or not |
+| **Point your app at** | the SDK's base URL: OpenAI `http://localhost:8025/openai/v1`, Anthropic `http://localhost:8025/anthropic`, Azure OpenAI `http://localhost:8025/azure-openai`, Gemini `http://localhost:8025/gemini`, OpenRouter `http://localhost:8025/openrouter`, DeepSeek `http://localhost:8025/deepseek` |
+| **It keeps** | every call with its prompt, answer, model, tokens in and out, cost and why it got that answer; rules and prices in `ai/config.yaml` |
+| **Rules** | first match wins. When: `provider`, `api`, `model` (a prefix with `*`), `contains` (the last user message), `system_contains`, `tool` (offered). Answer: `text` (`{{ last_user }}` repeats the message), `tool_call` (the model calls a tool first, then answers `text` once the result comes back), `json`, `tokens` (pad to about N), `stop: length`. No rule: "This is a simulated answer from Stuntman." |
+| **You can provoke** | the next N calls (`force_ai_failure`): `429` with Retry-After, `500`, `529` overloaded, `filter` (content filtered), `length` (cut by max_tokens), `bad_json` (broken tool arguments), `slow` (40 ms per token), `cut` (the stream stops halfway); each in that provider's error shape |
+| **Also** | `ai_spend`: calls, tokens and cost per provider; prices per million tokens are editable (`set_ai_price`) |
+
+```text
+set_ai_rule {"name": "refund", "contains": "refund",
+             "answer": {"text": "The refund takes 5 days.", "tool_call": {"name": "lookup_order", "arguments": {"order_id": "A-1042"}}}}
+force_ai_failure {"provider": "anthropic", "kind": "529", "count": 1}
+```
+
+Tools: `list_ai_calls`, `get_ai_call`, `wait_for_ai_call`, `list_ai_rules`, `set_ai_rule`, `delete_ai_rule`,
+`force_ai_failure`, `ai_spend`, `set_ai_price`. In the web UI: **AI models**.
 
 ## SMS
 
@@ -69,6 +104,29 @@ Brazil. Writing your own: [Plugins](plugins.md).
 | **Callbacks** | SendGrid's Event Webhook, signed with ECDSA |
 | **You can provoke** | hold a message and decide: deliver, defer, bounce (hard or soft), drop; recipient events: open, click, spam report, unsubscribe; an intake that refuses or fails TLS |
 
+## Mailboxes (IMAP and POP3)
+
+Mailboxes **your app reads**: a supplier e-mails an invoice, a customer replies to a ticket. You put the message in;
+the app finds it on its next poll.
+
+| | |
+|---|---|
+| **Speaks** | IMAP4rev1 on `:1143` (STARTTLS, LOGIN, AUTHENTICATE PLAIN and XOAUTH2, SELECT, FETCH with BODYSTRUCTURE and sections, SEARCH, STORE, COPY, MOVE, EXPUNGE, IDLE, UID commands) and POP3 on `:1110` (STLS, USER/PASS, AUTH PLAIN, STAT, LIST, UIDL, RETR, TOP, DELE) |
+| **Point your app at** | host `localhost`, port `1143` (IMAP) or `1110` (POP3); the login is the mailbox address; STARTTLS and STLS use a self-signed certificate, as SMTP does |
+| **It keeps** | each mailbox with its folders (INBOX first), messages, flags, and every command the app sent (without passwords) |
+| **You can provoke** | `set_mailbox` with `provoke`: `login_refused`, `busy` (NO [INUSE]), `drop_fetch` (the connection drops during FETCH or RETR), `tls_required` (plain logins refused before STARTTLS), `token_expired` (XOAUTH2 refused) |
+
+A mailbox with no password takes any password except `wrong`; XOAUTH2 takes any token. One port serves every
+environment: logins go to the default one.
+
+```text
+set_mailbox {"address": "invoices@acme.example", "password": "s3cret"}
+put_mail    {"address": "invoices@acme.example", "from": "billing@globex.example", "subject": "Invoice 1234",
+             "text": "Attached.", "attachments": [{"filename": "invoice-1234.xml", "content_type": "application/xml", "text": "<invoice/>"}]}
+```
+
+Tools: `list_mailboxes`, `set_mailbox`, `put_mail`, `list_mailbox_messages`. In the web UI: **E-mail › Mailboxes**.
+
 ## Storage
 
 ![Storage objects: containers, objects, versions and their history](images/screen-objects.png)
@@ -81,6 +139,31 @@ Brazil. Writing your own: [Plugins](plugins.md).
 | **Callbacks** | Event Grid and S3 notifications for created and deleted objects |
 | **You can provoke** | rules per operation and path (503 on the first N attempts, every time, or a share); next read 403, 404, 503, slow, truncated or bad MD5; links expired, badly signed, IP-denied or gone; an unreachable account; events held, duplicated, reordered, dropped or missing a field |
 
+## Files (FTP, FTPS and SFTP)
+
+The file servers partners and your app drop files on: EDI exchanges, bank remittance files, nightly exports.
+Each server is a folder; FTP, FTPS and SFTP all see the same files.
+
+| | |
+|---|---|
+| **Speaks** | FTP and explicit FTPS (AUTH TLS, PROT P) on `:2121`, passive mode (PASV, EPSV) with the commands EDI clients use (LIST, NLST, MLSD, RETR, STOR, APPE, DELE, MKD, RMD, RNFR/RNTO, SIZE, MDTM, REST); SFTP (SSH with password logins) on `:2222` |
+| **Point your app at** | host `localhost`, port `2121` (FTP/FTPS) or `2222` (SFTP); the login is `user` or `user@server`; FTPS uses the [Test CA](configuration.md#the-stuntman-test-ca) |
+| **It keeps** | each server's users (`read_only` ones get "permission denied" on writes) and folders under `files/<server>/`, and every login and transfer; servers in `files/servers.yaml` |
+| **You can provoke** | `set_file_server` with `provoke`: `login_refused` (530), `disk_full` (552 on uploads), `permission_denied` (550), `drop_mid` (the transfer breaks after 4 KB), `slow` (20 KB/s), `host_key_changed` (SFTP shows another host key) |
+
+A user with no password takes any password except `wrong`. The SFTP host key is kept (`files/ssh_host_ed25519`), so a
+client that pinned it keeps trusting it. One port serves every environment: logins go to the default one. In Docker,
+passive data connections use ports `30000-30009` (`STUNTMAN_FTP_PASSIVE_PORTS`); see [Configuration](configuration.md).
+
+```text
+set_file_server {"name": "edi-acme", "users": [{"user": "edi", "password": "s3cret"}], "folders": ["/in", "/out"]}
+put_file        {"server": "edi-acme", "path": "/in/ORDERS_1042.txt", "text": "000GLOBEX ORDERS 1042"}
+wait_for_file   {"server": "edi-acme", "path": "/out/*.txt"}    → what the app uploaded
+```
+
+Tools: `list_file_servers`, `set_file_server`, `list_files`, `get_file`, `put_file`, `delete_file`,
+`list_transfers`, `wait_for_file`. In the web UI: **Files**.
+
 ## Messaging
 
 ![Queues: messages with their attempts, dead-letter and consumers](images/screen-queues.png)
@@ -92,8 +175,39 @@ Brazil. Writing your own: [Plugins](plugins.md).
 | **It keeps** | namespaces, queues, topics, subscriptions, every message with its deliveries, consumers and their locks |
 | **You can provoke** | lost locks, duplicates, held, dropped, dead-lettered or out-of-order messages; a namespace that refuses, times out, rejects the key or is busy |
 
+**RabbitMQ management API.** Tools and libraries that create vhosts, queues, exchanges and bindings over HTTP
+before they connect (MassTransit, provisioning scripts) find it on `:15672`: `/api/overview`, `/api/whoami`,
+`/api/vhosts`, `/api/permissions`, `/api/queues`, `/api/exchanges`, `/api/bindings`, `/api/aliveness-test`. Its vhosts
+are the RabbitMQ namespaces of the default environment, so what a script creates there is what the app finds on AMQP.
+
 Service Bus finds the namespace by host name: give the environment a base domain under a wildcard DNS name that
 points at Stuntman. See [Environments](environments.md#how-a-request-finds-its-environment).
+
+## Streams (Kafka and Schema Registry)
+
+| | |
+|---|---|
+| **Speaks** | the Kafka protocol on `:9092` (Produce, Fetch, ListOffsets, Metadata, consumer groups with JoinGroup, SyncGroup, Heartbeat and offset commits, CreateTopics, SASL PLAIN and SCRAM-SHA-256/512) and a Confluent-compatible Schema Registry on `:8081` with Avro |
+| **Point your app at** | `bootstrap.servers=localhost:9092`; `schema.registry.url=http://localhost:8081` |
+| **It keeps** | topics with their partitions and messages (Avro values decoded with their schema), consumer groups with members and lag, schema subjects and versions; settings in `streams/config.yaml` |
+| **You can provoke** | `set_streams` with `provoke`: `leader_not_available`, `sasl_refused`, `slow_fetch` (3 s), `duplicate` (each record kept twice), `registry_down` (503); `rebalance` a group; `produce` with `bad_schema=true` (an unknown schema id) |
+
+Topics are made when a client asks for one, unless `auto_create` is off. Clients connect to the host the broker
+advertises: `localhost`, or `STUNTMAN_KAFKA_ADVERTISED_HOST` when the app runs in another container. With
+`sasl_required`, every client logs in first; with no users listed, any user works and any password except `wrong`.
+One port serves every environment: the default one answers.
+
+```text
+register_schema {"subject": "shipments-value", "schema": "{\"type\": \"record\", \"name\": \"Shipment\", \"fields\": [{\"name\": \"id\", \"type\": \"string\"}]}"}
+produce         {"topic": "shipments", "key": "SH-1042", "value": {"id": "SH-1042"}, "subject": "shipments-value"}
+```
+
+Tools: `list_topics`, `create_topic`, `delete_topic`, `list_stream_messages`, `produce`, `list_consumer_groups`,
+`rebalance`, `set_streams`, `list_schemas`, `register_schema`. In the web UI: **Streams**.
+
+Limits: one broker node; record batches with no compression or gzip (snappy, lz4 and zstd are refused); only
+non-flexible request versions are offered, which current clients still speak; compatibility checks always answer
+compatible.
 
 ## Identity
 
@@ -107,6 +221,21 @@ points at Stuntman. See [Environments](environments.md#how-a-request-finds-its-e
 | **You can provoke** | MFA required or failing, consent required, the user cancels, wrong tenant, tokens already expired, bad signatures, IdP down (`provoke_sign_in`); discovery, JWKS or token endpoint failures (`provoke_idp`) |
 
 A person, a test or an agent picks the simulated user on the sign-in page Stuntman serves.
+
+### Protocols
+
+The same provider, its users and its apps also answer the older ways apps sign people in. Turn each one on with
+`set_provider` (in the web UI: **Identity › Protocols**).
+
+| | |
+|---|---|
+| **SAML 2.0** (`saml: true`) | an identity provider: metadata at `/login/<tenant>/saml/metadata` with its signing certificate, SSO at `/login/<tenant>/saml/sso` by HTTP-Redirect or HTTP-POST, the same sign-in page as OIDC, and a SAMLResponse posted to the app's ACS with the assertion signed (RSA-SHA256, exclusive c14n). The app is an app registration whose ID is its entity ID and whose redirect URIs are its ACS URLs. `saml_sign_response` also signs the response; `saml_name_id` picks `email`, `oid` or `upn` |
+| **LDAP** (`ldap: true`) | a directory of the provider's users on `:3389`: simple bind (a DN, `user@domain` or `DOMAIN\user`), search with filters, compare and whoami. People are under `ou=people`, groups under `ou=groups` of the base DN (from the tenant, or `ldap_base_dn`). Wrong passwords, locked and disabled accounts answer as Active Directory does: 49 with `data 52e`, `775` or `533`. `ldap_provoke`: `busy` (51), `unavailable` (52), `timeout`, `normal` to stop. One port serves every environment: binds go to the default one |
+| **Password grant** (`password_grant: true`) | `grant_type=password` on the token endpoint, with a user's `password`. A wrong password, a user with MFA or a `locked` user gets the provider's error (`AADSTS50126`, `AADSTS50076`, `AADSTS50053`) |
+| **Bot Framework** | what Microsoft Teams does around a bot. The Bot Connector's OpenID metadata and keys at `/botframework/v1/.well-known/openidconfiguration`; `send_bot_activity` posts a message or a card action to the bot's endpoint, signed with the `serviceurl` claim; the bot replies to the connector at `/botframework/connector/v3/…`, and `list_bot_messages` shows both sides. The bot's own token comes from the token endpoint of the tenant `botframework.com` (client credentials). `twist`: `bad_signature`, `expired`, `wrong_audience`, `no_token` |
+
+`provoke_sign_in` applies to SAML too: `bad_signature` signs the assertion wrongly, `user_cancels` answers
+`RequestDenied`, and `wrong_audience` names another audience.
 
 ## Secrets
 
@@ -135,14 +264,37 @@ Endpoints **your app** sends its own webhooks to, so you can test its retries.
 
 Inboxes are kept with the environment or ephemeral: created by a test or an agent, they expire by themselves.
 
+## Product events
+
+The analytics your app sends, received and kept per user, so a test proves what the app tracked.
+
+| | |
+|---|---|
+| **Speaks** | PostHog (`capture`, `batch`, `e`, `decide`, `flags`), Segment (`/v1` track, identify, page, screen, group, alias, batch), Mixpanel (`track`, `import`, `engage`) and the GA4 Measurement Protocol (`/mp/collect` and `/debug/mp/collect`); JSON, gzip or form-encoded bodies, as the SDKs send them |
+| **Point your app at** | the SDK's host: `http://localhost:8025/posthog`, `http://localhost:8025/segment`, `http://localhost:8025/mixpanel`, `http://localhost:8025/ga4` |
+| **It keeps** | every event with its user, properties and the personal data found in them (e-mail addresses, CPFs, card numbers); tracking plans in `events/plans.yaml` |
+| **Plans** | a plan lists the events a flow must send and the properties each needs (`{event, props, min}`). `check_events` compares what arrived with a plan and answers `ok: false` with the missing events and properties, so a CI run can fail on it |
+| **You can provoke** | the collector's next answers (`force_events_failure`): `400`, `413`, `429` with Retry-After, `slow` (3 s), `drop_half` (half the events lost, 200 anyway) |
+
+```text
+set_event_plan {"name": "signup", "events": ["signup_completed", {"event": "workspace_created", "props": ["plan"]}]}
+check_events   {"plan": "signup", "within": "10m"}   → ok: false, missing: ["workspace_created"]
+```
+
+Tools: `list_product_events`, `event_people`, `wait_for_event`, `check_events`, `list_event_plans`,
+`set_event_plan`, `delete_event_plan`, `force_events_failure`. In the web UI: **Events**.
+
 ## Telemetry
 
 ![Traces: the app's spans joined to the provider calls that caused them](images/screen-traces.png)
 
 | | |
 |---|---|
-| **Speaks** | OpenTelemetry OTLP over HTTP (`:4318`, protobuf or JSON) and gRPC (`:4317`) |
-| **Point your app at** | `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` |
+| **Speaks** | OpenTelemetry OTLP over HTTP (`:4318`, protobuf or JSON) and gRPC (`:4317`); GELF (Graylog) over UDP `:12201` (plain, gzip or zlib, chunked) and HTTP `POST /gelf` on `:8025`; StatsD and DogStatsD over UDP `:8125` |
+| **Point your app at** | `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`; a GELF sink at `localhost:12201` (UDP); a StatsD client at `localhost:8125` |
 | **It keeps** | traces, logs and metrics in their own area, joined to the calls that caused them by trace ID |
 | **You can provoke** | a collector that answers 401, 403, 429, 503, refuses, slows down or drops half (`provoke_collector`) |
 | **Also** | `real_provider_calls`: the hosts your app still calls directly, from its own spans |
+
+GELF messages and StatsD metrics land in the same logs and metrics as OTLP. UDP has no host name, so datagrams go to
+the default environment, or to the one a GELF `_stuntman_env` field or a StatsD `stuntman_env` tag names.

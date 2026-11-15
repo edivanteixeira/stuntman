@@ -12,7 +12,7 @@ default; most setups change nothing.
 | `STUNTMAN_HOST` | `localhost:<STUNTMAN_PORT>` | the name apps and people use; shown in base URLs, links and MCP |
 | `STUNTMAN_WEB` | `web/dist` (`/app/web` in Docker) | the built screen |
 | `STUNTMAN_PLUGINS` | `plugins` next to the engine (`/app/plugins` in Docker) | the plugin catalog |
-| `STUNTMAN_PORT` | `8025` | screen, `/api`, `/mcp`, SMS, WhatsApp, SendGrid, identity |
+| `STUNTMAN_PORT` | `8025` | screen, `/api`, `/mcp`, SMS, WhatsApp, SendGrid, identity, AI models, product events, GELF over HTTP |
 | `STUNTMAN_SMTP_PORT` | `2525` | SMTP |
 | `STUNTMAN_HOOKS_PORT` | `8027` | webhook inboxes |
 | `STUNTMAN_APIS_PORT` | `8028` | HTTP API plugins |
@@ -24,6 +24,19 @@ default; most setups change nothing.
 | `STUNTMAN_S3_PORT` | `9000` | Amazon S3 |
 | `STUNTMAN_OTLP_HTTP_PORT` | `4318` | OpenTelemetry over HTTP |
 | `STUNTMAN_OTLP_GRPC_PORT` | `4317` | OpenTelemetry over gRPC |
+| `STUNTMAN_GELF_PORT` | `12201` | GELF over UDP |
+| `STUNTMAN_STATSD_PORT` | `8125` | StatsD over UDP |
+| `STUNTMAN_LDAP_PORT` | `3389` | LDAP directory |
+| `STUNTMAN_FTP_PORT` | `2121` | FTP and explicit FTPS |
+| `STUNTMAN_FTP_PASSIVE_PORTS` | any free port (`30000-30009` in Docker) | the range FTP passive data connections use |
+| `STUNTMAN_FTP_PASSIVE_HOST` | the address the client connected to (`127.0.0.1` in Docker) | the IP address passive replies (PASV) give; a host name is ignored |
+| `STUNTMAN_SFTP_PORT` | `2222` | SFTP |
+| `STUNTMAN_IMAP_PORT` | `1143` | IMAP mailboxes |
+| `STUNTMAN_POP3_PORT` | `1110` | POP3 mailboxes |
+| `STUNTMAN_KAFKA_PORT` | `9092` | Kafka broker |
+| `STUNTMAN_KAFKA_ADVERTISED_HOST` | `localhost` | the host the broker tells clients to connect to (set it when the app runs in another container) |
+| `STUNTMAN_SCHEMA_REGISTRY_PORT` | `8081` | Schema Registry |
+| `STUNTMAN_RABBITMQ_MGMT_PORT` | `15672` | RabbitMQ management HTTP API |
 
 The project was first called Dublê: `DUBLE_*` variables still work when the `STUNTMAN_*` one is unset.
 
@@ -31,7 +44,7 @@ The project was first called Dublê: `DUBLE_*` variables still work when the `ST
 
 | Port | What answers |
 |---|---|
-| `8025` | screen, HTTP API (`/api`), MCP (`/mcp`), SMS, WhatsApp, SendGrid, identity, managed identity |
+| `8025` | screen, HTTP API (`/api`), MCP (`/mcp`), SMS, WhatsApp, SendGrid, identity (OIDC, SAML, Bot Framework), managed identity, AI models, product events, GELF over HTTP (`/gelf`) |
 | `2525` | SMTP (STARTTLS) |
 | `8027` | webhook inboxes (`/in/<inbox>`) |
 | `8028` / `8443` | HTTP API plugins / over TLS |
@@ -40,6 +53,17 @@ The project was first called Dublê: `DUBLE_*` variables still work when the `ST
 | `10000` | Azure Blob |
 | `9000` | Amazon S3 |
 | `4318` / `4317` | OTLP HTTP / gRPC |
+| `12201/udp` / `8125/udp` | GELF / StatsD |
+| `3389` | LDAP |
+| `2121` (+ `30000-30009`) | FTP and FTPS (passive data range in Docker) |
+| `2222` | SFTP |
+| `1143` / `1110` | IMAP / POP3 |
+| `9092` / `8081` | Kafka / Schema Registry |
+| `15672` | RabbitMQ management API |
+
+LDAP, FTP, SFTP, IMAP, POP3, Kafka, the Schema Registry, the RabbitMQ management API, GELF and StatsD have no host
+name to tell environments apart, so they serve the default environment (GELF and StatsD can name another one; see
+[Providers › Telemetry](providers.md#telemetry)).
 
 ## Docker
 
@@ -72,7 +96,7 @@ in git and start Stuntman from it.
 
 ## The Stuntman Test CA
 
-TLS endpoints (Key Vault, HTTP plugins on `:8443`, AMQPS) use certificates signed by the Stuntman Test CA, created
+TLS endpoints (Key Vault, HTTP plugins on `:8443`, AMQPS, FTPS) use certificates signed by the Stuntman Test CA, created
 on first start. Trust it on the machine or container that runs your app:
 
 ```sh
@@ -80,3 +104,6 @@ curl -s http://localhost:8025/api/test-ca.pem -o stuntman-test-ca.pem
 ```
 
 Never trust it anywhere that also talks to real providers.
+
+STARTTLS on SMTP, IMAP and POP3 uses a self-signed certificate for `localhost` instead, made at each start: turn
+certificate checks off in the app's mail client for those.

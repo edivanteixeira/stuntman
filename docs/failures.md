@@ -49,6 +49,11 @@ named answers and `force_answer` instead.
 | HTTP APIs (SOAP) | `force_answer`, a `fault:` answer | any fault the WSDL declares or one you add; `500` goes out as a `Receiver` fault; a body that breaks the XSD gets the validation fault; see [SOAP services](soap.md) |
 | HTTP APIs (OpenAPI) | `force_answer`, a body that does not match the schema | any response the spec declares; a wrong body gets the spec's 400 or 422 answer; see [OpenAPI specs](openapi.md) |
 | HTTP APIs | `expire_tokens` | every token and session cookie becomes invalid; the next call gets 401 |
+| HTTP APIs (streams) | `force_answer` | `cut` (half the parts, then the connection breaks), `slow` (2 s more per part) |
+| HTTP APIs (MCP) | `force_answer`, `rpc_error` | `session_expired` (404, a new session needed); a JSON-RPC error; `isError` results |
+| HTTP APIs (webhooks) | `set_service` with `webhook_provoke` | `wrong_signature`, `old_timestamp`, `no_signature`, `twice`, `out_of_order`; `none` stops it |
+| HTTP APIs (SOAP) | `signature.check`, `client_certificate.icp` | a refused XML signature; mTLS refused without a CNPJ, expired or untrusted (`new_test_certificate`) |
+| AI models | `force_ai_failure` | `429`, `500`, `529`, `filter`, `length`, `bad_json`, `slow`, `cut`; `none` stops it |
 | SMS | `force_sms_failure` | `500`, `400`, `reset`, `empty`, `timeout`; `normal` stops it |
 | SMS | `reply_sms_as_user` | the person texts back; STOP-like words opt out, START opts back in |
 | WhatsApp | `force_whatsapp_failure` | `500`, `400`, `reset`, `empty`, `timeout` |
@@ -58,6 +63,8 @@ named answers and `force_answer` instead.
 | Email | `decide_held` | `deliver`, `defer`, `bounce` (hard or soft), `drop` |
 | Email | `simulate_recipient` | `open`, `click`, `spamreport`, `unsubscribe` |
 | Email | `set_access` | an intake that refuses recipients, requires STARTTLS, or is unreachable |
+| Mailboxes | `set_mailbox` with `provoke` | `login_refused`, `busy`, `drop_fetch`, `tls_required`, `token_expired`; `none` stops it |
+| Files | `set_file_server` with `provoke` | `login_refused`, `disk_full`, `permission_denied`, `drop_mid`, `slow`, `host_key_changed`; `none` stops it |
 | Storage | `create_rule` | any status on matching requests, the first N, every time, or a share |
 | Storage | `set_next_read` | `403`, `404`, `503`, `slow:5s`, `truncate`, `bad_md5` |
 | Storage | `set_next_use` | a link that is `expired`, `bad_signature`, `ip_denied`, `permission`, `not_yet_valid`, `gone` |
@@ -66,13 +73,18 @@ named answers and `force_answer` instead.
 | Messaging | `set_next_delivery` (with `namespace`) | `lose_lock`, `duplicate`, `hold`, `drop`, `dead_letter`, `out_of_order` |
 | Messaging | `expire_consumer_locks` | the consumer's next complete fails with MessageLockLost |
 | Messaging | `set_namespace_reachability` | `refuse`, `timeout`, `401`, `busy` |
+| Streams | `set_streams` with `provoke` | `leader_not_available`, `sasl_refused`, `slow_fetch`, `duplicate`, `registry_down`; `none` stops it |
+| Streams | `rebalance`, `produce` with `bad_schema` | a consumer-group rebalance; a record with an unknown schema id |
 | Identity | `provoke_sign_in` | `mfa_required`, `mfa_fails`, `consent_required`, `user_cancels`, `wrong_tenant`, `expired`, `bad_signature`, `idp_down` |
 | Identity | `provoke_idp` | discovery, JWKS or token endpoint failures |
+| Identity (LDAP) | `set_provider` with `ldap_provoke` | `busy` (51), `unavailable` (52), `timeout`; `normal` stops it; locked or disabled users answer as Active Directory does |
+| Identity (Bot Framework) | `send_bot_activity` with `twist` | `bad_signature`, `expired`, `wrong_audience`, `no_token` |
 | Secrets | `provoke_secret` | `403`, `404`, `disabled`, `429`, `slow` |
 | Secrets | `provoke_key` | `disabled`, `403`, `429`, `slow`, `wrong_signature` |
 | Secrets | `provoke_certificate` | `missing`, `expired`, `not_yet_valid`, `wrong_password`, `untrusted` |
 | Secrets | `provoke_imds` | `500`, `slow`, `no_identity` |
 | Webhook inboxes | `set_inbox` | fail N times then succeed, a share, delay, hang, redirect, signature checks |
+| Product events | `force_events_failure` | `400`, `413`, `429`, `slow`, `drop_half`; `none` stops it |
 | Telemetry | `provoke_collector` | `401`, `403`, `429`, `503`, `refused`, `slow`, `drop_half` |
 
 Arguments for each tool are in the [tool reference](reference/tools.md).
@@ -80,7 +92,8 @@ Arguments for each tool are in the [tool reference](reference/tools.md).
 ## Callbacks your app must verify
 
 Stuntman signs callbacks the way each provider does: SendGrid's Event Webhook with ECDSA, Meta's webhooks with
-your app secret, your own inboxes with HMAC. Ask for a badly signed, unsigned or replayed one and check that your
+your app secret, your own inboxes with HMAC, and plugin webhooks in the Stripe, Svix, GitHub or CloudEvents format
+([Plugins › Webhook signing](plugins.md#webhook-signing)). Ask for a badly signed, unsigned or replayed one and check that your
 app rejects it:
 
 ```text

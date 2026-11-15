@@ -16,6 +16,9 @@ What Stuntman does with each envelope:
   the provider's validation fault, as a real SOAP stack would.
 - Checks the **WS-Security** UsernameToken when the service asks for one: that it is present, or that its user
   and password match.
+- Checks the request's **XML signature** and signs its answers when the service asks for it, and requires an
+  **ICP-Brasil style client certificate** (one with a CNPJ) on mTLS; see
+  [XML signatures and ICP-Brasil certificates](#xml-signatures-and-icp-brasil-certificates).
 - Answers in a **SOAP 1.1 or 1.2** envelope, or with a fault in that version's shape.
 - Sends **callbacks** to your app as SOAP calls.
 - Serves the WSDL back on `?wsdl`, with the XSDs it imports, so clients generated from it work unchanged.
@@ -169,9 +172,11 @@ the call that triggered it. `send_callback` sends one on demand.
 4. **WS-Security.** With `security: any`, a UsernameToken must be present. With `username_token`, the user and
    password must match `users`. When the check fails, the call gets a `Sender` fault: "The security token could not be authenticated
    or authorized".
-5. **Types.** With `validate: true`, a missing required field, a value of the wrong type or an element that the
+5. **XML signature.** With `signature.check`, a missing or broken `ds:Signature` gets the answer named by
+   `signature.invalid`, or a `Sender` fault.
+6. **Types.** With `validate: true`, a missing required field, a value of the wrong type or an element that the
    type does not have gets a `Sender` fault that names the field.
-6. **The steps** decide the answer, and Stuntman sends it in an envelope or as a fault.
+7. **The steps** decide the answer, and Stuntman sends it in an envelope or as a fault.
 
 Every call appears in **Calls** and on the timeline with its sentence, the steps it took and the raw envelopes
 in and out.
@@ -184,9 +189,71 @@ in and out.
 | A fault the WSDL does not declare | a new answer with `fault:` |
 | The provider's validation fault | send a body that breaks the types, or tighten them in `types` |
 | Refused credentials | `security: username_token` and a wrong password |
+| A refused XML signature | `signature.check` and a tampered or unsigned document |
+| A refused client certificate | `client_certificate.icp` and no certificate, an e-CPF, an expired or an untrusted one (`new_test_certificate`) |
 | A server fault | `force_answer` with `500` (sent as a `Receiver` fault) |
 | Slow, reset, empty, timeout, 503, HTML | `force_answer`, `latency`, `fail`, as for any route |
 | An operation the provider does not have | listed in Unmatched; re-import a WSDL that has it |
+
+## XML signatures and ICP-Brasil certificates
+
+Fiscal and government SOAP services (SEFAZ for NF-e and CT-e, for example) ask for two things the plain WS-Security
+check does not cover: a client certificate on the TLS connection, and an XML signature (`ds:Signature`) inside the
+document. Stuntman does both, with synthetic test certificates signed by its Test CA.
+
+**Test certificates.** `new_test_certificate` makes an A1 certificate in the ICP-Brasil style: an e-CNPJ (`cnpj`)
+or an e-CPF (`cpf`), with an RSA 2048 key. It returns the `.pfx` (base64) with its password, the certificate and the
+key as PEM. `expired`, `not_yet_valid` and `untrusted` (signed by an unknown CA) make the broken ones. Holders must
+be synthetic (Acme Transportes Ltda, Globex Logistica…); names of real public bodies and banks are refused.
+
+```text
+new_test_certificate {"holder": "Acme Transportes Ltda", "cnpj": "11.222.333/0001-81"}
+→ id, pfx (base64), password, certificate and key (PEM), valid for a year
+```
+
+**mTLS with a CNPJ.** With `auth.client_certificate.required` and `icp: true`, the HTTPS port (`:8443`) refuses a
+connection without a certificate, with a certificate the Test CA did not sign, with an expired one, or with one that
+carries no CNPJ (OID 2.16.76.1.3.3), such as an e-CPF. The steps read the certificate's CNPJ as `client_cnpj`:
+
+```yaml
+service:
+  name: example-fiscal
+  real_host: hom.fiscal.example
+  auth:
+    client_certificate:
+      required: true
+      icp: true
+soap:
+  version: '1.2'
+  endpoint: /ws/RecepcaoEvento
+  signature:
+    check: true                # each request must carry a valid ds:Signature
+    invalid: signature_invalid # the answer for a missing or broken one (else a Sender fault)
+    sign: infEvento            # sign this element of the answers (it needs an Id attribute)
+operations:
+  - operation: nfeRecepcaoEvento
+    action: http://www.portalfiscal.inf.br/nfe/wsdl/NFeRecepcaoEvento4/nfeRecepcaoEvento
+    decide:
+      - when: client_cnpj == '11222333000181'
+        answer: registered
+      - answer: wrong_cnpj
+```
+
+**The request's signature.** With `signature.check`, Stuntman checks every enveloped `ds:Signature` in the body:
+the digest of the signed element and the signature value, with the certificate in `KeyInfo`. RSA-SHA1 and
+RSA-SHA256, inclusive and exclusive canonicalization. A tampered or unsigned document gets the `invalid` answer,
+and the steps see the reason as `signature_error`.
+
+**Signed answers.** With `signature.sign`, the answer's element of that name is signed with the service's own
+certificate (an e-CNPJ made once and kept in `apis/<service>.files/`), RSA-SHA1 by default as NF-e and CT-e use,
+RSA-SHA256 with `sha256: true`. Faults are not signed.
+
+**Signing as the app.** `sign_xml` signs an element of a document (by its `Id`) with a test certificate, as your app
+would sign an NF-e event before sending it; `place: inside` puts the signature inside the element, as SAML does.
+`verify_xml_signature` checks every signature of a document and says what was signed and by which CNPJ.
+`list_test_certificates` lists the certificates of the environment, without their keys.
+
+The `sefaz-nfe` plugin in the catalog is a complete example.
 
 ## Re-import the WSDL
 
@@ -205,6 +272,11 @@ service settings stay as they are. The result lists what was added and removed.
 | `try_operation` | runs an envelope through the service without keeping, counting or sending anything |
 | `send_callback` | calls your app's endpoint as the provider would |
 | `set_answer` | with `fault`, makes an answer a fault |
+| `set_service` | `client_certificate_icp`, `xml_signature_check`, `xml_signature_sign`, `xml_signature_invalid`, `xml_signature_sha256` |
+| `new_test_certificate` | an ICP-Brasil style e-CNPJ or e-CPF test certificate (`.pfx` and PEM) |
+| `list_test_certificates` | the test certificates of the environment |
+| `sign_xml` | signs an element of an XML document with a test certificate |
+| `verify_xml_signature` | checks every `ds:Signature` of a document |
 
 Arguments are in the [tool reference](reference/tools.md#http-apis-plugins).
 
@@ -214,6 +286,6 @@ Arguments are in the [tool reference](reference/tools.md#http-apis-plugins).
 - The type check covers required fields, numbers, booleans, dates, enumerations and unknown
   elements. `time` and `base64` values are not checked. It does not check
   element order or facets such as length and pattern.
-- WS-Security covers UsernameToken with a plain-text password. It does not check signatures, encryption or
-  timestamps.
+- WS-Security covers UsernameToken with a plain-text password. It does not check WS-Security signatures,
+  encryption or timestamps; `signature.check` covers enveloped `ds:Signature` elements in the body.
 - No MTOM or SOAP attachments.

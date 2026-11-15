@@ -53,9 +53,19 @@ pub fn endpoint(ctx: &Ctx, a: &Account) -> String {
         if base == "localhost" || base.ends_with(".localhost") {
             format!("http://{base}:{}/{}", crate::blob_port(), a.account)
         } else {
-            format!("http://{}.blob.{base}:{}", a.account, crate::blob_port())
+            // On a port the SDKs treat as an emulator's (10000 and friends), .NET and JS read the
+            // account from the first path segment even with a named host: without /<account> there
+            // they took the container for the account and dropped the blob name.
+            let port = crate::blob_port();
+            let tail = if path_style_port(port) { format!("/{}", a.account) } else { String::new() };
+            format!("http://{}.blob.{base}:{port}{tail}", a.account)
         }
     }
+}
+
+/// The ports Azure SDKs (.NET, JS) take as path style (<host>/<account>/...) whatever the host.
+pub fn path_style_port(p: u16) -> bool {
+    matches!(p, 10000..=10004 | 10100..=10104 | 11000..=11004 | 11100..=11104)
 }
 
 /// Azure connection string, or the S3 settings an app needs.

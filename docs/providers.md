@@ -139,6 +139,14 @@ Tools: `list_mailboxes`, `set_mailbox`, `put_mail`, `list_mailbox_messages`. In 
 | **Callbacks** | Event Grid and S3 notifications for created and deleted objects |
 | **You can provoke** | rules per operation and path (503 on the first N attempts, every time, or a share); next read 403, 404, 503, slow, truncated or bad MD5; links expired, badly signed, IP-denied or gone; an unreachable account; events held, duplicated, reordered, dropped or missing a field |
 
+With `STUNTMAN_HOST` set to a name (or in another environment) the connection string names the account's own host,
+`http://<account>.blob.<env base domain>:10000/<account>`. The account repeats in the path because the .NET and
+JavaScript SDKs read it from there on the emulator ports (10000–10004, 10100–10104, 11000–11004, 11100–11104), whatever
+the host; on any other `STUNTMAN_BLOB_PORT` the endpoint is plain `http://<account>.blob.<env base domain>:<port>`.
+Both styles work for every operation, nested blob names included. A blob request with no blob name answers
+400 InvalidUri instead of writing a blob named "". `comp`, `restype` and the `include` items (`Metadata`, `snapshots`…)
+are taken in any case, as Azure does.
+
 ## Files (FTP, FTPS and SFTP)
 
 The file servers partners and your app drop files on: EDI exchanges, bank remittance files, nightly exports.
@@ -563,6 +571,16 @@ The same provider, its users and its apps also answer the older ways apps sign p
 | **You can provoke** | 403, 404, 429, disabled, slow reads (`provoke_secret`); wrong signatures (`provoke_key`); missing, expired, not-yet-valid or untrusted certificates; an IMDS that fails or has no identity |
 
 Read counts prove caching: an app that reads a secret on every request shows up immediately.
+
+A disabled version answers as Azure does: 403 `Forbidden` (inner `KeyDisabled` / `SecretDisabled`), "Operation get is
+not allowed on a disabled key." (or secret; sign, encrypt, wrap… likewise). Properties update per version or for the
+current one (`PATCH /keys/{name}[/{version}]`, also secrets and certificates), so an older key version can be turned off
+alone (`set_key_state` with `version`, or Disable on a version row). Deleting is a soft delete: `DELETE /keys/{name}`
+returns the DeletedKeyBundle (`recoveryId`, `deletedDate`, `scheduledPurgeDate`), `GET /keys/{name}` then answers 404
+KeyNotFound, and `/deletedkeys` lists, recovers (`POST /deletedkeys/{name}/recover`) or purges (`DELETE
+/deletedkeys/{name}`) it; secrets and certificates the same. Tools: `delete_key`, `recover_item`, `purge_item`; the Keys
+screen lists deleted keys with Recover. Python's SDK compares the challenge resource with host and port: pass
+`verify_challenge_resource=False` to `KeyClient` / `SecretClient` (a port is never in Azure's vault URLs).
 
 ## Webhook inboxes
 

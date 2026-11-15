@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use super::{VaultCol, day_s, href, readers_view, sel, short, Head, Provoke};
 use crate::{
     api::{self, enc, s},
-    ui::{self, Dialog},
+    ui::{self, Confirm, Dialog},
 };
 
 #[component]
@@ -45,6 +45,26 @@ pub fn Keys() -> impl IntoView {
         leptos::task::spawn_local(async move {
             match api::send("PATCH", &format!("/keyvault/keys/{}", enc(&n)), json!({"enabled": enabled, "vault": v})).await {
                 Ok(_) => ui::toast(if enabled { "Key enabled" } else { "Key disabled: operations get 403 KeyDisabled" }),
+                Err(e) => ui::toast_err(e),
+            }
+        });
+    };
+    let set_version = move |ver: String, enabled: bool| {
+        let (n, v) = (name.get_untracked(), vault.get_untracked());
+        leptos::task::spawn_local(async move {
+            match api::send("PATCH", &format!("/keyvault/keys/{}", enc(&n)), json!({"enabled": enabled, "version": ver, "vault": v})).await {
+                Ok(_) => ui::toast(format!("Version {} {}", short(&ver), if enabled { "enabled" } else { "disabled: get and operations on it get 403" })),
+                Err(e) => ui::toast_err(e),
+            }
+        });
+    };
+    let del = RwSignal::new(false);
+    let do_del = move |_| {
+        let (n, v) = (name.get_untracked(), vault.get_untracked());
+        let nav = use_navigate();
+        leptos::task::spawn_local(async move {
+            match api::send("DELETE", &format!("/keyvault/keys/{}?vault={}", enc(&n), enc(&v)), Value::Null).await {
+                Ok(_) => { ui::toast(format!("{n} deleted: recoverable for the soft-delete days")); nav(&href("keys", &v, ""), Default::default()); }
                 Err(e) => ui::toast_err(e),
             }
         });
@@ -132,14 +152,17 @@ pub fn Keys() -> impl IntoView {
                             <div class="caps" style="margin-top:24px">"Versions"</div>
                             {x["versions"].as_array().cloned().unwrap_or_default().into_iter().map(|v| {
                                 let st = s(&v, "state");
-                                view! { <div class="row" style="margin-top:8px;gap:24px"><span class="mono" style="width:120px">{short(&s(&v, "id"))}</span><span style="width:90px">{day_s(api::n(&v, "created"))}</span><span class:ok={st == "current"} class:cap={st != "current"}>{st.clone()}</span></div> }
+                                let (id, on) = (s(&v, "id"), v["enabled"] != json!(false));
+                                view! { <div class="row" style="margin-top:8px;gap:24px"><span class="mono" style="width:120px">{short(&id)}</span><span style="width:90px">{day_s(api::n(&v, "created"))}</span><span style="width:110px" class:ok={st == "current"} class:cap={st != "current"}>{st.clone()}</span>
+                                    <button class="link" on:click=move |_| set_version(id.clone(), !on)>{if on { "Disable" } else { "Enable" }}</button></div> }
                             }).collect_view()}
                             <div class="small cap" style="margin-top:8px">"Signatures made with an older version still verify; new ones use the current."</div>
                             <div class="caps" style="margin-top:24px">"Public key"</div>
                             <pre class="yaml" style="max-width:640px;white-space:pre-wrap;word-break:break-all">{jwk}</pre>
                             <div class="row" style="gap:20px"><button class="link" on:click=move |_| ui::copy(&j2, "JWK")>"Copy as JWK"</button><button class="link" on:click=pem>"Copy as PEM"</button></div>
                             <div class="row" style="margin-top:18px;gap:16px"><button class="link" on:click=rotate>"Rotate now"</button><span class="small cap">"new version; KeyNewVersionCreated to subscribers"</span></div>
-                            <div style="margin-top:8px"><button class="link" on:click=move |_| set_state(!enabled)>{if enabled { "Disable key" } else { "Enable key" }}</button></div>
+                            <div class="row" style="margin-top:8px;gap:20px"><button class="link" on:click=move |_| set_state(!enabled)>{if enabled { "Disable key" } else { "Enable key" }}</button>
+                                <button class="link danger" on:click=move |_| del.set(true)>"Delete key"</button></div>
                         </div>
                         <div class="side">
                             <div class="caps">"Who uses it  ·  last hour"</div>
@@ -154,6 +177,7 @@ pub fn Keys() -> impl IntoView {
                     }.into_any()
                 }}
             </div>
+            <Confirm open=del question=Signal::derive(move || format!("Delete {}?", name.get())) detail="GET answers 404 KeyNotFound; it stays under Deleted, recoverable for the vault's soft-delete days, and creating the same name gets 409 Conflict until then." action="Delete" on_yes=do_del/>
             <Dialog open=dlg title="New key">
                 <div class="fd">
                     <div class="small t2">{move || format!("Made and kept in {}. The private part never leaves Stuntman: the app signs, verifies or wraps through the vault, as with Azure.", vault.get())}</div>

@@ -134,10 +134,20 @@ pub fn all() -> Vec<Tool> {
             if !ok { return Err(ApiError::not_found("Nothing deleted under that name")); }
             Ok(json!({"recovered": true}))
         }).req("name", "name").param("kind", "secret | key | certificate").param("vault", "vault").route("POST", "/keyvault/recover/{name}"),
+        Tool::new("purge_item", "Purges a soft-deleted secret, key or certificate for good: the name is free again.", |ctx, a| async move {
+            let v = config::pick(&ctx, a.str("vault"))?;
+            let kind = a.str("kind").unwrap_or(SECRET.into());
+            let n = a.need("name")?;
+            if store::deleted_at(&ctx, &v.name, &kind, &n).await?.is_none() { return Err(ApiError::not_found("Nothing deleted under that name")); }
+            store::purge(&ctx, &v.name, &kind, &n).await?;
+            Ok(json!({"purged": n}))
+        }).req("name", "name").param("kind", "secret | key | certificate").param("vault", "vault").route("DELETE", "/keyvault/deleted/{name}"),
         // ---------------------------------------------------------------- K2 keys
         Tool::new("list_keys", "Keys of a vault: type, allowed operations, versions, operations in the last hour.", |ctx, a| async move {
             let v = config::pick(&ctx, a.str("vault"))?;
-            Ok(json!({"vault": v.name, "keys": overview(&ctx, &v, KEY).await?, "askedFor": store::asked_missing(&ctx, &v.name, KEY, util::now_ms() - 86_400_000).await?}))
+            let days = v.behaviour.soft_delete_days as i64;
+            let deleted: Vec<Value> = store::deleted(&ctx, &v.name, KEY).await?.into_iter().map(|(n, at)| json!({"name": n, "deletedAt": at, "purgeAt": at + days * 86_400_000})).collect();
+            Ok(json!({"vault": v.name, "keys": overview(&ctx, &v, KEY).await?, "deleted": deleted, "askedFor": store::asked_missing(&ctx, &v.name, KEY, util::now_ms() - 86_400_000).await?}))
         }).param("vault", "vault").route("GET", "/keyvault/keys"),
         Tool::new("key_detail", "One key: operations in the last hour (with p95), versions, who uses it, provocation, public key.", |ctx, a| async move {
             let v = config::pick(&ctx, a.str("vault"))?;
@@ -167,14 +177,22 @@ pub fn all() -> Vec<Tool> {
             let x = vault::create_key(&ctx, &v, &n, a.u64("size").unwrap_or(2048) as usize, a.list("ops"), tags, exp).await?;
             Ok(json!({"name": n, "version": x.id}))
         }).req("name", "key name").param("type", "RSA").param("size", "2048").param("ops", "sign, verify, wrapKey, unwrapKey, encrypt, decrypt").param("expires", "365d, 730d or never (default)").param("tags", "{owner: signing}").param("vault", "vault").route("POST", "/keyvault/keys/{name}"),
-        Tool::new("set_key_state", "Disables or enables a key's current version.", |ctx, a| async move {
+        Tool::new("set_key_state", "Disables or enables a key version (default the current one).", |ctx, a| async move {
             let v = config::pick(&ctx, a.str("vault"))?;
             let n = a.need("name")?;
-            let x = store::current(&ctx, &v.name, KEY, &n).await?.ok_or_else(|| ApiError::not_found(format!("No key {n}")))?;
+            let ver = a.str("version").unwrap_or_default();
+            let x = store::one(&ctx, &v.name, KEY, &n, Some(&ver)).await?.ok_or_else(|| ApiError::not_found(format!("No key {n} {ver}")))?;
             let exp = match a.str("expires") { Some(e) if e == "now" => Some(Some(vault::now_s() - 1)), Some(e) if e == "never" => Some(None), Some(e) => Some(Some(vault::now_s() + util::parse_ms(&e).ok_or_else(|| ApiError::bad("expires: now, never, 365d"))? as i64 / 1000)), None => None };
             store::update(&ctx, &v.name, KEY, &n, &x.id, a.bool("enabled"), None, exp, None, None).await?;
-            Ok(json!({"name": n, "enabled": a.bool("enabled")}))
-        }).req("name", "key name").param("enabled", "true or false").param("expires", "now, never or 365d").param("vault", "vault").route("PATCH", "/keyvault/keys/{name}"),
+            Ok(json!({"name": n, "version": x.id, "enabled": a.bool("enabled")}))
+        }).req("name", "key name").param("version", "version id (default the current one)").param("enabled", "true or false").param("expires", "now, never or 365d").param("vault", "vault").route("PATCH", "/keyvault/keys/{name}"),
+        Tool::new("delete_key", "Soft-deletes a key: GET gets 404 KeyNotFound, it is listed under deleted keys until recovered (recover_item) or purged (purge_item).", |ctx, a| async move {
+            let v = config::pick(&ctx, a.str("vault"))?;
+            let n = a.need("name")?;
+            if store::current(&ctx, &v.name, KEY, &n).await?.is_none() { return Err(ApiError::not_found(format!("No key {n}"))); }
+            store::soft_delete(&ctx, &v.name, KEY, &n).await?;
+            Ok(json!({"deleted": n}))
+        }).req("name", "key name").param("vault", "vault").route("DELETE", "/keyvault/keys/{name}"),
         Tool::new("provoke_key", "Makes the next operations on a key fail: disabled, 403, 429, slow (2 s) or wrong_signature (sign returns one that fails verify).", |ctx, a| async move {
             let v = config::pick(&ctx, a.str("vault"))?;
             let ans = a.need("answer")?;

@@ -302,8 +302,9 @@ async fn fail(c: &Call, f: Fail, blob: bool) -> Response {
 }
 
 async fn run(c: Call, a: Account, container: String, blob: String) -> Response {
-    let comp = c.qm.get("comp").cloned().unwrap_or_default();
-    let restype = c.qm.get("restype").cloned().unwrap_or_default();
+    // Azure takes these values in any case (the .NET SDK has sent comp=List, include=Metadata).
+    let comp = c.qm.get("comp").map(|v| v.to_lowercase()).unwrap_or_default();
+    let restype = c.qm.get("restype").map(|v| v.to_lowercase()).unwrap_or_default();
     // ---- account level
     if container.is_empty() {
         if restype == "account" || (restype == "service" && comp == "properties" && c.method == "GET") {
@@ -377,7 +378,11 @@ async fn run(c: Call, a: Account, container: String, blob: String) -> Response {
     if !a.containers.contains_key(&container) {
         return err(404, "ContainerNotFound", "The specified container does not exist.").into(&c.version);
     }
-    // ---- blob level
+    // ---- blob level. No blob name (e.g. a client that took the container for the account) must not
+    // become a blob named "": every upload would overwrite it.
+    if blob.is_empty() {
+        return err(400, "InvalidUri", "The requested URI does not represent any resource on the server. (No blob name in the path: container operations need restype=container.)").into(&c.version);
+    }
     let op = match (c.method.as_str(), comp.as_str()) {
         ("GET", "") => "get",
         ("HEAD", "") | ("GET", "metadata") | ("GET", "properties") => "head",
@@ -564,6 +569,8 @@ pub fn copy_source(src: &str, prefix: &str) -> (String, String, String) {
     let path = path.strip_prefix(&format!("{}/", prefix.trim_start_matches('/'))).map(String::from).unwrap_or(path);
     let host = host.split(':').next().unwrap_or("");
     if let Some((acct, _)) = host.split_once(".blob.") {
+        // On an emulator port the endpoint repeats the account in the path (see ops::endpoint).
+        let path = path.strip_prefix(&format!("{acct}/")).map(String::from).unwrap_or(path);
         let parts: Vec<String> = path.splitn(2, '/').map(auth::decode_path).collect();
         return (acct.to_string(), parts.first().cloned().unwrap_or_default(), parts.get(1).cloned().unwrap_or_default());
     }
@@ -579,6 +586,8 @@ mod copy_t {
         assert_eq!(super::copy_source("http://acmedev.blob.acme.localhost:10000/uploads/a/b.pdf", "/e/acme"), s("acmedev", "uploads", "a/b.pdf"));
         assert_eq!(super::copy_source("http://127.0.0.1:10000/acme-docs-stg/documents/x%20y.pdf?sv=1", ""), s("acme-docs-stg", "documents", "x y.pdf"));
         assert_eq!(super::copy_source("http://127.0.0.1:10000/e/stg-b/acme/c/d", "/e/stg-b"), s("acme", "c", "d"));
+        assert_eq!(super::copy_source("http://acmedev.blob.stg-a.stuntman.local:20000/uploads/a/b.pdf", ""), s("acmedev", "uploads", "a/b.pdf"));
+        assert_eq!(super::copy_source("http://acmedev.blob.stg-a.stuntman.local:10000/acmedev/uploads/a/b.pdf", ""), s("acmedev", "uploads", "a/b.pdf"));
     }
 }
 
@@ -626,7 +635,7 @@ async fn list_blobs(c: &Call, a: &Account, container: &str) -> Response {
     let delim = c.qm.get("delimiter").cloned().unwrap_or_default();
     let marker = c.qm.get("marker").cloned().unwrap_or_default();
     let max: usize = c.qm.get("maxresults").and_then(|m| m.parse().ok()).unwrap_or(5000);
-    let with_meta = c.qm.get("include").map(|i| i.contains("metadata")).unwrap_or(false);
+    let with_meta = c.qm.get("include").map(|i| i.split(',').any(|x| x.trim().eq_ignore_ascii_case("metadata"))).unwrap_or(false);
     let all = store::list(&c.ctx, &a.account, container, &prefix).await.unwrap_or_default();
     let mut items: Vec<(String, Option<Blob>)> = vec![];
     let mut seen_pref = std::collections::BTreeSet::new();

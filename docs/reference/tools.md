@@ -5,7 +5,7 @@ Every action in Stuntman is one tool. Each tool is an **MCP tool** (same name) a
 
 _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit by hand._
 
-**389 tools** in 17 areas.
+**391 tools** in 17 areas.
 
 - [Environments and timeline](#environments-and-timeline) · 13 tools
 - [Email and mailboxes](#email-and-mailboxes) · 39 tools
@@ -21,7 +21,7 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 - [Streams (Kafka, Schema Registry)](#streams-kafka-schema-registry) · 10 tools
 - [Pub/Sub (Google Cloud)](#pub-sub-google-cloud) · 14 tools
 - [Kinesis (Amazon Kinesis Data Streams)](#kinesis-amazon-kinesis-data-streams) · 6 tools
-- [Secrets (Key Vault)](#secrets-key-vault) · 31 tools
+- [Secrets (Key Vault)](#secrets-key-vault) · 33 tools
 - [Webhook inboxes](#webhook-inboxes) · 9 tools
 - [Telemetry (OpenTelemetry)](#telemetry-opentelemetry) · 25 tools
 
@@ -434,10 +434,12 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `secret_used_by` | `GET /api/keyvault/used-by/{name}` | name | — | Files in this environment that point at secret://<name> (also before the secret exists). |
 | `delete_secret` | `DELETE /api/keyvault/secrets/{name}` | name | vault | Soft-deletes a secret (recreating the name gets 409 until recovered or purged). |
 | `recover_item` | `POST /api/keyvault/recover/{name}` | name | kind, vault | Recovers a soft-deleted secret, key or certificate. |
+| `purge_item` | `DELETE /api/keyvault/deleted/{name}` | name | kind, vault | Purges a soft-deleted secret, key or certificate for good: the name is free again. |
 | `list_keys` | `GET /api/keyvault/keys` | — | vault | Keys of a vault: type, allowed operations, versions, operations in the last hour. |
 | `key_detail` | `GET /api/keyvault/keys/{name}/detail` | name | vault | One key: operations in the last hour (with p95), versions, who uses it, provocation, public key. |
 | `create_vault_key` | `POST /api/keyvault/keys/{name}` | name | type, size, ops, expires, tags, vault | Creates a key, or a new version of it (rotation; KeyNewVersionCreated to subscribers). RSA 2048/3072/4096. |
-| `set_key_state` | `PATCH /api/keyvault/keys/{name}` | name | enabled, expires, vault | Disables or enables a key's current version. |
+| `set_key_state` | `PATCH /api/keyvault/keys/{name}` | name | version, enabled, expires, vault | Disables or enables a key version (default the current one). |
+| `delete_key` | `DELETE /api/keyvault/keys/{name}` | name | vault | Soft-deletes a key: GET gets 404 KeyNotFound, it is listed under deleted keys until recovered (recover_item) or purged (purge_item). |
 | `provoke_key` | `POST /api/keyvault/keys/{name}/provoke` | name, answer | for, vault, by | Makes the next operations on a key fail: disabled, 403, 429, slow (2 s) or wrong_signature (sign returns one that fails verify). |
 | `key_public` | `GET /api/keyvault/keys/{name}/public` | name | format, vault | The public part of a key, as JWK or PEM, to verify outside. |
 | `list_certificates` | `GET /api/keyvault/certificates` | — | vault | Certificates: subject, issuer, validity, days left, readers. |

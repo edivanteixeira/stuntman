@@ -107,8 +107,13 @@ async fn route(r: &Req) -> Response {
         ("GET", ["secrets", n]) => get_secret(r, n, "").await,
         ("GET", ["secrets", n, ver]) => get_secret(r, n, ver).await,
         ("PUT", ["secrets", n]) => put_secret(r, n).await,
+        // Update properties: of a version, or (no version, as the SDKs send it) of the current one.
+        ("PATCH", ["secrets", n]) => patch(r, SECRET, n, "").await,
         ("PATCH", ["secrets", n, ver]) => patch(r, SECRET, n, ver).await,
+        ("PATCH", ["keys", n]) => patch(r, KEY, n, "").await,
         ("PATCH", ["keys", n, ver]) => patch(r, KEY, n, ver).await,
+        ("PATCH", ["certificates", n]) => patch(r, CERT, n, "").await,
+        ("PATCH", ["certificates", n, ver]) => patch(r, CERT, n, ver).await,
         ("DELETE", ["secrets", n]) => delete(r, SECRET, n).await,
         ("DELETE", ["keys", n]) => delete(r, KEY, n).await,
         ("DELETE", ["certificates", n]) => delete(r, CERT, n).await,
@@ -156,7 +161,7 @@ async fn gate(r: &Req, op: &str, kind: &str, name: &str, need: Need) -> Result<(
     let out = match answer.as_deref() {
         Some("403") => Some(refuse(403, "Forbidden", format!("Caller is not authorized to perform action on resource (provoked on {name})."), Some("ForbiddenByRbac"))),
         Some("404") | Some("missing") => Some(refuse(404, match kind { SECRET => "SecretNotFound", KEY => "KeyNotFound", _ => "CertificateNotFound" }, format!("A {what} with (name/id) {name} was not found in this key vault."), None)),
-        Some("disabled") => Some(refuse(403, "Forbidden", format!("Operation {} is not allowed on a disabled {what}.", op.trim_start_matches("Get").to_lowercase()), Some(match kind { SECRET => "SecretDisabled", _ => "KeyDisabled" }))),
+        Some("disabled") => Some(refuse(403, "Forbidden", format!("Operation {} is not allowed on a disabled {what}.", if op.starts_with("Get") { "get".into() } else { op.to_lowercase() }), Some(match kind { SECRET => "SecretDisabled", _ => "KeyDisabled" }))),
         Some("429") => Some(refuse(429, "Throttled", "Request was not processed because too many requests were received (provoked).".into(), None)),
         _ => None,
     };
@@ -188,18 +193,35 @@ async fn list(r: &Req, kind: &str) -> Response {
     Json(json!({"value": out, "nextLink": null})).into_response()
 }
 
+/// A DeletedKeyBundle / DeletedSecretBundle / DeletedCertificateBundle: the item as it was (the SDKs
+/// read key/attributes from it) plus recoveryId, deletedDate and scheduledPurgeDate.
+async fn deleted_json(r: &Req, kind: &str, n: &str, at: i64) -> Value {
+    let cur = store::versions(&r.ctx, &r.vault.name, kind, n).await.unwrap_or_default().into_iter().next().unwrap_or_default();
+    let mut j = match kind {
+        SECRET => { let mut j = secret_json(r, n, &cur); j.as_object_mut().map(|o| o.remove("value")); j }
+        KEY => { let mut j = key_json(r, n, &cur); j["kid"] = json!(r.id(KEY, n, &cur.id)); j }
+        _ => cert_json(r, n, &cur, None),
+    };
+    let coll = match kind { SECRET => "deletedsecrets", KEY => "deletedkeys", _ => "deletedcertificates" };
+    j["recoveryId"] = json!(format!("{}/{coll}/{n}", r.base));
+    j["deletedDate"] = json!(at / 1000);
+    j["scheduledPurgeDate"] = json!(at / 1000 + r.vault.behaviour.soft_delete_days as i64 * 86_400);
+    j
+}
+
 async fn list_deleted(r: &Req, kind: &str) -> Response {
-    let out: Vec<Value> = store::deleted(&r.ctx, &r.vault.name, kind).await.unwrap_or_default().into_iter().map(|(n, at)| {
-        let coll = match kind { SECRET => "deletedsecrets", KEY => "deletedkeys", _ => "deletedcertificates" };
-        json!({"recoveryId": format!("{}/{coll}/{n}", r.base), "deletedDate": at / 1000, "scheduledPurgeDate": at / 1000 + r.vault.behaviour.soft_delete_days as i64 * 86_400, "id": r.id(kind, &n, "")})
-    }).collect();
+    let mut out = vec![];
+    for (n, at) in store::deleted(&r.ctx, &r.vault.name, kind).await.unwrap_or_default() {
+        out.push(deleted_json(r, kind, &n, at).await);
+    }
     Json(json!({"value": out, "nextLink": null})).into_response()
 }
 
 async fn versions(r: &Req, kind: &str, n: &str) -> Response {
     let vs = store::versions(&r.ctx, &r.vault.name, kind, n).await.unwrap_or_default();
     if vs.is_empty() { return not_found(kind, n); }
-    let out: Vec<Value> = vs.iter().map(|v| json!({"id": r.id(kind, n, &v.id), "attributes": attrs(v, r.vault.behaviour.soft_delete_days), "tags": v.tags})).collect();
+    // KeyItem carries the id as kid (the SDKs read only that).
+    let out: Vec<Value> = vs.iter().map(|v| { let id = r.id(kind, n, &v.id); json!({"id": id, "kid": id, "attributes": attrs(v, r.vault.behaviour.soft_delete_days), "tags": v.tags}) }).collect();
     Json(json!({"value": out, "nextLink": null})).into_response()
 }
 
@@ -221,6 +243,10 @@ async fn get_secret(r: &Req, n: &str, ver: &str) -> Response {
         None => {
             // A certificate's secret: the .pfx (or PEM) with the private key, as Key Vault gives it.
             if let Ok(Some(c)) = store::one(&r.ctx, &r.vault.name, CERT, n, Some(ver)).await {
+                if !c.enabled {
+                    r.log("GetSecret", SECRET, n, &c.id, 403, &role, "disabled certificate version", &wf).await;
+                    return azerr(403, "Forbidden", "Operation get is not allowed on a disabled secret.", Some("SecretDisabled"));
+                }
                 let cprov = store::provoked(&r.ctx, &r.vault.name, CERT, n).await.ok().flatten().map(|p| p.0);
                 if cprov.as_deref() == Some("missing") { r.log("GetSecret", SECRET, n, "", 404, &role, "provoked: certificate missing", &wf).await; return not_found(SECRET, n); }
                 let der = match vault::cert_der_for(&c, cprov.as_deref()) { Ok(d) => d, Err(e) => return azerr(500, "InternalError", &e, None) };
@@ -250,9 +276,11 @@ async fn put_secret(r: &Req, n: &str) -> Response {
 }
 
 async fn patch(r: &Req, kind: &str, n: &str, ver: &str) -> Response {
-    let need = if kind == SECRET { Need::SecretWrite } else { Need::KeyManage };
-    let op = if kind == SECRET { "UpdateSecret" } else { "UpdateKey" };
+    let need = match kind { SECRET => Need::SecretWrite, KEY => Need::KeyManage, _ => Need::CertManage };
+    let op = match kind { SECRET => "UpdateSecret", KEY => "UpdateKey", _ => "UpdateCertificate" };
     let (role, wf, _) = match gate(r, op, kind, n, need).await { Ok(x) => x, Err(e) => return e };
+    let Some(cur) = store::one(&r.ctx, &r.vault.name, kind, n, Some(ver)).await.ok().flatten() else { return not_found(kind, n) };
+    let ver = cur.id.as_str();
     let a = &r.body["attributes"];
     let ok = store::update(&r.ctx, &r.vault.name, kind, n, ver, a["enabled"].as_bool(), a.get("nbf").map(|x| x.as_i64()), a.get("exp").map(|x| x.as_i64()),
         r.body["contentType"].as_str().map(String::from), r.body.get("tags").cloned()).await;
@@ -260,7 +288,8 @@ async fn patch(r: &Req, kind: &str, n: &str, ver: &str) -> Response {
     r.log(op, kind, n, ver, 200, &role, "", &wf).await;
     match store::one(&r.ctx, &r.vault.name, kind, n, Some(ver)).await.ok().flatten() {
         Some(v) if kind == SECRET => { let mut j = secret_json(r, n, &v); j.as_object_mut().map(|o| o.remove("value")); Json(j).into_response() }
-        Some(v) => Json(key_json(r, n, &v)).into_response(),
+        Some(v) if kind == KEY => Json(key_json(r, n, &v)).into_response(),
+        Some(v) => Json(cert_json(r, n, &v, None)).into_response(),
         None => not_found(kind, n),
     }
 }
@@ -279,8 +308,7 @@ async fn get_deleted(r: &Req, kind: &str, n: &str) -> Response {
     let Some(at) = store::deleted_at(&r.ctx, &r.vault.name, kind, n).await.ok().flatten() else {
         return azerr(404, match kind { SECRET => "SecretNotFound", KEY => "KeyNotFound", _ => "CertificateNotFound" }, &format!("Deleted {kind} {n} was not found"), None);
     };
-    let coll = match kind { SECRET => "deletedsecrets", KEY => "deletedkeys", _ => "deletedcertificates" };
-    Json(json!({"recoveryId": format!("{}/{coll}/{n}", r.base), "deletedDate": at / 1000, "scheduledPurgeDate": at / 1000 + r.vault.behaviour.soft_delete_days as i64 * 86_400, "id": r.id(kind, n, "")})).into_response()
+    Json(deleted_json(r, kind, n, at).await).into_response()
 }
 
 async fn recover(r: &Req, kind: &str, n: &str) -> Response {
@@ -296,6 +324,9 @@ async fn recover(r: &Req, kind: &str, n: &str) -> Response {
 }
 
 async fn purge(r: &Req, kind: &str, n: &str) -> Response {
+    if store::deleted_at(&r.ctx, &r.vault.name, kind, n).await.ok().flatten().is_none() {
+        return azerr(404, match kind { SECRET => "SecretNotFound", KEY => "KeyNotFound", _ => "CertificateNotFound" }, &format!("Deleted {kind} {n} was not found"), None);
+    }
     let _ = store::purge(&r.ctx, &r.vault.name, kind, n).await;
     r.log("Purge", kind, n, "", 204, "", "", "").await;
     StatusCode::NO_CONTENT.into_response()
@@ -332,6 +363,10 @@ async fn create_key(r: &Req, n: &str) -> Response {
 async fn get_key(r: &Req, n: &str, ver: &str) -> Response {
     let (role, wf, _) = match gate(r, "GetKey", KEY, n, Need::KeyUse).await { Ok(x) => x, Err(e) => return e };
     match key_version(r, n, ver).await {
+        Some(v) if !v.enabled => {
+            r.log("GetKey", KEY, n, &v.id, 403, &role, "disabled version", &wf).await;
+            azerr(403, "Forbidden", "Operation get is not allowed on a disabled key.", Some("KeyDisabled"))
+        }
         Some(v) => { r.log("GetKey", KEY, n, &v.id, 200, &role, "", &wf).await; Json(key_json(r, n, &v)).into_response() }
         None => { r.log("GetKey", KEY, n, ver, 404, &role, "not found", &wf).await; not_found(KEY, n) }
     }

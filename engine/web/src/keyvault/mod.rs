@@ -158,6 +158,7 @@ pub fn VaultCol(tab: &'static str, filter: RwSignal<String>) -> impl IntoView {
     let cur = Memo::new(move |_| s(&current(&all.get(), qm.get().get("vault")), "name"));
     let rows = RwSignal::new(Vec::<Value>::new());
     let asked = RwSignal::new(Vec::<Value>::new());
+    let deleted = RwSignal::new(Vec::<Value>::new());
     let live = expect_context::<api::Live>();
     Effect::new(move |_| {
         live.tick.track();
@@ -167,6 +168,7 @@ pub fn VaultCol(tab: &'static str, filter: RwSignal<String>) -> impl IntoView {
             if let Ok(x) = api::get(&format!("/keyvault/{tab}?vault={}", enc(&v))).await {
                 rows.set(x[tab].as_array().cloned().unwrap_or_default());
                 asked.set(x["askedFor"].as_array().cloned().unwrap_or_default());
+                if tab == "keys" { deleted.set(x["deleted"].as_array().cloned().unwrap_or_default()); }
             }
         });
     });
@@ -239,6 +241,14 @@ pub fn VaultCol(tab: &'static str, filter: RwSignal<String>) -> impl IntoView {
                         <span class="grow mono ell danger">{n}</span><span class="mono small cap">{format!("404 ×{}", api::n(&m, "count"))}</span></div> } }).collect_view()}
                 <div class="small cap" style="padding:2px 20px 0">"Click one to create it."</div>
             } }) }}
+            {move || { let del = deleted.get(); (!del.is_empty()).then(|| view! {
+                <div class="caps" style="padding:16px 20px 4px">"Deleted  ·  recoverable"</div>
+                {del.into_iter().map(|d| { let n = s(&d, "name"); let n2 = n.clone(); view! {
+                    <div class="kvasked" title=format!("Deleted {}; purged {}", api::ago(api::n(&d, "deletedAt")), ymd(api::n(&d, "purgeAt") / 1000))>
+                        <span class="grow mono ell cap">{n}</span>
+                        <button class="link" on:click=move |_| { let (n, v) = (n2.clone(), cur.get_untracked()); leptos::task::spawn_local(async move {
+                            match api::send("POST", &format!("/keyvault/recover/{}", enc(&n)), json!({"kind": "key", "vault": v})).await { Ok(_) => ui::toast(format!("{n} recovered")), Err(e) => ui::toast_err(e) } }); }>"Recover"</button></div> } }).collect_view()}
+            }) }}
             <div class="small cap" style="padding:14px 20px">{note}</div>
             <span class="grow"></span>
             {move || {

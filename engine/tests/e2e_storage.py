@@ -5,6 +5,8 @@ for Azure Blob and the AWS CLI (botocore) for S3, plus the HTTP API and MCP.
 """
 import base64, hashlib, http.client, http.server, json, os, shutil, socket, subprocess, tempfile, threading, time, urllib.error, urllib.parse, urllib.request
 
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(ROOT, "target", "debug", "stuntman")
 
@@ -310,6 +312,9 @@ def main():
     threading.Thread(target=recv.serve_forever, daemon=True).start()
     env = dict(os.environ, STUNTMAN_ENV=os.environ.get("STUNTMAN_ENV", "stg-a"), STUNTMAN_DATA=data, STUNTMAN_PORT=str(HTTP), STUNTMAN_HOOKS_PORT=str(HOOKS), STUNTMAN_SMTP_PORT=str(SMTP), STUNTMAN_OTLP_HTTP_PORT=str(OTLP),
                STUNTMAN_OTLP_GRPC_PORT=str(OTLP_G), STUNTMAN_BLOB_PORT=str(BLOB), STUNTMAN_S3_PORT=str(S3), STUNTMAN_WEB="/nonexistent")
+    # Every other port too: the defaults (5672, 10000, …) may belong to a Stuntman already running.
+    import harness
+    env.update({f"STUNTMAN_{k}": str(free_port()) for k in harness.PORTS if f"STUNTMAN_{k}" not in env})
     log = open(os.path.join(tmp, "server.log"), "w")
     srv = subprocess.Popen([BIN], env=env, stdout=log, stderr=subprocess.STDOUT)
     try:

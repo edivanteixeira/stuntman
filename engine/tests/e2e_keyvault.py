@@ -6,6 +6,8 @@ provocations, identities and roles, the access log and its findings, over the HT
 """
 import base64, hashlib, http.client, json, os, shutil, socket, ssl, subprocess, tempfile, time, urllib.error, urllib.parse, urllib.request
 
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(ROOT, "target", "debug", "stuntman")
 
@@ -237,12 +239,114 @@ def run():
     assert not err, v
 
 
+def sdk():
+    """The same vault through Microsoft's Python SDKs (azure-keyvault-keys / -secrets), as an app uses them."""
+    try:
+        from azure.core.credentials import AccessToken
+        from azure.core.exceptions import HttpResponseError, ResourceNotFoundError
+        from azure.keyvault.keys import KeyClient
+        from azure.keyvault.secrets import SecretClient
+    except ImportError:
+        print("azure-keyvault-keys/-secrets not installed: SDK checks skipped"); return
+    gai = socket.getaddrinfo
+    socket.getaddrinfo = lambda host, *a, **k: gai("127.0.0.1" if str(host).startswith("acme-kv-stg.vault.") else host, *a, **k)
+    ca = os.path.join(DATA, "test-ca.pem")
+    open(ca, "w").write(CA[0])
+
+    class Imds:
+        def get_token(self, *scopes, **kw):
+            return AccessToken(token("acme-api-mi"), int(time.time()) + 3600)
+
+    url = f"https://{HOST}:{KV}"
+    # The Python SDK compares the challenge's resource with host:port; a port is not in Azure's URLs.
+    keys = KeyClient(url, Imds(), connection_verify=ca, verify_challenge_resource=False)
+    secrets = SecretClient(url, Imds(), connection_verify=ca, verify_challenge_resource=False)
+
+    # A disabled key: get is refused with 403 Forbidden, as Azure does.
+    k1 = keys.create_rsa_key("sdk-signing", size=2048)
+    k2 = keys.create_rsa_key("sdk-signing", size=2048)
+    keys.update_key_properties("sdk-signing", k2.properties.version, enabled=False)
+    try:
+        keys.get_key("sdk-signing"); raise AssertionError("disabled key read")
+    except HttpResponseError as e:
+        assert e.status_code == 403 and e.error.code == "Forbidden" and e.error.message.startswith("Operation get is not allowed on a disabled key."), (e.status_code, e.message)
+    assert keys.get_key("sdk-signing", k1.properties.version).id == k1.id
+    keys.update_key_properties("sdk-signing", enabled=True)  # no version: the current one
+    assert keys.get_key("sdk-signing").properties.version == k2.properties.version
+    # Disable an older version only: the current one keeps working.
+    keys.update_key_properties("sdk-signing", k1.properties.version, enabled=False)
+    states = {p.version: p.enabled for p in keys.list_properties_of_key_versions("sdk-signing")}
+    assert states == {k1.properties.version: False, k2.properties.version: True}, states
+    try:
+        keys.get_key("sdk-signing", k1.properties.version); raise AssertionError("disabled version read")
+    except HttpResponseError as e:
+        assert e.status_code == 403, e.status_code
+    assert keys.get_key("sdk-signing").id == k2.id
+
+    # Soft delete, recover, purge.
+    d = keys.begin_delete_key("sdk-signing").result()
+    assert d.recovery_id.endswith("/deletedkeys/sdk-signing") and d.deleted_date and d.scheduled_purge_date and d.key.kid, d
+    try:
+        keys.get_key("sdk-signing"); raise AssertionError("deleted key read")
+    except ResourceNotFoundError as e:
+        assert e.error.code == "KeyNotFound", e.error.code
+    assert keys.get_deleted_key("sdk-signing").name == "sdk-signing"
+    assert "sdk-signing" in [x.name for x in keys.list_deleted_keys()]
+    r = keys.begin_recover_deleted_key("sdk-signing").result()
+    assert r.id == k2.id and keys.get_key("sdk-signing").id == k2.id
+    keys.begin_delete_key("sdk-signing").result()
+    keys.purge_deleted_key("sdk-signing")
+    try:
+        keys.get_deleted_key("sdk-signing"); raise AssertionError("purged key still deleted")
+    except ResourceNotFoundError:
+        pass
+    assert keys.create_rsa_key("sdk-signing").name == "sdk-signing"  # the name is free again
+
+    # Secrets: disabled get is 403, delete/recover/purge.
+    s1 = secrets.set_secret("sdk-db-password", "synthetic-db-1")
+    secrets.update_secret_properties("sdk-db-password", enabled=False)
+    try:
+        secrets.get_secret("sdk-db-password"); raise AssertionError("disabled secret read")
+    except HttpResponseError as e:
+        assert e.status_code == 403 and e.error.message.startswith("Operation get is not allowed on a disabled secret."), e.message
+    secrets.update_secret_properties("sdk-db-password", s1.properties.version, enabled=True)
+    assert secrets.get_secret("sdk-db-password").value == "synthetic-db-1"
+    ds = secrets.begin_delete_secret("sdk-db-password").result()
+    assert ds.recovery_id and ds.scheduled_purge_date, ds
+    secrets.begin_recover_deleted_secret("sdk-db-password").result()
+    assert secrets.get_secret("sdk-db-password").value == "synthetic-db-1"
+    secrets.begin_delete_secret("sdk-db-password").result()
+    secrets.purge_deleted_secret("sdk-db-password")
+    assert "sdk-db-password" not in [x.name for x in secrets.list_deleted_secrets()]
+
+    # The same over MCP: a version disabled, a key deleted, listed as deleted, recovered, purged.
+    keys.create_rsa_key("sdk-wrap")
+    old = keys.create_rsa_key("sdk-wrap").properties.version
+    keys.create_rsa_key("sdk-wrap")
+    err, v = tool("set_key_state", {"name": "sdk-wrap", "version": old, "enabled": False, "vault": "acme-kv-stg"})
+    assert not err and v["version"] == old, v
+    assert {p.version: p.enabled for p in keys.list_properties_of_key_versions("sdk-wrap")}[old] is False
+    err, v = tool("delete_key", {"name": "sdk-wrap", "vault": "acme-kv-stg"})
+    assert not err, v
+    err, v = tool("list_keys", {"vault": "acme-kv-stg"})
+    assert not err and "sdk-wrap" in [x["name"] for x in v["deleted"]] and "sdk-wrap" not in [x["name"] for x in v["keys"]], v
+    err, v = tool("recover_item", {"name": "sdk-wrap", "kind": "key", "vault": "acme-kv-stg"})
+    assert not err and keys.get_key("sdk-wrap").name == "sdk-wrap", v
+    tool("delete_key", {"name": "sdk-wrap", "vault": "acme-kv-stg"})
+    err, v = tool("purge_item", {"name": "sdk-wrap", "kind": "key", "vault": "acme-kv-stg"})
+    assert not err and "sdk-wrap" not in [x.name for x in keys.list_deleted_keys()], v
+    socket.getaddrinfo = gai
+
+
 def main():
     global DATA
     DATA = tempfile.mkdtemp(prefix="stuntman-kv-")
     env = dict(os.environ, STUNTMAN_ENV=os.environ.get("STUNTMAN_ENV", "stg-a"), STUNTMAN_DATA=DATA, STUNTMAN_PORT=str(HTTP), STUNTMAN_HOOKS_PORT=str(HOOKS), STUNTMAN_SMTP_PORT=str(SMTP), STUNTMAN_OTLP_HTTP_PORT=str(OTLP),
                STUNTMAN_OTLP_GRPC_PORT=str(OTLP_G), STUNTMAN_BLOB_PORT=str(BLOB), STUNTMAN_S3_PORT=str(S3), STUNTMAN_APIS_PORT=str(APIS), STUNTMAN_APIS_TLS_PORT=str(TLS),
                STUNTMAN_KEYVAULT_PORT=str(KV), STUNTMAN_WEB="/nonexistent")
+    # Every other port too: the defaults (5672, 10000, …) may belong to a Stuntman already running.
+    import harness
+    env.update({f"STUNTMAN_{k}": str(free_port()) for k in harness.PORTS if f"STUNTMAN_{k}" not in env})
     log = DATA + ".log"
     srv = subprocess.Popen([BIN], env=env, stdout=open(log, "w"), stderr=subprocess.STDOUT)
     try:
@@ -252,6 +356,7 @@ def main():
             except OSError:
                 time.sleep(0.1)
         run()
+        sdk()
         print("e2e keyvault: all checks passed")
     except Exception:
         print(open(log).read()[-3000:])

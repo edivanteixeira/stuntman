@@ -72,6 +72,7 @@ host name: give each environment a base domain under a wildcard DNS that points 
     cargo build -p stuntman-telemetry --example otlp_send && python3 tests/e2e_telemetry.py  # OTLP JSON/protobuf/gRPC, trips, logs, metrics, provoke, forward
     cargo build -p stuntman && python3 tests/e2e_storage.py  # az CLI (Microsoft SDK) + aws CLI (botocore): SharedKey/SAS/SigV4, blocks, multipart, links, events, rules, real resets
     (cd tests/dotnet-azure-blob && dotnet run -- "<connection string>")  # common blob operations with Azure.Storage.Blobs
+    python3 tests/e2e_blob_hoststyle.py  # the get_account connection string on a named host: azure-storage-blob + the .NET check above
     python3 tests/seed_storage.py http://localhost:8025 10000 9000 8027  # synthetic storage data for the screens
     cargo build -p stuntman && python3 tests/e2e_apis.py  # SERPRO OAuth2 + data-driven answers, forced, billing, rate, fail share, reset/empty, real host, wait, webhooks, unmatched, try, schema, MCP
     python3 tests/seed_apis.py http://localhost:8025 8028  # synthetic API traffic for the screens

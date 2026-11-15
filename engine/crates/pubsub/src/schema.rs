@@ -137,6 +137,10 @@ struct Field {
     repeated: bool,
     /// map<K, V>: the key and value types.
     map: Option<(Ty, Ty)>,
+    /// proto2 group: the message is between start-group and end-group tags (wire types 3 and 4).
+    group: bool,
+    /// proto2 required: a message without it does not parse.
+    required: bool,
 }
 
 #[derive(Debug, Default)]
@@ -247,14 +251,32 @@ impl P {
         Ok(())
     }
     fn field(&mut self, scope: &str, ty: String, repeated: bool) -> Result<(), String> {
+        self.field_of(scope, ty, repeated, false)
+    }
+    fn field_of(&mut self, scope: &str, ty: String, repeated: bool, required: bool) -> Result<(), String> {
+        if ty == "group" { return self.group(scope, repeated, required) }
         let name = self.next()?;
         self.eat("=")?;
         let num: u64 = self.next()?.parse().map_err(|_| format!("{scope}.{name}: field number"))?;
         self.options()?;
         self.eat(";")?;
-        let f = Field { json: camel(&name), name, num, ty: Ty::Scalar(String::new()), repeated, map: None };
+        let f = Field { json: camel(&name), name, num, ty: Ty::Scalar(String::new()), repeated, map: None, group: false, required };
         self.raw.push((scope.to_string(), ty, f, None));
         Ok(())
+    }
+    /// proto2: `optional group Stop = 4 { ... }` is a nested message Stop and a field `stop`.
+    fn group(&mut self, scope: &str, repeated: bool, required: bool) -> Result<(), String> {
+        let name = self.next()?;
+        self.eat("=")?;
+        let num: u64 = self.next()?.parse().map_err(|_| format!("{scope}.{name}: group number"))?;
+        self.options()?;
+        let full = format!("{scope}.{name}");
+        let lower = name.to_lowercase();
+        let f = Field { json: camel(&lower), name: lower, num, ty: Ty::Scalar(String::new()), repeated, map: None, group: true, required };
+        self.raw.push((scope.to_string(), format!(".{full}"), f, None));
+        self.msgs.push(full.clone());
+        self.eat("{")?;
+        self.body(&full, false)
     }
     fn enum_(&mut self, scope: &str) -> Result<(), String> {
         let name = self.next()?;
@@ -297,7 +319,6 @@ impl P {
                 "option" | "reserved" | "extensions" => self.skip_stmt()?,
                 "extend" => self.skip_block()?,
                 "oneof" => { self.next()?; self.next()?; self.eat("{")?; self.body(full, true)?; }
-                "group" => return Err("groups are not supported".into()),
                 "map" => {
                     self.next()?;
                     self.eat("<")?;
@@ -310,7 +331,8 @@ impl P {
                     self.raw[n].3 = Some((k, v));
                 }
                 "repeated" => { self.next()?; let ty = self.next()?; self.field(full, ty, true)?; }
-                "optional" | "required" => { self.next()?; let ty = self.next()?; self.field(full, ty, false)?; }
+                "optional" | "required" => { let req = self.next()? == "required"; let ty = self.next()?; self.field_of(full, ty, false, req)?; }
+                "group" if oneof => { self.next()?; self.group(full, false, false)?; }
                 "" => return Err(format!("{full}: missing }}")),
                 _ => { let ty = self.next()?; self.field(full, ty, false)?; }
             }
@@ -373,14 +395,35 @@ impl Proto {
 
     /// The wire format of one message, as proto3 JSON (64-bit integers as strings).
     fn decode(&self, msg: &str, b: &[u8], depth: usize) -> Result<Map<String, Value>, String> {
-        if depth > 64 { return Err("nested too deep".into()) }
         let mut r = Rd { b, p: 0 };
+        self.fields(msg, &mut r, None, depth)
+    }
+
+    /// The fields of one message: to the end of the bytes, or (a group) to its end-group tag. Unknown
+    /// fields are skipped, as a protobuf parser keeps them; a missing proto2 required field fails.
+    fn fields(&self, msg: &str, r: &mut Rd, end: Option<u64>, depth: usize) -> Result<Map<String, Value>, String> {
+        if depth > 64 { return Err("nested too deep".into()) }
         let mut out = Map::new();
-        while r.p < b.len() {
+        loop {
+            if r.p >= r.b.len() {
+                if let Some(n) = end { return Err(format!("group {n} has no end-group tag")) }
+                break;
+            }
             let tag = r.varint()?;
             let (num, wt) = (tag >> 3, (tag & 7) as u8);
             if num == 0 { return Err("field number 0".into()) }
-            let Some(f) = self.field(msg, num) else { r.skip(wt)?; continue };
+            if wt == 4 {
+                if end == Some(num) { break }
+                return Err(format!("an end-group tag for {num} with no group open"));
+            }
+            let Some(f) = self.field(msg, num) else { r.skip(wt, num)?; continue };
+            if f.group {
+                if wt != 3 { return Err(format!("{}: a group starts with wire type 3, got {wt}", f.name)) }
+                let Ty::Msg(m) = &f.ty else { return Err("group without a message".into()) };
+                let v = Value::Object(self.fields(m, r, Some(num), depth + 1)?);
+                if f.repeated { out.entry(f.json.clone()).or_insert_with(|| json!([])).as_array_mut().unwrap().push(v) } else { out.insert(f.json.clone(), v); }
+                continue;
+            }
             if let Some((k, v)) = &f.map {
                 if wt != 2 { return Err(format!("{}: a map entry is length-delimited", f.name)) }
                 let entry = r.len_bytes()?;
@@ -391,7 +434,7 @@ impl Proto {
                     match t >> 3 {
                         1 => key = self.scalar(k, (t & 7) as u8, &mut er, &f.name, depth)?,
                         2 => val = self.scalar(v, (t & 7) as u8, &mut er, &f.name, depth)?,
-                        _ => er.skip((t & 7) as u8)?,
+                        n => er.skip((t & 7) as u8, n)?,
                     }
                 }
                 let key = match key { Value::String(s) => s, Value::Null => String::new(), x => x.to_string() };
@@ -407,12 +450,15 @@ impl Proto {
                 while pr.p < seg.len() { arr.push(self.scalar(&f.ty, want, &mut pr, &f.name, depth)?); }
                 continue;
             }
-            let v = self.scalar(&f.ty, wt, &mut r, &f.name, depth)?;
+            let v = self.scalar(&f.ty, wt, r, &f.name, depth)?;
             if f.repeated {
                 out.entry(f.json.clone()).or_insert_with(|| json!([])).as_array_mut().unwrap().push(v);
             } else {
                 out.insert(f.json.clone(), v);
             }
+        }
+        if let Some(f) = self.msgs[msg].iter().find(|f| f.required && !out.contains_key(&f.json)) {
+            return Err(format!("{msg}: required field {} is missing", f.name));
         }
         Ok(out)
     }
@@ -450,6 +496,9 @@ impl Proto {
     fn check_json(&self, msg: &str, v: &Value, path: &str) -> Result<(), String> {
         let o = v.as_object().ok_or_else(|| format!("{}: expected an object", if path.is_empty() { msg } else { path }))?;
         let fields = &self.msgs[msg];
+        if let Some(f) = fields.iter().find(|f| f.required && o.get(&f.json).or(o.get(&f.name)).is_none_or(|v| v.is_null())) {
+            return Err(format!("{msg}: required field {} is missing", f.name));
+        }
         for (k, x) in o {
             let f = fields.iter().find(|f| &f.json == k || &f.name == k).ok_or_else(|| format!("{msg} has no field \"{k}\""))?;
             let p = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
@@ -536,12 +585,20 @@ impl<'a> Rd<'a> {
         let n = self.varint()? as usize;
         self.take(n)
     }
-    fn skip(&mut self, wt: u8) -> Result<(), String> {
+    fn skip(&mut self, wt: u8, num: u64) -> Result<(), String> {
         match wt {
             0 => { self.varint()?; }
             1 => { self.take(8)?; }
             2 => { self.len_bytes()?; }
             5 => { self.take(4)?; }
+            3 => loop {
+                let t = self.varint()?;
+                if t & 7 == 4 {
+                    if t >> 3 == num { break }
+                    return Err("mismatched end-group tag".into());
+                }
+                self.skip((t & 7) as u8, t >> 3)?;
+            },
             _ => return Err(format!("wire type {wt} is not valid")),
         }
         Ok(())
@@ -597,6 +654,26 @@ mod t {
         assert!(validate(PROTOCOL_BUFFER, PROTO, JSON, br#"{"status": "LOST"}"#).is_err());
         assert!(check(PROTOCOL_BUFFER, "import \"x.proto\"; message A {}").is_err());
         assert!(check(PROTOCOL_BUFFER, "message A { Missing m = 1; }").unwrap_err().contains("unknown type"));
+    }
+
+    #[test]
+    fn proto2_groups_required_unknown() {
+        let def = r#"syntax = "proto2";
+            message Manifest {
+              required string shipment = 1;
+              repeated group Stop = 2 { required string city = 3; optional int32 parcels = 4; }
+            }"#;
+        check(PROTOCOL_BUFFER, def).unwrap();
+        // shipment="SHP-9"; stop {city="Springfield", parcels=2}; an unknown field 9 (varint) and an unknown group 10.
+        let mut b = vec![0x0a, 5];
+        b.extend(b"SHP-9");
+        b.extend([0x13, 0x1a, 11]); b.extend(b"Springfield"); b.extend([0x20, 2, 0x14]);
+        b.extend([0x48, 7, 0x53, 0x08, 1, 0x54]);
+        assert_eq!(validate(PROTOCOL_BUFFER, def, BINARY, &b).unwrap(), json!({"shipment": "SHP-9", "stop": [{"city": "Springfield", "parcels": 2}]}));
+        assert!(validate(PROTOCOL_BUFFER, def, BINARY, &[0x48, 7]).unwrap_err().contains("required field shipment"));
+        assert!(validate(PROTOCOL_BUFFER, def, BINARY, &[0x0a, 1, b'x', 0x13, 0x1a, 1, b'y']).unwrap_err().contains("end-group"));
+        validate(PROTOCOL_BUFFER, def, JSON, br#"{"shipment": "SHP-9", "stop": [{"city": "Springfield"}]}"#).unwrap();
+        assert!(validate(PROTOCOL_BUFFER, def, JSON, br#"{"stop": []}"#).unwrap_err().contains("required"));
     }
 
     #[test]

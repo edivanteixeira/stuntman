@@ -34,12 +34,21 @@ async fn sub_view(ctx: &Ctx, s: &Sub) -> Result<Value, ApiError> {
         "bigquery" => pb.bigquery_config.as_ref().map(|b| json!({"table": b.table, "useTopicSchema": b.use_topic_schema, "writeMetadata": b.write_metadata})),
         "cloud_storage" => pb.cloud_storage_config.as_ref().map(|c| json!({"bucket": c.bucket, "filenamePrefix": c.filename_prefix, "filenameSuffix": c.filename_suffix, "maxMessages": c.max_messages,
             "maxDurationMs": store::dur_ms(&c.max_duration), "format": if matches!(c.output_format, Some(v1::cloud_storage_config::OutputFormat::AvroConfig(_))) { "avro" } else { "text" }})),
+        "bigtable" => pb.bigtable_config.as_ref().map(|b| json!({"table": b.table, "writeMetadata": b.write_metadata})),
         _ => None,
     };
+    let last = store::last_seen(ctx, &s.name).await?;
+    let err = store::error_of(ctx, &s.name).await?;
     Ok(json!({"name": s.name, "topic": s.topic, "type": s.kind(), "delivery": target, "filter": (!pb.filter.is_empty()).then_some(&pb.filter), "ackDeadlineSeconds": s.ack_deadline,
         "messageOrdering": s.ordering, "exactlyOnce": s.exactly_once(), "detached": pb.detached, "retainAcked": pb.retain_acked_messages, "retentionMs": s.retention_ms(),
         "deadLetterTopic": (!s.dead_letter.is_empty()).then_some(&s.dead_letter), "maxDeliveryAttempts": (!s.dead_letter.is_empty()).then_some(s.max_attempts),
-        "unacked": pending + outstanding, "pending": pending, "outstanding": outstanding, "acked": acked, "deadLettered": dead}))
+        "unacked": pending + outstanding, "pending": pending, "outstanding": outstanding, "acked": acked, "deadLettered": dead,
+        "transforms": udf_names(&pb.message_transforms), "retryBackoffMs": pb.retry_policy.as_ref().map(|r| [store::dur_ms(&r.minimum_backoff), store::dur_ms(&r.maximum_backoff)]),
+        "lastActiveAt": last, "expiresAt": s.ttl_ms().map(|t| last + t), "lastError": err.map(|(e, at)| json!({"error": e, "at": at}))}))
+}
+
+fn udf_names(t: &[v1::MessageTransform]) -> Vec<String> {
+    crate::udf::udfs(t).into_iter().map(|u| u.1).collect()
 }
 
 fn topic_view(t: &v1::Topic) -> Value {
@@ -47,7 +56,36 @@ fn topic_view(t: &v1::Topic) -> Value {
     json!({"name": t.name, "labels": t.labels.iter().collect::<std::collections::BTreeMap<_, _>>(),
         "schema": ss.map(|s| json!({"name": s.schema, "encoding": if s.encoding == schema::BINARY { "BINARY" } else { "JSON" }, "firstRevision": s.first_revision_id, "lastRevision": s.last_revision_id})),
         "retentionMs": store::dur_ms(&t.message_retention_duration), "kmsKeyName": (!t.kms_key_name.is_empty()).then_some(&t.kms_key_name),
-        "allowedRegions": t.message_storage_policy.as_ref().map(|p| &p.allowed_persistence_regions)})
+        "allowedRegions": t.message_storage_policy.as_ref().map(|p| &p.allowed_persistence_regions), "ingestion": crate::ingest::describe(t), "transforms": udf_names(&t.message_transforms)})
+}
+
+fn udf_of(a: &Args) -> Vec<v1::MessageTransform> {
+    match (a.str("udf_code"), a.str("udf_function")) {
+        (Some(code), Some(function_name)) => vec![v1::MessageTransform { transform: Some(v1::message_transform::Transform::JavascriptUdf(v1::JavaScriptUdf { function_name, code })), ..Default::default() }],
+        _ => vec![],
+    }
+}
+
+/// {kind, …} as the topic's ingestion settings.
+fn ingestion_of(v: &Value) -> Result<v1::IngestionDataSourceSettings, ApiError> {
+    use v1::ingestion_data_source_settings::{self as i, Source};
+    let s = |k: &str| v[k].as_str().unwrap_or_default().to_string();
+    let src = match v["kind"].as_str().unwrap_or("") {
+        "aws_kinesis" => Source::AwsKinesis(i::AwsKinesis { stream_arn: s("stream_arn"), consumer_arn: s("consumer_arn"), aws_role_arn: s("aws_role_arn"), gcp_service_account: s("gcp_service_account"), ..Default::default() }),
+        "cloud_storage" => Source::CloudStorage(i::CloudStorage { bucket: s("bucket"), match_glob: s("match_glob"),
+            input_format: Some(match v["format"].as_str().unwrap_or("text") {
+                "avro" => i::cloud_storage::InputFormat::AvroFormat(Default::default()),
+                "pubsub_avro" => i::cloud_storage::InputFormat::PubsubAvroFormat(Default::default()),
+                _ => i::cloud_storage::InputFormat::TextFormat(i::cloud_storage::TextFormat { delimiter: v["delimiter"].as_str().map(String::from) }),
+            }), ..Default::default() }),
+        "azure_event_hubs" => Source::AzureEventHubs(i::AzureEventHubs { namespace: s("namespace"), event_hub: s("event_hub"), resource_group: s("resource_group"), client_id: s("client_id"),
+            tenant_id: s("tenant_id"), subscription_id: s("subscription_id"), gcp_service_account: s("gcp_service_account"), ..Default::default() }),
+        "aws_msk" => Source::AwsMsk(i::AwsMsk { cluster_arn: s("cluster_arn"), topic: s("topic"), aws_role_arn: s("aws_role_arn"), gcp_service_account: s("gcp_service_account"), ..Default::default() }),
+        "confluent_cloud" => Source::ConfluentCloud(i::ConfluentCloud { bootstrap_server: s("bootstrap_server"), cluster_id: s("cluster_id"), topic: s("topic"), identity_pool_id: s("identity_pool_id"),
+            gcp_service_account: s("gcp_service_account"), ..Default::default() }),
+        _ => return Err(ApiError::bad("ingestion.kind: aws_kinesis | cloud_storage | azure_event_hubs | aws_msk | confluent_cloud")),
+    };
+    Ok(v1::IngestionDataSourceSettings { source: Some(src), ..Default::default() })
 }
 
 fn host_hint(ctx: &Ctx) -> Value {
@@ -81,7 +119,8 @@ pub fn all() -> Vec<Tool> {
             let schemas: Vec<Value> = store::schemas(&ctx, "").await?.into_iter().map(|r| json!({"name": r.name, "type": if r.kind == schema::AVRO { "AVRO" } else { "PROTOCOL_BUFFER" },
                 "revision": r.revision, "definition": r.definition, "createdAt": r.created})).collect();
             let c = config::load(&ctx);
-            Ok(json!({"topics": out, "detachedSubscriptions": detached, "snapshots": snapshots, "schemas": schemas, "connect": host_hint(&ctx), "project": c.project,
+            let tables: Vec<Value> = store::bq_tables(&ctx).await?.into_iter().map(|(t, s)| json!({"table": t, "schema": s})).collect();
+            Ok(json!({"topics": out, "detachedSubscriptions": detached, "snapshots": snapshots, "schemas": schemas, "bigqueryTables": tables, "connect": host_hint(&ctx), "project": c.project,
                 "provoke": (!c.provoke.is_empty()).then(|| json!({"kind": c.provoke, "remaining": if c.times == 0 { Value::Null } else { json!(c.times) }, "topic": c.topic, "delayMs": c.delay_ms})),
                 "provocations": config::PROVOKE.iter().map(|p| json!({"kind": p.0, "label": p.1})).collect::<Vec<_>>()}))
         })
@@ -109,14 +148,14 @@ pub fn all() -> Vec<Tool> {
             let mut attrs = labels(&a, "attributes");
             if data.is_empty() && attrs.is_empty() { return Err(ApiError::bad("data or attributes")) }
             let topic = store::topic(&ctx, &t).await?.unwrap_or_else(|| store::bare(&t));
-            grpc::conform(&ctx, &topic, &data, &mut attrs).await.map_err(|e| ApiError::bad(format!("Message failed schema validation: {e}")))?;
             let by = a.str("_by").unwrap_or("you".into());
-            let ids = store::publish(&ctx, &t, vec![(data, attrs, a.str("ordering_key").unwrap_or_default())], &by).await?;
-            Ok(json!({"topic": t, "messageId": ids[0].to_string()}))
+            let m = v1::PubsubMessage { data, attributes: std::mem::take(&mut attrs).into_iter().collect(), ordering_key: a.str("ordering_key").unwrap_or_default(), ..Default::default() };
+            let ids = grpc::accept(&ctx, &topic, vec![m], &by).await.map_err(|e| ApiError::bad(e.message().to_string()))?;
+            Ok(json!({"topic": t, "messageId": ids[0]}))
         })
         .req("topic", "shipments").param("data", "JSON or text").param("attributes", "{name: value}").param("ordering_key", "the ordering key").param("project", "acme-stg")
         .route("POST", "/pubsub/topics/{topic}/publish"),
-        Tool::new("create_pubsub_subscription", "Creates a subscription on a topic (the topic too when missing): pull by default; push (push_endpoint, unwrapped, write_metadata, oidc_service_account), BigQuery (bigquery_table, use_topic_schema, write_metadata) or Cloud Storage (bucket, filename_prefix, max_messages, max_duration, avro); filter, ack deadline, message ordering, exactly-once, a dead-letter topic with max delivery attempts.", |ctx, a| async move {
+        Tool::new("create_pubsub_subscription", "Creates a subscription on a topic (the topic too when missing): pull by default; push (push_endpoint, unwrapped, write_metadata, oidc_service_account), BigQuery (bigquery_table, use_topic_schema, write_metadata), Cloud Storage (bucket, filename_prefix, max_messages, max_duration, avro) or Bigtable (bigtable_table); filter, JavaScript UDF, ack deadline, message ordering, exactly-once, expiration ttl, retry backoff, a dead-letter topic with max delivery attempts.", |ctx, a| async move {
             let s = resolve(&ctx, &a, "subscription", "subscriptions").await?;
             let t = resolve(&ctx, &a, "topic", "topics").await?;
             for (n, k) in [(&s, "subscriptions"), (&t, "topics")] {
@@ -140,6 +179,16 @@ pub fn all() -> Vec<Tool> {
             if let Some(tb) = a.str("bigquery_table") {
                 pb.bigquery_config = Some(v1::BigQueryConfig { table: tb, use_topic_schema: a.bool("use_topic_schema").unwrap_or(false), write_metadata: meta, ..Default::default() });
             }
+            if let Some(tb) = a.str("bigtable_table") {
+                pb.bigtable_config = Some(v1::BigtableConfig { table: tb, write_metadata: meta, ..Default::default() });
+            }
+            if let Some(ttl) = a.str("expiration_ttl") {
+                pb.expiration_policy = Some(v1::ExpirationPolicy { ttl: if ttl == "never" { None } else { Some(store::dur(util::parse_ms(&ttl).ok_or_else(|| ApiError::bad("expiration_ttl: like 1d, or never"))? as i64)) } });
+            }
+            if a.get("min_backoff").is_some() || a.get("max_backoff").is_some() {
+                pb.retry_policy = Some(v1::RetryPolicy { minimum_backoff: a.ms("min_backoff")?.map(|m| store::dur(m as i64)), maximum_backoff: a.ms("max_backoff")?.map(|m| store::dur(m as i64)) });
+            }
+            pb.message_transforms = udf_of(&a);
             if let Some(b) = a.str("bucket") {
                 pb.cloud_storage_config = Some(v1::CloudStorageConfig { bucket: b, filename_prefix: a.str("filename_prefix").unwrap_or_default(), filename_suffix: a.str("filename_suffix").unwrap_or_default(),
                     max_messages: a.u64("max_messages").unwrap_or(0) as i64, max_duration: a.ms("max_duration")?.map(|m| store::dur(m as i64)),
@@ -148,13 +197,16 @@ pub fn all() -> Vec<Tool> {
             }
             let sub = grpc::sub_settings(&ctx, pb, true).await.map_err(|e| ApiError::bad(e.message().to_string()))?;
             let made = store::create_sub(&ctx, &sub).await?;
+            if made { store::seen(&ctx, &sub.name).await?; }
             Ok(json!({"subscription": sub_view(&ctx, &store::sub(&ctx, &s).await?.unwrap_or(sub)).await?, "created": made}))
         })
         .req("subscription", "shipments-billing").req("topic", "shipments").param("filter", "attributes.region = \"us-east\"").param("ack_deadline_seconds", "10").param("ordering", "bool")
         .param("exactly_once", "bool").param("retain_acked", "bool").param("dead_letter_topic", "shipments-dlq").param("max_delivery_attempts", "5")
         .param("push_endpoint", "http://localhost:5000/pubsub/push").param("unwrapped", "bool: the raw data as the body").param("write_metadata", "bool").param("oidc_service_account", "push-invoker@acme-stg.iam.gserviceaccount.com").param("oidc_audience", "the token's aud")
         .param("bigquery_table", "acme-stg.logistics.shipments").param("use_topic_schema", "bool").param("bucket", "acme-stg-shipments-archive").param("filename_prefix", "shipments/").param("filename_suffix", ".txt")
-        .param("max_messages", "per file").param("max_duration", "5m").param("avro", "bool: Avro files instead of text").param("labels", "{name: value}").param("project", "acme-stg")
+        .param("max_messages", "per file").param("max_duration", "5m").param("avro", "bool: Avro files instead of text").param("bigtable_table", "projects/acme-stg/instances/ops/tables/shipments")
+        .param("expiration_ttl", "31d | never").param("min_backoff", "10s").param("max_backoff", "600s").param("udf_code", "function redact(message, metadata) { … }").param("udf_function", "redact")
+        .param("labels", "{name: value}").param("project", "acme-stg")
         .route("PUT", "/pubsub/subscriptions/{subscription}"),
         Tool::new("set_pubsub_schema", "Creates a Pub/Sub schema (Avro or Protocol Buffer) or commits a new revision of it; with topic (and encoding JSON or BINARY), the topic validates every publish against it.", |ctx, a| async move {
             let n = a.need("schema")?;
@@ -188,6 +240,50 @@ pub fn all() -> Vec<Tool> {
         })
         .param("bucket", "acme-stg-shipments-archive").param("subscription", "shipments-archive").param("limit", "20")
         .route("GET", "/pubsub/storage"),
+        Tool::new("list_pubsub_bigtable_rows", "The rows Bigtable subscriptions wrote (Stuntman keeps the tables): row key subscription#salt#message_id (or the delimited key), the data in family data (qualifier \"\"), and with write_metadata the pubsub_metadata family (subscription_name, message_id, publish_time, attributes, ordering_key).", |ctx, a| async move {
+            let sub = match a.get("subscription") { Some(_) => Some(resolve(&ctx, &a, "subscription", "subscriptions").await?), None => None };
+            Ok(json!({"rows": store::bt_rows(&ctx, a.str("table"), sub, a.u64("limit").unwrap_or(50) as i64).await?}))
+        })
+        .param("table", "projects/acme-stg/instances/ops/tables/shipments").param("subscription", "shipments-bt").param("limit", "50")
+        .route("GET", "/pubsub/bigtable"),
+        Tool::new("set_pubsub_bigquery_table", "Defines a BigQuery table's schema for BigQuery subscriptions: columns [{name, type, mode}] (STRING, BYTES, INTEGER, FLOAT, NUMERIC, BOOLEAN, TIMESTAMP, DATE, JSON, RECORD; NULLABLE, REQUIRED, REPEATED). With it, use_table_schema maps the message's JSON fields to columns, drop_unknown_fields drops extras, and a row that does not fit is not written (retried, then dead-lettered).", |ctx, a| async move {
+            let t = a.need("table")?;
+            let cols = a.get("schema").and_then(|v| v.as_array()).cloned().ok_or_else(|| ApiError::bad("schema: [{name, type, mode}]"))?;
+            if cols.iter().any(|c| c["name"].as_str().is_none_or(|n| n.is_empty())) { return Err(ApiError::bad("every column needs a name")) }
+            store::set_bq_table(&ctx, &t, &json!(cols)).await?;
+            Ok(json!({"table": t, "columns": cols.len()}))
+        })
+        .req("table", "acme-stg.logistics.shipments").req("schema", "[{\"name\": \"shipment\", \"type\": \"STRING\", \"mode\": \"REQUIRED\"}]")
+        .route("PUT", "/pubsub/bigquery/tables/{table}"),
+        Tool::new("set_pubsub_topic", "Sets a topic's ingestion source (kind aws_kinesis, cloud_storage, azure_event_hubs, aws_msk, confluent_cloud with that source's fields) and/or a JavaScript UDF transform (udf_code, udf_function), making the topic when missing. Cloud Storage reads a Stuntman storage container of the bucket's name; MSK and Confluent read the Streams (Kafka) topic.", |ctx, a| async move {
+            let t = resolve(&ctx, &a, "topic", "topics").await?;
+            store::create_topic(&ctx, &store::bare(&t)).await?;
+            let mut topic = store::topic(&ctx, &t).await?.ok_or_else(|| ApiError::not_found(format!("No topic {t}")))?;
+            if let Some(i) = a.get("ingestion") { topic.ingestion_data_source_settings = if i.is_null() { None } else { Some(ingestion_of(i)?) }; }
+            if a.get("udf_code").is_some() { topic.message_transforms = udf_of(&a); }
+            crate::udf::check(&topic.message_transforms).map_err(ApiError::bad)?;
+            crate::ingest::set_state(&ctx, &mut topic).await?;
+            store::save_topic(&ctx, &topic).await?;
+            Ok(topic_view(&topic))
+        })
+        .req("topic", "shipments").param("ingestion", "{\"kind\": \"aws_msk\", \"cluster_arn\": \"…\", \"topic\": \"shipments\"} or null").param("udf_code", "function f(message, metadata) { return message; }")
+        .param("udf_function", "f").param("project", "acme-stg")
+        .route("PUT", "/pubsub/topics/{topic}"),
+        Tool::new("pubsub_ingest", "Feeds records into an import topic as its source would: records [{data, key, attributes}] — Kafka (MSK, Confluent): value → data, key → ordering key, headers → attributes; Kinesis: partition key → ordering key; Event Hubs: partition key → ordering key, properties → attributes; Cloud Storage: each record one text line. They go through the topic's transforms and schema.", |ctx, a| async move {
+            let t = resolve(&ctx, &a, "topic", "topics").await?;
+            let topic = store::topic(&ctx, &t).await?.ok_or_else(|| ApiError::not_found(format!("No topic {t}")))?;
+            if topic.ingestion_data_source_settings.is_none() { return Err(ApiError::bad(format!("{t} has no ingestion source: set_pubsub_topic(ingestion)"))) }
+            let recs = a.get("records").and_then(|v| v.as_array()).cloned().ok_or_else(|| ApiError::bad("records: [{data, key, attributes}]"))?;
+            let recs = recs.iter().map(|r| crate::ingest::Rec {
+                data: match &r["data"] { Value::String(s) => s.clone().into_bytes(), Value::Null => vec![], v => v.to_string().into_bytes() },
+                key: r["key"].as_str().or(r["partition_key"].as_str()).unwrap_or_default().to_string(),
+                attrs: r["attributes"].as_object().or(r["headers"].as_object()).or(r["properties"].as_object()).map(|o| o.iter().map(|(k, v)| (k.clone(), v.as_str().map(String::from).unwrap_or(v.to_string()))).collect()).unwrap_or_default(),
+            }).collect();
+            let ids = crate::ingest::feed(&ctx, &topic, recs).await?;
+            Ok(json!({"topic": t, "source": crate::ingest::describe(&topic), "messageIds": ids}))
+        })
+        .req("topic", "shipments").req("records", "[{\"data\": {\"shipment\": \"SHP-1\"}, \"key\": \"SHP-1\", \"attributes\": {}}]").param("project", "acme-stg")
+        .route("POST", "/pubsub/topics/{topic}/ingest"),
         Tool::new("wait_for_pubsub_message", "Waits for the first message the app published (not you or an agent) on a topic that matches: text in the data, attributes, ordering key. Looks back 15 s by default; 408 after the timeout.", |ctx, a| async move {
             let t = resolve(&ctx, &a, "topic", "topics").await?;
             let since = a.u64("since").map(|x| x as i64).unwrap_or_else(|| util::now_ms() - 15_000);
@@ -275,13 +371,13 @@ mod t {
         assert!(store::pull(&c, &s, 10, 10).await.unwrap().is_empty());
         // Ack b1, nack a1: only a1 and a2 (A unblocked? a2 still out, so A stays blocked).
         store::ack(&c, &s.name, vec![got[2].ack_id.clone()], false, false).await.unwrap();
-        store::modack(&c, &s.name, vec![(got[0].ack_id.clone(), 0)], false).await.unwrap();
+        store::modack(&c, &s, vec![(got[0].ack_id.clone(), 0)]).await.unwrap();
         assert!(store::pull(&c, &s, 10, 10).await.unwrap().is_empty(), "a2 is still out: key A waits");
-        store::modack(&c, &s.name, vec![(got[1].ack_id.clone(), 0)], false).await.unwrap();
+        store::modack(&c, &s, vec![(got[1].ack_id.clone(), 0)]).await.unwrap();
         let again = store::pull(&c, &s, 10, 10).await.unwrap();
         assert_eq!(again.iter().map(|g| (g.msg.id, g.attempt)).collect::<Vec<_>>(), [(got[0].msg.id, 2), (got[1].msg.id, 2)]);
         // A third delivery would pass max_attempts=2: both go to the dead-letter topic.
-        store::modack(&c, &s.name, again.iter().map(|g| (g.ack_id.clone(), 0)).collect(), false).await.unwrap();
+        store::modack(&c, &s, again.iter().map(|g| (g.ack_id.clone(), 0)).collect()).await.unwrap();
         assert!(store::pull(&c, &s, 10, 10).await.unwrap().is_empty());
         assert_eq!(store::counts(&c, &s.name).await.unwrap(), [0, 0, 1, 2]);
         assert_eq!(store::message_count(&c, "projects/acme-stg/topics/shipments-dlq").await.unwrap(), 2);
@@ -330,7 +426,7 @@ mod t {
         // Exactly-once: an ack id of a delivery that was nacked is invalid; the current one acks.
         let g = store::pull(&c, &all, 10, 10).await.unwrap();
         assert_eq!(texts(&g), ["e1", "w1"]);
-        store::modack(&c, &all.name, vec![(g[0].ack_id.clone(), 0)], true).await.unwrap();
+        store::modack(&c, &all, vec![(g[0].ack_id.clone(), 0)]).await.unwrap();
         let again = store::pull(&c, &all, 10, 10).await.unwrap();
         assert_eq!(store::ack(&c, &all.name, vec![g[0].ack_id.clone(), again[0].ack_id.clone(), g[1].ack_id.clone()], false, true).await.unwrap(), [g[0].ack_id.clone()]);
         assert_eq!(store::counts(&c, &all.name).await.unwrap(), [0, 0, 2, 0]);
@@ -396,5 +492,56 @@ mod t {
         assert_eq!((f.len(), f[0]["messages"].as_i64(), f[0]["content"].as_str()), (1, Some(2), Some("{\"shipment\": \"SHP-1\", \"kg\": 2.5}\n{\"shipment\": \"SHP-2\", \"kg\": 1}\n")));
         assert!(f[0]["object"].as_str().unwrap().starts_with("shipments/"));
         assert_eq!(store::counts(&c, &gcs.name).await.unwrap(), [0, 0, 2, 0]);
+    }
+
+    #[tokio::test]
+    async fn backoff_bytes_expiry_transforms_bigtable_tables() {
+        let c = ctx();
+        let t = "projects/acme-stg/topics/shipments";
+        let mut topic = store::bare(t);
+        topic.message_transforms = vec![v1::MessageTransform { transform: Some(v1::message_transform::Transform::JavascriptUdf(v1::JavaScriptUdf { function_name: "f".into(),
+            code: "function f(m, md) { if (m.data === 'drop') return null; m.attributes.stage = 'topic'; return m; }".into() })), ..Default::default() }];
+        store::create_topic(&c, &topic).await.unwrap();
+        // Retry policy: a nacked message waits its minimum backoff.
+        let r = sub("retry", t, |p| p.retry_policy = Some(v1::RetryPolicy { minimum_backoff: Some(store::dur(300)), maximum_backoff: Some(store::dur(1000)) }));
+        let bt = sub("bt", t, |p| p.bigtable_config = Some(v1::BigtableConfig { table: "projects/acme-stg/instances/ops/tables/shipments".into(), write_metadata: true, ..Default::default() }));
+        for s in [&r, &bt] { store::create_sub(&c, s).await.unwrap(); }
+        let m = |d: &str| v1::PubsubMessage { data: d.as_bytes().to_vec(), ..Default::default() };
+        // The topic transform: one dropped (still an id), the others stamped.
+        let ids = grpc::accept(&c, &topic, vec![m("aaaa"), m("drop"), m("bbbbbb")], "app:test").await.unwrap();
+        assert_eq!(ids.len(), 3);
+        assert_eq!(store::message_count(&c, t).await.unwrap(), 2);
+        let g = store::pull_bytes(&c, &r, 10, 10, 5).await.unwrap();
+        assert_eq!((texts(&g), g[0].msg.attributes["stage"].as_str()), (vec!["aaaa".to_string()], "topic"), "5 bytes: one message");
+        assert!(store::pull_bytes(&c, &r, 10, 10, -5).await.unwrap().is_empty(), "strict: bbbbbb does not fit");
+        store::modack(&c, &r, vec![(g[0].ack_id.clone(), 0)]).await.unwrap();
+        assert_eq!(texts(&store::pull(&c, &r, 10, 10).await.unwrap()), ["bbbbbb"], "aaaa waits its backoff");
+        tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+        assert_eq!(texts(&store::pull(&c, &r, 10, 10).await.unwrap()), ["aaaa"]);
+        // Bigtable rows.
+        crate::deliver::tick(&c).await.unwrap();
+        let rows = store::bt_rows(&c, None, Some(bt.name.clone()), 10).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[1]["rowKey"].as_str().unwrap().starts_with(&format!("{}#", bt.name)) && rows[1]["cells"]["data"][""] == "aaaa", "{rows:?}");
+        assert_eq!(rows[1]["cells"]["pubsub_metadata"]["message_id"], ids[0].as_str());
+        // Expiration: idle past its ttl on the environment clock.
+        let mut e = sub("idle", t, |p| p.expiration_policy = Some(v1::ExpirationPolicy { ttl: Some(store::dur(store::DAY_MS)) }));
+        e.pb.expiration_policy = Some(v1::ExpirationPolicy { ttl: Some(store::dur(store::DAY_MS)) });
+        store::create_sub(&c, &e).await.unwrap();
+        store::seen(&c, &e.name).await.unwrap();
+        crate::deliver::tick(&c).await.unwrap();
+        assert!(store::sub(&c, &e.name).await.unwrap().is_some());
+        stuntman_core::clock::advance(&c, 2 * store::DAY_MS);
+        crate::deliver::tick(&c).await.unwrap();
+        assert!(store::sub(&c, &e.name).await.unwrap().is_none(), "expired after a day idle");
+        assert!(store::sub(&c, &r.name).await.unwrap().is_some(), "31 days by default");
+        stuntman_core::clock::reset(&c);
+        // A BigQuery table schema.
+        let cols = vec![json!({"name": "shipment", "type": "STRING", "mode": "REQUIRED"}), json!({"name": "kg", "type": "FLOAT"})];
+        let mut row: Map<String, Value> = serde_json::from_value(json!({"shipment": "SHP-1", "kg": 2.5, "color": "red"})).unwrap();
+        assert!(crate::deliver::fit_row(&mut row.clone(), &cols, false).unwrap_err().contains("color"));
+        crate::deliver::fit_row(&mut row, &cols, true).unwrap();
+        assert_eq!(Value::Object(row), json!({"shipment": "SHP-1", "kg": 2.5}));
+        assert!(crate::deliver::fit_row(&mut serde_json::from_value(json!({"kg": "heavy"})).unwrap(), &cols, true).is_err());
     }
 }

@@ -112,6 +112,7 @@ fn sub_pb(s: &Sub) -> Subscription {
     pb.state = 1;
     if let Some(b) = pb.bigquery_config.as_mut() { b.state = 1 }
     if let Some(c) = pb.cloud_storage_config.as_mut() { c.state = 1 }
+    if let Some(c) = pb.bigtable_config.as_mut() { c.state = 1 }
     pb
 }
 
@@ -143,7 +144,7 @@ async fn need_topic(ctx: &Ctx, name: &str) -> Result<Topic, Status> {
 /// Pull and StreamingPull: only from a pull (or push) subscription that is not detached.
 fn pullable(s: &Sub) -> Result<(), Status> {
     if s.pb.detached { return Err(Status::failed_precondition(format!("Subscription {} is detached.", s.name))) }
-    if matches!(s.kind(), "bigquery" | "cloud_storage") { return Err(Status::failed_precondition(format!("Subscription {} delivers to {}; it cannot be pulled.", s.name, s.kind()))) }
+    if matches!(s.kind(), "bigquery" | "cloud_storage" | "bigtable") { return Err(Status::failed_precondition(format!("Subscription {} delivers to {}; it cannot be pulled.", s.name, s.kind()))) }
     Ok(())
 }
 
@@ -188,21 +189,41 @@ pub async fn publish(ctx: &Ctx, topic: &str, msgs: Vec<PubsubMessage>, by: &str)
         }
     }
     let t = store::topic(ctx, topic).await.map_err(int)?.ok_or_else(|| not_found(topic))?;
+    accept(ctx, &t, msgs, by).await
+}
+
+/// What follows the provocations (also for ingestion): the topic's JavaScript transforms (null
+/// drops a message but it still gets an id; an error fails the whole request), then its schema.
+pub async fn accept(ctx: &Ctx, t: &Topic, msgs: Vec<PubsubMessage>, by: &str) -> Result<Vec<String>, Status> {
+    let topic = t.name.as_str();
     if msgs.is_empty() {
         return Err(Status::invalid_argument("The request contains no messages."));
     }
     if let Some(m) = msgs.iter().find(|m| m.data.is_empty() && m.attributes.is_empty()) {
         return Err(Status::invalid_argument(format!("Some messages contain neither data nor attributes (message_id={}).", m.message_id)));
     }
-    let mut out = vec![];
+    let udfs = crate::udf::udfs(&t.message_transforms);
+    let now = crate::deliver::rfc3339(util::now_ms());
+    // Some(kept) or None (filtered), in request order.
+    let mut out: Vec<Option<(Vec<u8>, Labels, String)>> = vec![];
     for m in msgs {
-        let mut a: Labels = m.attributes.into_iter().collect();
-        conform(ctx, &t, &m.data, &mut a).await.map_err(|e| Status::invalid_argument(format!("Invalid data in message: Message failed schema validation. {e}")))?;
-        out.push((m.data, a, m.ordering_key));
+        let a: Labels = m.attributes.into_iter().collect();
+        let (d, mut a) = if udfs.is_empty() { (m.data, a) } else {
+            let (u, k, at) = (udfs.clone(), m.ordering_key.clone(), now.clone());
+            let r = tokio::task::spawn_blocking(move || crate::udf::chain(&u, m.data, a, &crate::udf::Meta { message_id: "", publish_time: &at, ordering_key: &k })).await.map_err(|e| Status::internal(e.to_string()))?;
+            match r.map_err(|e| Status::invalid_argument(format!("Message transformation failed: {e}")))? {
+                crate::udf::Out::Keep(d, a) => (d, a),
+                crate::udf::Out::Drop => { out.push(None); continue }
+            }
+        };
+        conform(ctx, t, &d, &mut a).await.map_err(|e| Status::invalid_argument(format!("Invalid data in message: Message failed schema validation. {e}")))?;
+        out.push(Some((d, a, m.ordering_key)));
     }
-    ctx.live.seen(by.trim_start_matches("app:"), "Pub/Sub");
-    let ids = store::publish(ctx, topic, out, by).await.map_err(int)?;
-    Ok(ids.into_iter().map(|i| i.to_string()).collect())
+    if by.starts_with("app:") { ctx.live.seen(by.trim_start_matches("app:"), "Pub/Sub"); }
+    let kept: Vec<_> = out.iter().flatten().cloned().collect();
+    let mut ids = store::publish(ctx, topic, kept, by).await.map_err(int)?.into_iter();
+    let mut gone = store::reserve_ids(ctx, topic, out.iter().filter(|x| x.is_none()).count()).await.map_err(int)?.into_iter();
+    Ok(out.iter().map(|x| if x.is_some() { ids.next() } else { gone.next() }.unwrap_or_default().to_string()).collect())
 }
 
 /// A topic as kept: retention in bounds, the schema existing, the encoding set.
@@ -222,7 +243,9 @@ async fn topic_settings(ctx: &Ctx, mut t: Topic) -> Result<Topic, Status> {
         if ss.encoding == 0 { ss.encoding = schema::JSON }
     }
     if t.schema_settings.as_ref().is_some_and(|s| s.schema.is_empty()) { t.schema_settings = None }
-    if t.ingestion_data_source_settings.is_some() { return Err(Status::invalid_argument("Stuntman does not import from ingestion sources (Kinesis, Cloud Storage, Event Hubs, MSK, Confluent).")) }
+    if t.ingestion_data_source_settings.as_ref().is_some_and(|i| i.source.is_none()) { t.ingestion_data_source_settings = None }
+    crate::ingest::set_state(ctx, &mut t).await.map_err(int)?;
+    crate::udf::check(&t.message_transforms).map_err(|e| Status::invalid_argument(format!("Invalid message transform: {e}")))?;
     t.state = 1;
     Ok(t)
 }
@@ -234,10 +257,29 @@ pub async fn sub_settings(ctx: &Ctx, mut pb: Subscription, new: bool) -> Result<
         check(&pb.topic, "topics")?;
         need_topic(ctx, &pb.topic).await?;
     }
-    if pb.bigtable_config.is_some() { return Err(Status::invalid_argument("Stuntman has no Bigtable: Bigtable subscriptions are not offered.")) }
     if pb.push_config.as_ref().is_some_and(|p| p.push_endpoint.is_empty()) { pb.push_config = None }
-    let kinds = pb.push_config.is_some() as u8 + pb.bigquery_config.is_some() as u8 + pb.cloud_storage_config.is_some() as u8;
-    if kinds > 1 { return Err(Status::invalid_argument("A subscription is push, BigQuery or Cloud Storage, not more than one.")) }
+    let kinds = pb.push_config.is_some() as u8 + pb.bigquery_config.is_some() as u8 + pb.cloud_storage_config.is_some() as u8 + pb.bigtable_config.is_some() as u8;
+    if kinds > 1 { return Err(Status::invalid_argument("A subscription is push, BigQuery, Cloud Storage or Bigtable, not more than one.")) }
+    if let Some(b) = &pb.bigtable_config {
+        let p: Vec<&str> = b.table.split('/').collect();
+        if !(p.len() == 6 && p[0] == "projects" && p[2] == "instances" && p[4] == "tables") { return Err(Status::invalid_argument(format!("Invalid Bigtable table: \"{}\" (projects/<p>/instances/<i>/tables/<t>).", b.table))) }
+        use crate::v1::bigtable_config::{column_family_mapping::KeyDefinition, MessageMapping};
+        if let Some(MessageMapping::ColumnFamilyMapping(m)) = &b.message_mapping {
+            match &m.key_definition {
+                Some(KeyDefinition::DelimitedKey(k)) if !k.key_fields.is_empty() => {}
+                Some(KeyDefinition::DelimitedKey(_)) => return Err(Status::invalid_argument("delimited_key needs key_fields.")),
+                _ => return Err(Status::invalid_argument("Stuntman's Bigtable tables have no row key schema: use delimited_key.")),
+            }
+        }
+    }
+    crate::udf::check(&pb.message_transforms).map_err(|e| Status::invalid_argument(format!("Invalid message transform: {e}")))?;
+    if let Some(ms) = pb.expiration_policy.as_ref().and_then(|e| dur_ms(&e.ttl)) {
+        if ms < store::DAY_MS { return Err(Status::invalid_argument("expiration_policy.ttl must be at least 1 day.")) }
+    }
+    if let Some(r) = &pb.retry_policy {
+        let (lo, hi) = (dur_ms(&r.minimum_backoff).unwrap_or(10_000), dur_ms(&r.maximum_backoff).unwrap_or(600_000));
+        if lo > hi || hi > 600_000 { return Err(Status::invalid_argument("retry_policy: 0 ≤ minimum_backoff ≤ maximum_backoff ≤ 600 s.")) }
+    }
     if let Some(p) = &pb.push_config {
         if !(p.push_endpoint.starts_with("http://") || p.push_endpoint.starts_with("https://")) { return Err(Status::invalid_argument(format!("Invalid push_endpoint: {}", p.push_endpoint))) }
         if pb.enable_exactly_once_delivery { return Err(Status::invalid_argument("Exactly-once delivery is not supported on push subscriptions.")) }
@@ -285,19 +327,39 @@ struct ErrorInfo {
 /// What Pub/Sub answers an ack or modack with expired ack ids under exactly-once delivery:
 /// INVALID_ARGUMENT with a google.rpc.ErrorInfo whose metadata maps each id to
 /// PERMANENT_FAILURE_INVALID_ACK_ID (the clients read it to fail that message's ack future).
-fn ack_failure(bad: &[String]) -> Status {
-    let msg = "Some acknowledgement ids in the request were invalid. This could be because the acknowledgement ids have expired or the acknowledgement ids were malformed.";
-    let info = ErrorInfo { reason: "EXACTLY_ONCE_ACKID_FAILURE".into(), domain: "pubsub.googleapis.com".into(), metadata: bad.iter().map(|a| (a.clone(), "PERMANENT_FAILURE_INVALID_ACK_ID".into())).collect() };
+fn ack_failure(bad: &[String], why: &str) -> Status {
+    let msg = if why.starts_with("TRANSIENT") { "Some acknowledgement ids in the request failed temporarily; retry them." }
+        else { "Some acknowledgement ids in the request were invalid. This could be because the acknowledgement ids have expired or the acknowledgement ids were malformed." };
+    let info = ErrorInfo { reason: "EXACTLY_ONCE_ACKID_FAILURE".into(), domain: "pubsub.googleapis.com".into(), metadata: bad.iter().map(|a| (a.clone(), why.into())).collect() };
     let st = RpcStatus { code: tonic::Code::InvalidArgument as i32, message: msg.into(), details: vec![prost_types::Any { type_url: "type.googleapis.com/google.rpc.ErrorInfo".into(), value: info.encode_to_vec() }] };
     Status::with_details(tonic::Code::InvalidArgument, msg, Bytes::from(st.encode_to_vec()))
 }
 
-/// Applies acks and modacks; answers the ids that matched nothing (acks, modacks).
-async fn apply_acks(ctx: &Ctx, s: &Sub, acks: Vec<String>, modacks: Vec<(String, i32)>) -> Result<(Vec<String>, Vec<String>), Status> {
+struct Acked {
+    bad_acks: Vec<String>,
+    bad_modacks: Vec<String>,
+    /// ack_transient provoked: nothing applied, every id to retry.
+    transient: bool,
+}
+
+/// Applies acks and modacks; answers the ids that matched nothing. Marks the subscription active.
+async fn apply_acks(ctx: &Ctx, s: &Sub, acks: Vec<String>, modacks: Vec<(String, i32)>) -> Result<Acked, Status> {
+    if acks.is_empty() && modacks.is_empty() { return Ok(Acked { bad_acks: vec![], bad_modacks: vec![], transient: false }) }
+    store::seen(ctx, &s.name).await.map_err(int)?;
+    if s.exactly_once() && config::take_ack(ctx) {
+        return Ok(Acked { bad_acks: acks, bad_modacks: modacks.into_iter().map(|m| m.0).collect(), transient: true });
+    }
     let dup = config::load(ctx).provoke == "duplicate";
     let a = store::ack(ctx, &s.name, acks, dup, s.exactly_once()).await.map_err(int)?;
-    let m = store::modack(ctx, &s.name, modacks, s.exactly_once()).await.map_err(int)?;
-    Ok((a, m))
+    let m = store::modack(ctx, s, modacks).await.map_err(int)?;
+    Ok(Acked { bad_acks: a, bad_modacks: m, transient: false })
+}
+
+fn ack_error(s: &Sub, bad: &[String], transient: bool) -> Result<(), Status> {
+    if s.exactly_once() && !bad.is_empty() {
+        return Err(ack_failure(bad, if transient { "TRANSIENT_FAILURE_UNORDERED_ACK_ID" } else { "PERMANENT_FAILURE_INVALID_ACK_ID" }));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------- Publisher
@@ -443,6 +505,7 @@ impl Subscriber for Svc {
         if !store::create_sub(&ctx, &sub).await.map_err(int)? {
             return Err(Status::already_exists("Subscription already exists"));
         }
+        store::seen(&ctx, &sub.name).await.map_err(int)?;
         Ok(Resp::new(sub_pb(&sub)))
     }
 
@@ -483,8 +546,8 @@ impl Subscriber for Svc {
         let q = r.into_inner();
         let s = need_sub(&ctx, &q.subscription).await?;
         let secs = q.ack_deadline_seconds;
-        let (_, bad) = apply_acks(&ctx, &s, vec![], q.ack_ids.into_iter().map(|a| (a, secs)).collect()).await?;
-        if s.exactly_once() && !bad.is_empty() { return Err(ack_failure(&bad)) }
+        let r = apply_acks(&ctx, &s, vec![], q.ack_ids.into_iter().map(|a| (a, secs)).collect()).await?;
+        ack_error(&s, &r.bad_modacks, r.transient)?;
         Ok(Resp::new(()))
     }
 
@@ -492,8 +555,8 @@ impl Subscriber for Svc {
         let ctx = self.ctx(&r)?;
         let q = r.into_inner();
         let s = need_sub(&ctx, &q.subscription).await?;
-        let (bad, _) = apply_acks(&ctx, &s, q.ack_ids, vec![]).await?;
-        if s.exactly_once() && !bad.is_empty() { return Err(ack_failure(&bad)) }
+        let r = apply_acks(&ctx, &s, q.ack_ids, vec![]).await?;
+        ack_error(&s, &r.bad_acks, r.transient)?;
         Ok(Resp::new(()))
     }
 
@@ -512,6 +575,7 @@ impl Subscriber for Svc {
         let q = r.into_inner();
         let s = need_sub(&ctx, &q.subscription).await?;
         pullable(&s)?;
+        store::seen(&ctx, &s.name).await.map_err(int)?;
         let max = if q.max_messages <= 0 { 100 } else { q.max_messages as usize };
         #[allow(deprecated)]
         let wait = !q.return_immediately;
@@ -519,7 +583,7 @@ impl Subscriber for Svc {
         let end = util::now_ms() + if wait { 1500 } else { 0 };
         loop {
             let bell = crate::bell().notified();
-            let got = store::pull(&ctx, &s, max, s.ack_deadline).await.map_err(int)?;
+            let got = crate::deliver::take(&ctx, &s, max, s.ack_deadline, 0).await.map_err(int)?;
             if !got.is_empty() || util::now_ms() >= end {
                 return Ok(Resp::new(PullResponse { received_messages: got.into_iter().map(|g| received(&s, g)).collect() }));
             }
@@ -538,6 +602,8 @@ impl Subscriber for Svc {
         pullable(&s)?;
         let secs = if first.stream_ack_deadline_seconds > 0 { first.stream_ack_deadline_seconds.clamp(10, 600) } else { s.ack_deadline };
         let max_out = if first.max_outstanding_messages > 0 { first.max_outstanding_messages } else { 1000 };
+        let max_bytes = first.max_outstanding_bytes.max(0);
+        store::seen(&ctx, &s.name).await.map_err(int)?;
         let props = SubscriptionProperties { exactly_once_delivery_enabled: s.exactly_once(), message_ordering_enabled: s.ordering };
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<StreamingPullResponse, Status>>(8);
         let done = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -548,12 +614,13 @@ impl Subscriber for Svc {
                 while let Some(req) = q.take() {
                     let mods: Vec<(String, i32)> = req.modify_deadline_ack_ids.iter().cloned().zip(req.modify_deadline_seconds.iter().copied()).collect();
                     let (acks, mod_ids) = (req.ack_ids.clone(), req.modify_deadline_ack_ids.clone());
-                    if let Ok((bad_a, bad_m)) = apply_acks(&ctx, &s, acks.clone(), mods).await {
+                    if let Ok(r) = apply_acks(&ctx, &s, acks.clone(), mods).await {
                         if s.exactly_once() && !(acks.is_empty() && mod_ids.is_empty()) {
                             let ok = |all: &[String], bad: &[String]| all.iter().filter(|a| !bad.contains(a)).cloned().collect::<Vec<_>>();
+                            let (inv_a, inv_m, tmp_a, tmp_m) = if r.transient { (vec![], vec![], r.bad_acks.clone(), r.bad_modacks.clone()) } else { (r.bad_acks.clone(), r.bad_modacks.clone(), vec![], vec![]) };
                             let resp = StreamingPullResponse {
-                                acknowledge_confirmation: (!acks.is_empty()).then(|| AcknowledgeConfirmation { ack_ids: ok(&acks, &bad_a), invalid_ack_ids: bad_a.clone(), ..Default::default() }),
-                                modify_ack_deadline_confirmation: (!mod_ids.is_empty()).then(|| ModifyAckDeadlineConfirmation { ack_ids: ok(&mod_ids, &bad_m), invalid_ack_ids: bad_m.clone(), ..Default::default() }),
+                                acknowledge_confirmation: (!acks.is_empty()).then(|| AcknowledgeConfirmation { ack_ids: ok(&acks, &r.bad_acks), invalid_ack_ids: inv_a, temporary_failed_ack_ids: tmp_a, ..Default::default() }),
+                                modify_ack_deadline_confirmation: (!mod_ids.is_empty()).then(|| ModifyAckDeadlineConfirmation { ack_ids: ok(&mod_ids, &r.bad_modacks), invalid_ack_ids: inv_m, temporary_failed_ack_ids: tmp_m }),
                                 subscription_properties: Some(props),
                                 ..Default::default()
                             };
@@ -570,14 +637,19 @@ impl Subscriber for Svc {
                 if ctx.state.gone() { break }
                 let bell = crate::bell().notified();
                 let room = max_out - store::outstanding(&ctx, &s.name).await.unwrap_or(0);
-                if room > 0 {
+                // max_outstanding_bytes: data out may not pass it (one message always goes when none is out).
+                let room_bytes = if max_bytes > 0 { max_bytes - store::outstanding_bytes(&ctx, &s.name).await.unwrap_or(0) } else { 0 };
+                let byte_room = max_bytes == 0 || room_bytes > 0;
+                if room > 0 && byte_room {
                     // The subscription may be deleted or detached while the stream is open.
                     let cur = match store::sub(&ctx, &s.name).await {
                         Ok(Some(c)) if !c.pb.detached => c,
                         Ok(Some(_)) => { let _ = tx.send(Err(Status::failed_precondition(format!("Subscription {} is detached.", s.name)))).await; break }
                         _ => { let _ = tx.send(Err(not_found(&s.name))).await; break }
                     };
-                    let got = store::pull(&ctx, &cur, room.min(500) as usize, secs).await.unwrap_or_default();
+                    let out_now = store::outstanding(&ctx, &s.name).await.unwrap_or(0);
+                    let limit = if max_bytes > 0 && out_now > 0 { -room_bytes } else { max_bytes };
+                    let got = crate::deliver::take(&ctx, &cur, room.min(500) as usize, secs, limit).await.unwrap_or_default();
                     if !got.is_empty() {
                         let resp = StreamingPullResponse { received_messages: got.into_iter().map(|g| received(&cur, g)).collect(), subscription_properties: Some(props), ..Default::default() };
                         if tx.send(Ok(resp)).await.is_err() { break }

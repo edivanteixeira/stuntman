@@ -1,8 +1,10 @@
 //! What Pub/Sub delivers by itself: push subscriptions (an HTTP POST per message, wrapped or not,
 //! with an OIDC token when asked; 2xx acks, anything else retries with backoff), BigQuery
 //! subscriptions (a row per message in a table Stuntman keeps) and Cloud Storage subscriptions
-//! (batched text or Avro files, in Stuntman's storage when an account has that bucket). One loop
-//! for every environment, woken by the bell.
+//! (batched text or Avro files, in Stuntman's storage when an account has that bucket), Bigtable
+//! subscriptions (a row per message in a table Stuntman keeps); subscription message transforms;
+//! idle subscriptions expiring on the environment clock; topics ingesting from their source. One
+//! loop for every environment, woken by the bell.
 
 use std::time::Duration;
 
@@ -30,16 +32,64 @@ pub fn run(envs: Envs) {
 }
 
 pub async fn tick(ctx: &Ctx) -> Result<(), ApiError> {
+    let now = stuntman_core::clock::now(ctx);
     for s in store::subs(ctx, "", None).await? {
+        // Expiration policy: idle (no pull, ack or successful delivery) longer than the ttl.
+        if let Some(ttl) = s.ttl_ms() {
+            if now - store::last_seen(ctx, &s.name).await? > ttl {
+                store::delete_sub(ctx, &s.name).await?;
+                continue;
+            }
+        }
         if s.pb.detached { continue }
         match s.kind() {
             "push" => push(ctx, &s).await?,
             "bigquery" => bigquery(ctx, &s).await?,
             "cloud_storage" => storage(ctx, &s).await?,
+            "bigtable" => bigtable(ctx, &s).await?,
             _ => {}
         }
     }
+    for t in store::topics(ctx, "").await? {
+        if t.ingestion_data_source_settings.is_some() {
+            if let Err(e) = crate::ingest::poll(ctx, &t).await { eprintln!("Pub/Sub ingestion into {}: {}", t.name, e.message) }
+        }
+    }
     Ok(())
+}
+
+/// Messages for a subscriber: pulled, then through the subscription's JavaScript transforms (null:
+/// acked without delivery; an error: nacked, back after the backoff). Marks the subscription active.
+pub async fn take(ctx: &Ctx, s: &Sub, max: usize, secs: i32, max_bytes: i64) -> Result<Vec<Got>, ApiError> {
+    let got = store::pull_bytes(ctx, s, max, secs, max_bytes).await?;
+    let udfs = crate::udf::udfs(&s.pb.message_transforms);
+    if udfs.is_empty() || got.is_empty() { return Ok(got) }
+    let mut out = vec![];
+    for mut g in got {
+        let (u, d, a, id, at, key) = (udfs.clone(), g.msg.data.clone(), g.msg.attributes.clone(), g.msg.id.to_string(), rfc3339(g.msg.published), g.msg.ordering_key.clone());
+        let r = tokio::task::spawn_blocking(move || crate::udf::chain(&u, d, a, &crate::udf::Meta { message_id: &id, publish_time: &at, ordering_key: &key }))
+            .await.map_err(|e| ApiError::internal(e.to_string()))?;
+        match r {
+            Ok(crate::udf::Out::Keep(d, a)) => { g.msg.data = d; g.msg.attributes = a; out.push(g) }
+            Ok(crate::udf::Out::Drop) => { store::ack(ctx, &s.name, vec![g.ack_id], false, false).await?; }
+            Err(e) => {
+                store::set_error(ctx, &s.name, &format!("message transform failed on {}: {e}", g.msg.id)).await?;
+                store::retry_after(ctx, &s.name, &g.ack_id, backoff_ms(s, g.attempt).max(1000)).await?;
+            }
+        }
+    }
+    Ok(out)
+}
+
+async fn failed(ctx: &Ctx, s: &Sub, g: &Got, e: &str) -> Result<(), ApiError> {
+    store::set_error(ctx, &s.name, e).await?;
+    store::retry_after(ctx, &s.name, &g.ack_id, backoff_ms(s, g.attempt)).await
+}
+
+async fn written(ctx: &Ctx, s: &Sub, ids: Vec<String>) -> Result<(), ApiError> {
+    store::ack(ctx, &s.name, ids, dup(ctx), false).await?;
+    store::seen(ctx, &s.name).await?;
+    store::set_error(ctx, &s.name, "").await
 }
 
 fn dup(ctx: &Ctx) -> bool {
@@ -117,7 +167,7 @@ async fn oidc(ctx: &Ctx, o: &push_config::OidcToken, endpoint: &str) -> String {
 async fn push(ctx: &Ctx, s: &Sub) -> Result<(), ApiError> {
     let room = 100 - store::outstanding(ctx, &s.name).await?;
     if room <= 0 { return Ok(()) }
-    for g in store::pull(ctx, s, room.min(20) as usize, s.ack_deadline).await? {
+    for g in take(ctx, s, room.min(20) as usize, s.ack_deadline, 0).await? {
         let (ctx, s) = (ctx.clone(), s.clone());
         tokio::spawn(async move { push_one(&ctx, &s, g).await });
     }
@@ -147,9 +197,9 @@ async fn push_one(ctx: &Ctx, s: &Sub, g: Got) {
     let status = match req.send().await { Ok(r) => r.status().as_u16(), Err(_) => 0 };
     ctx.live.send("pubsub.push", &s.name, &status.to_string());
     if (200..300).contains(&status) {
-        let _ = store::ack(ctx, &s.name, vec![g.ack_id], dup(ctx), false).await;
+        let _ = written(ctx, s, vec![g.ack_id]).await;
     } else {
-        let _ = store::retry_after(ctx, &s.name, &g.ack_id, backoff_ms(s, g.attempt)).await;
+        let _ = failed(ctx, s, &g, &format!("push to {} answered {}", pc.push_endpoint, if status == 0 { "nothing".to_string() } else { status.to_string() })).await;
     }
 }
 
@@ -168,33 +218,115 @@ fn data_text(d: &[u8]) -> Value {
     match std::str::from_utf8(d) { Ok(t) => json!(t), Err(_) => json!(B64.encode(d)) }
 }
 
+/// A row against a table schema ([{name, type, mode}]): extra fields dropped (drop_unknown_fields) or
+/// refused, required columns present, each value of its column's type.
+pub fn fit_row(row: &mut Map<String, Value>, cols: &[Value], drop_unknown: bool) -> Result<(), String> {
+    let col = |n: &str| cols.iter().find(|c| c["name"].as_str().is_some_and(|x| x.eq_ignore_ascii_case(n)));
+    let extra: Vec<String> = row.keys().filter(|k| col(k).is_none()).cloned().collect();
+    for k in extra {
+        if drop_unknown { row.remove(&k); } else { return Err(format!("field {k} is not a column of the table (set drop_unknown_fields to drop it)")) }
+    }
+    for c in cols {
+        let n = c["name"].as_str().unwrap_or("");
+        let mode = c["mode"].as_str().unwrap_or("NULLABLE").to_uppercase();
+        let v = row.get(n).cloned().unwrap_or(Value::Null);
+        if v.is_null() {
+            if mode == "REQUIRED" { return Err(format!("required column {n} is missing")) }
+            continue;
+        }
+        let vals = if mode == "REPEATED" { v.as_array().cloned().ok_or_else(|| format!("column {n} is REPEATED: expected an array"))? } else { vec![v] };
+        let ty = c["type"].as_str().unwrap_or("STRING").to_uppercase();
+        for x in &vals {
+            let ok = match ty.as_str() {
+                "STRING" | "BYTES" | "GEOGRAPHY" => x.is_string(),
+                "INTEGER" | "INT64" => x.as_i64().is_some() || x.as_str().is_some_and(|t| t.parse::<i64>().is_ok()),
+                "FLOAT" | "FLOAT64" | "NUMERIC" | "BIGNUMERIC" => x.is_number() || x.as_str().is_some_and(|t| t.parse::<f64>().is_ok()),
+                "BOOLEAN" | "BOOL" => x.is_boolean(),
+                "TIMESTAMP" | "DATE" | "DATETIME" | "TIME" => x.is_string() || x.is_number(),
+                "RECORD" | "STRUCT" => x.is_object(),
+                _ => true,
+            };
+            if !ok { return Err(format!("column {n} is {ty}: {x} does not fit")) }
+        }
+    }
+    Ok(())
+}
+
 async fn bigquery(ctx: &Ctx, s: &Sub) -> Result<(), ApiError> {
-    let got = store::pull(ctx, s, 100, 60).await?;
+    let got = take(ctx, s, 100, 60, 0).await?;
     if got.is_empty() { return Ok(()) }
     let bq = s.pb.bigquery_config.clone().unwrap_or_default();
     let topic = if bq.use_topic_schema { store::topic(ctx, &s.topic).await? } else { None };
+    let table = store::bq_table(ctx, &bq.table).await?;
+    let cols = table.as_ref().and_then(|v| v.as_array().cloned());
     for g in got {
         let mut row = Map::new();
-        if bq.use_topic_schema {
-            let r = match &topic { Some(t) => by_schema(ctx, t, &g).await, None => Err("the topic was deleted".to_string()) };
-            match r {
-                Ok(Value::Object(o)) => row.extend(o),
-                Ok(v) => { row.insert("data".into(), v); }
-                Err(_) => { store::retry_after(ctx, &s.name, &g.ack_id, backoff_ms(s, g.attempt).max(10_000)).await?; continue }
-            }
+        let fields: Result<Map<String, Value>, String> = if bq.use_topic_schema {
+            match &topic { Some(t) => by_schema(ctx, t, &g).await.map(|v| match v { Value::Object(o) => o, v => Map::from_iter([("data".to_string(), v)]) }), None => Err("the topic was deleted".to_string()) }
+        } else if bq.use_table_schema {
+            if cols.is_none() { Err(format!("use_table_schema: table {} has no schema (set_pubsub_bigquery_table)", bq.table)) }
+            else { serde_json::from_slice::<Value>(&g.msg.data).ok().and_then(|v| v.as_object().cloned()).ok_or_else(|| "use_table_schema: the data is not a JSON object".to_string()) }
         } else {
-            row.insert("data".into(), data_text(&g.msg.data));
-        }
+            Ok(Map::from_iter([("data".to_string(), data_text(&g.msg.data))]))
+        };
+        let mut fields = match fields { Ok(f) => f, Err(e) => { failed(ctx, s, &g, &e).await?; continue } };
+        row.append(&mut fields);
         if bq.write_metadata {
             row.insert("subscription_name".into(), json!(s.name));
             row.insert("message_id".into(), json!(g.msg.id.to_string()));
             row.insert("publish_time".into(), json!(rfc3339(g.msg.published)));
             row.insert("attributes".into(), json!(json!(g.msg.attributes).to_string()));
         }
+        if let Some(c) = &cols {
+            if let Err(e) = fit_row(&mut row, c, bq.drop_unknown_fields && (bq.use_table_schema || bq.use_topic_schema)) {
+                failed(ctx, s, &g, &format!("BigQuery {}: {e}", bq.table)).await?;
+                continue;
+            }
+        }
         store::add_bq_row(ctx, &s.name, &bq.table, &Value::Object(row)).await?;
-        store::ack(ctx, &s.name, vec![g.ack_id], dup(ctx), false).await?;
+        written(ctx, s, vec![g.ack_id]).await?;
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------- Bigtable
+
+/// Pub/Sub's row key: subscription#salt#message_id (the salt spreads keys; here two hex digits of
+/// the message id's hash), or the delimited key from JSON fields of the message.
+async fn bigtable(ctx: &Ctx, s: &Sub) -> Result<(), ApiError> {
+    use crate::v1::bigtable_config::{column_family_mapping::KeyDefinition, MessageMapping};
+    let got = take(ctx, s, 100, 60, 0).await?;
+    let bt = s.pb.bigtable_config.clone().unwrap_or_default();
+    for g in got {
+        let id = g.msg.id.to_string();
+        let key = match &bt.message_mapping {
+            Some(MessageMapping::ColumnFamilyMapping(m)) => match &m.key_definition {
+                Some(KeyDefinition::DelimitedKey(k)) => {
+                    let v: Value = serde_json::from_slice(&g.msg.data).unwrap_or(Value::Null);
+                    let parts: Option<Vec<String>> = k.key_fields.iter().map(|f| v.get(f).map(|x| x.as_str().map(String::from).unwrap_or(x.to_string()))).collect();
+                    match parts {
+                        Some(p) => p.join(&String::from_utf8_lossy(&k.delimiter)),
+                        // A key field missing: the message stays in the backlog.
+                        None => { failed(ctx, s, &g, &format!("row key fields {:?} are not all in message {id}", k.key_fields)).await?; continue }
+                    }
+                }
+                _ => format!("{}#{:02x}#{id}", s.name, salt(&id)),
+            },
+            None => format!("{}#{:02x}#{id}", s.name, salt(&id)),
+        };
+        let mut cells = json!({"data": {"": data_text(&g.msg.data)}});
+        if bt.write_metadata {
+            cells["pubsub_metadata"] = json!({"subscription_name": s.name, "message_id": id, "publish_time": rfc3339(g.msg.published),
+                "attributes": json!(g.msg.attributes).to_string(), "ordering_key": g.msg.ordering_key});
+        }
+        store::add_bt_row(ctx, &s.name, &bt.table, &key, &cells).await?;
+        written(ctx, s, vec![g.ack_id]).await?;
+    }
+    Ok(())
+}
+
+fn salt(id: &str) -> u8 {
+    id.bytes().fold(0u8, |h, b| h.wrapping_mul(31).wrapping_add(b))
 }
 
 // ---------------------------------------------------------------- Cloud Storage
@@ -224,13 +356,13 @@ fn abytes(w: &mut Vec<u8>, b: &[u8]) {
 
 /// An Avro object container file of the messages: data, plus subscription_name, message_id,
 /// publish_time and attributes with write_metadata.
-pub fn avro_file(s: &Sub, got: &[Got], meta: bool) -> Vec<u8> {
+pub fn avro_file(s: &Sub, got: &[Got], meta: bool, typed: Option<&(Value, Vec<Vec<u8>>)>) -> Vec<u8> {
     let mut fields = vec![];
     if meta {
         fields.extend([json!({"name": "subscription_name", "type": "string"}), json!({"name": "message_id", "type": "string"}),
             json!({"name": "publish_time", "type": {"type": "long", "logicalType": "timestamp-micros"}}), json!({"name": "attributes", "type": {"type": "map", "values": "string"}})]);
     }
-    fields.push(json!({"name": "data", "type": "bytes"}));
+    fields.push(json!({"name": "data", "type": typed.map(|t| t.0.clone()).unwrap_or(json!("bytes"))}));
     let schema = json!({"type": "record", "name": "PubsubMessage", "fields": fields}).to_string();
     let sync: [u8; 16] = rand::random();
     let mut w = b"Obj\x01".to_vec();
@@ -242,7 +374,7 @@ pub fn avro_file(s: &Sub, got: &[Got], meta: bool) -> Vec<u8> {
     zz(&mut w, 0);
     w.extend(sync);
     let mut block = vec![];
-    for g in got {
+    for (i, g) in got.iter().enumerate() {
         if meta {
             abytes(&mut block, s.name.as_bytes());
             abytes(&mut block, g.msg.id.to_string().as_bytes());
@@ -253,7 +385,7 @@ pub fn avro_file(s: &Sub, got: &[Got], meta: bool) -> Vec<u8> {
             }
             zz(&mut block, 0);
         }
-        abytes(&mut block, &g.msg.data);
+        match typed { Some((_, recs)) => block.extend(&recs[i]), None => abytes(&mut block, &g.msg.data) }
     }
     zz(&mut w, got.len() as i64);
     zz(&mut w, block.len() as i64);
@@ -269,18 +401,25 @@ async fn storage(ctx: &Ctx, s: &Sub) -> Result<(), ApiError> {
     let max_dur = dur_ms(&c.max_duration).unwrap_or(300_000);
     let due = (c.max_messages > 0 && n >= c.max_messages) || (c.max_bytes > 0 && bytes >= c.max_bytes) || oldest.is_some_and(|o| util::now_ms() - o >= max_dur);
     if !due { return Ok(()) }
-    let take = if c.max_messages > 0 { c.max_messages.min(n) } else { n.min(10_000) } as usize;
-    let mut got = store::pull(ctx, s, take, 60).await?;
+    let n_take = if c.max_messages > 0 { c.max_messages.min(n) } else { n.min(10_000) } as usize;
+    let mut got = take(ctx, s, n_take, 60, 0).await?;
     if c.max_bytes > 0 {
         // A file stops at max_bytes; the rest waits for the next one.
         let (mut sum, mut keep) = (0i64, 0);
         for g in &got { if keep > 0 && sum + g.msg.data.len() as i64 > c.max_bytes { break } sum += g.msg.data.len() as i64; keep += 1; }
         let rest: Vec<(String, i32)> = got.split_off(keep).into_iter().map(|g| (g.ack_id, 0)).collect();
-        store::modack(ctx, &s.name, rest, false).await?;
+        store::modack(ctx, s, rest).await?;
     }
     if got.is_empty() { return Ok(()) }
+    let typed = match &c.output_format {
+        Some(cloud_storage_config::OutputFormat::AvroConfig(a)) if a.use_topic_schema => match typed_records(ctx, s, &mut got).await {
+            Ok(t) => t,
+            Err(e) => { for g in &got { failed(ctx, s, g, &e).await?; } return Ok(()) }
+        },
+        _ => None,
+    };
     let (data, format, ctype) = match &c.output_format {
-        Some(cloud_storage_config::OutputFormat::AvroConfig(a)) => (avro_file(s, &got, a.write_metadata), "avro", "application/octet-stream"),
+        Some(cloud_storage_config::OutputFormat::AvroConfig(a)) => (avro_file(s, &got, a.write_metadata, typed.as_ref()), "avro", "application/octet-stream"),
         _ => (got.iter().flat_map(|g| g.msg.data.iter().copied().chain([b'\n'])).collect::<Vec<u8>>(), "text", "text/plain"),
     };
     let object = format!("{}{}_{}{}", c.filename_prefix, when(&c.filename_datetime_format, util::now_ms()), util::uuid(), c.filename_suffix);
@@ -294,8 +433,30 @@ async fn storage(ctx: &Ctx, s: &Sub) -> Result<(), ApiError> {
         }
     }
     store::add_file(ctx, &s.name, &c.bucket, &object, data, got.len() as i64, format, &stored).await?;
-    store::ack(ctx, &s.name, got.into_iter().map(|g| g.ack_id).collect(), false, false).await?;
-    Ok(())
+    written(ctx, s, got.into_iter().map(|g| g.ack_id).collect()).await
+}
+
+/// use_topic_schema: the topic's Avro schema (the revision of the first message; messages of another
+/// revision wait for the next file) and each message as an Avro record of it.
+async fn typed_records(ctx: &Ctx, s: &Sub, got: &mut Vec<Got>) -> Result<Option<(Value, Vec<Vec<u8>>)>, String> {
+    let t = store::topic(ctx, &s.topic).await.map_err(|e| e.message)?.ok_or("the topic was deleted")?;
+    let ss = t.schema_settings.clone().filter(|x| !x.schema.is_empty()).ok_or("use_topic_schema: the topic has no schema")?;
+    let revs = store::revs(ctx, &ss.schema).await.map_err(|e| e.message)?;
+    let rev_of = |g: &Got| g.msg.attributes.get("googclient_schemarevisionid").cloned().or_else(|| revs.first().map(|r| r.revision.clone())).unwrap_or_default();
+    let first = rev_of(&got[0]);
+    let keep = got.iter().take_while(|g| rev_of(g) == first).count();
+    let rest: Vec<(String, i32)> = got.split_off(keep).into_iter().map(|g| (g.ack_id, 0)).collect();
+    let r = revs.iter().find(|r| r.revision == first).ok_or("the message's schema revision was deleted")?;
+    if r.kind != schema::AVRO { return Err("use_topic_schema in Avro files needs an Avro topic schema".into()) }
+    let def: Value = serde_json::from_str(&r.definition).map_err(|e| e.to_string())?;
+    let enc = if ss.encoding == 0 { schema::JSON } else { ss.encoding };
+    let mut recs = vec![];
+    for g in got.iter() {
+        let v = schema::validate(r.kind, &r.definition, enc, &g.msg.data)?;
+        recs.push(stuntman_streams::avro::encode(&def, &v)?);
+    }
+    let _ = store::modack(ctx, s, rest).await;
+    Ok(Some((def, recs)))
 }
 
 #[cfg(test)]

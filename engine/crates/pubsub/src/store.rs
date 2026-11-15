@@ -32,6 +32,11 @@ CREATE TABLE IF NOT EXISTS pubsub_snapshots(name TEXT PRIMARY KEY, topic TEXT NO
 CREATE TABLE IF NOT EXISTS pubsub_bq_rows(id INTEGER PRIMARY KEY AUTOINCREMENT, sub TEXT NOT NULL, tbl TEXT NOT NULL, row TEXT NOT NULL, at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS pubsub_gcs_files(id INTEGER PRIMARY KEY AUTOINCREMENT, sub TEXT NOT NULL, bucket TEXT NOT NULL, object TEXT NOT NULL, data BLOB NOT NULL,
   messages INTEGER NOT NULL, format TEXT NOT NULL, stored TEXT NOT NULL DEFAULT '', at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS pubsub_bt_rows(id INTEGER PRIMARY KEY AUTOINCREMENT, sub TEXT NOT NULL, tbl TEXT NOT NULL, row_key TEXT NOT NULL, cells TEXT NOT NULL, at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS pubsub_bq_tables(tbl TEXT PRIMARY KEY, schema TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS pubsub_sub_seen(name TEXT PRIMARY KEY, at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS pubsub_sub_errors(name TEXT PRIMARY KEY, error TEXT NOT NULL, at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS pubsub_ingest(topic TEXT NOT NULL, k TEXT NOT NULL, v INTEGER NOT NULL, PRIMARY KEY(topic, k));
 ";
 
 /// What a subscription's topic becomes when the topic is deleted (as Pub/Sub does).
@@ -79,7 +84,7 @@ impl Sub {
 
     /// pull | push | bigquery | cloud_storage
     pub fn kind(&self) -> &'static str {
-        if self.pb.bigquery_config.is_some() { "bigquery" } else if self.pb.cloud_storage_config.is_some() { "cloud_storage" } else if self.pb.push_config.is_some() { "push" } else { "pull" }
+        if self.pb.bigquery_config.is_some() { "bigquery" } else if self.pb.bigtable_config.is_some() { "bigtable" } else if self.pb.cloud_storage_config.is_some() { "cloud_storage" } else if self.pb.push_config.is_some() { "push" } else { "pull" }
     }
 
     /// How long unacked (and, retained, acked) messages stay: 7 days unless set.
@@ -89,6 +94,23 @@ impl Sub {
 
     pub fn exactly_once(&self) -> bool {
         self.pb.enable_exactly_once_delivery
+    }
+
+    /// How long a message waits before it comes again after a nack, an expired deadline or a failed
+    /// push/write: the retry policy's backoff (minimum doubling to maximum), else none for pull and
+    /// Pub/Sub's push backoff (100 ms doubling to 60 s) for the rest.
+    pub fn backoff_ms(&self, attempt: i32) -> i64 {
+        let (lo, hi) = match &self.pb.retry_policy {
+            Some(r) => (dur_ms(&r.minimum_backoff).unwrap_or(10_000), dur_ms(&r.maximum_backoff).unwrap_or(600_000)),
+            None if self.kind() == "pull" => return 0,
+            None => (100, 60_000),
+        };
+        lo.saturating_mul(1 << (attempt - 1).clamp(0, 20)).min(hi)
+    }
+
+    /// Idle time after which the subscription is deleted (None: never). Unset policy: 31 days.
+    pub fn ttl_ms(&self) -> Option<i64> {
+        match &self.pb.expiration_policy { None => Some(31 * DAY_MS), Some(p) => dur_ms(&p.ttl) }
     }
 }
 
@@ -283,6 +305,13 @@ pub async fn publish(ctx: &Ctx, topic: &str, msgs: Vec<(Vec<u8>, Labels, String)
 /// the retention window. With message ordering, a key with a message still out waits. A message
 /// delivered max_attempts times already goes to the dead-letter topic instead.
 pub async fn pull(ctx: &Ctx, sub: &Sub, max: usize, secs: i32) -> Result<Vec<Got>, ApiError> {
+    pull_bytes(ctx, sub, max, secs, 0).await
+}
+
+/// pull, also stopping before `max_bytes` of data (0: no limit; at least one message goes; negative:
+/// nothing past -max_bytes). A
+/// message whose retry backoff has not passed waits.
+pub async fn pull_bytes(ctx: &Ctx, sub: &Sub, max: usize, secs: i32, max_bytes: i64) -> Result<Vec<Got>, ApiError> {
     let s = sub.clone();
     let now = util::now_ms();
     let cutoff = now - sub.retention_ms();
@@ -298,15 +327,20 @@ pub async fn pull(ctx: &Ctx, sub: &Sub, max: usize, secs: i32) -> Result<Vec<Got
             } else {
                 HashSet::new()
             };
-            let mut st = tx.prepare("SELECT d.msg, d.attempts, m.data, m.attributes, m.ordering_key, m.published FROM pubsub_deliveries d JOIN pubsub_messages m ON m.id=d.msg
+            let mut st = tx.prepare("SELECT d.msg, d.attempts, m.data, m.attributes, m.ordering_key, m.published, d.state, d.deadline FROM pubsub_deliveries d JOIN pubsub_messages m ON m.id=d.msg
                 WHERE d.sub=?1 AND (d.state='pending' OR (d.state='outstanding' AND d.deadline<?2)) AND m.published>=?3 ORDER BY d.msg LIMIT 1000")?;
-            let rows = st.query_map(params![s.name, now, cutoff], |r| Ok((Msg { id: r.get(0)?, data: r.get(2)?, attributes: labels(r.get(3)?), ordering_key: r.get(4)?, published: r.get(5)? }, r.get::<_, i32>(1)?)))?;
+            let rows = st.query_map(params![s.name, now, cutoff], |r| Ok((Msg { id: r.get(0)?, data: r.get(2)?, attributes: labels(r.get(3)?), ordering_key: r.get(4)?, published: r.get(5)? }, r.get::<_, i32>(1)?,
+                r.get::<_, String>(6)?, r.get::<_, i64>(7)?)))?;
             let mut seen_keys = HashSet::new();
+            let mut bytes = 0i64;
             for r in rows {
-                let (m, attempts) = r?;
+                let (m, attempts, state, deadline) = r?;
                 if got.len() >= max { break }
+                if max_bytes != 0 && (max_bytes < 0 || !got.is_empty()) && bytes + m.data.len() as i64 > max_bytes.abs() { break }
+                if s.kind() == "pull" && state == "outstanding" && attempts > 0 && deadline + s.backoff_ms(attempts) > now { continue }
                 if s.ordering && !m.ordering_key.is_empty() && (blocked.contains(&m.ordering_key) || (s.kind() == "push" && !seen_keys.insert(m.ordering_key.clone()))) { continue }
                 if s.max_attempts > 0 && attempts >= s.max_attempts { dead.push(m); continue }
+                bytes += m.data.len() as i64;
                 let ack_id = format!("{}-{}-{:08x}", m.id, attempts + 1, rand::thread_rng().gen::<u32>());
                 got.push(Got { msg: m, ack_id, attempt: attempts + 1 });
             }
@@ -376,9 +410,12 @@ pub async fn ack(ctx: &Ctx, sub: &str, ids: Vec<String>, duplicate: bool, strict
 
 /// Moves the ack deadline of outstanding messages; 0 hands them back now (a nack). Answers the ack
 /// ids that matched nothing out.
-pub async fn modack(ctx: &Ctx, sub: &str, ids: Vec<(String, i32)>, strict: bool) -> Result<Vec<String>, ApiError> {
+pub async fn modack(ctx: &Ctx, sub: &Sub, ids: Vec<(String, i32)>) -> Result<Vec<String>, ApiError> {
     if ids.is_empty() { return Ok(vec![]) }
-    let s = sub.to_string();
+    let (s, strict) = (sub.name.clone(), sub.exactly_once());
+    // With a retry policy a nack keeps the message out (no ack id) until its backoff passes.
+    let nack = if sub.pb.retry_policy.is_some() { "UPDATE pubsub_deliveries SET deadline=?4, ack_id='' WHERE sub=?1 AND ack_id=?2 AND state='outstanding' AND deadline>=?3" }
+        else { "UPDATE pubsub_deliveries SET state='pending', ack_id='' WHERE sub=?1 AND ack_id=?2 AND state='outstanding' AND deadline>=?3 AND ?4 IS NOT NULL" };
     let (nacked, bad) = ctx.db.call(move |cn| {
         let tx = cn.transaction()?;
         let now = util::now_ms();
@@ -386,7 +423,7 @@ pub async fn modack(ctx: &Ctx, sub: &str, ids: Vec<(String, i32)>, strict: bool)
         let (mut nacked, mut bad) = (false, vec![]);
         for (id, secs) in &ids {
             let k = if *secs <= 0 {
-                let k = tx.execute("UPDATE pubsub_deliveries SET state='pending', ack_id='' WHERE sub=?1 AND ack_id=?2 AND state='outstanding' AND deadline>=?3", params![s, id, floor])?;
+                let k = tx.execute(nack, params![s, id, floor, now])?;
                 nacked |= k > 0;
                 k
             } else {
@@ -397,7 +434,7 @@ pub async fn modack(ctx: &Ctx, sub: &str, ids: Vec<(String, i32)>, strict: bool)
         tx.commit()?;
         Ok((nacked, bad))
     }).await?;
-    if nacked { ctx.live.send("pubsub.deliveries", sub, "updated"); crate::ring(); }
+    if nacked { ctx.live.send("pubsub.deliveries", &sub.name, "updated"); crate::ring(); }
     Ok(bad)
 }
 
@@ -715,4 +752,104 @@ pub fn show(b: &[u8]) -> Value {
             Err(_) => json!({"format": "base64", "value": base64::engine::general_purpose::STANDARD.encode(b)}),
         },
     }
+}
+
+// ---------------------------------------------------------------- Bigtable rows, BigQuery tables, activity, errors, ingestion
+
+pub async fn add_bt_row(ctx: &Ctx, sub: &str, table: &str, key: &str, cells: &Value) -> Result<(), ApiError> {
+    let (s, t, k, c) = (sub.to_string(), table.to_string(), key.to_string(), cells.to_string());
+    ctx.db.call(move |cn| cn.execute("INSERT INTO pubsub_bt_rows(sub, tbl, row_key, cells, at) VALUES(?1,?2,?3,?4,?5)", params![s, t, k, c, util::now_ms()]).map(|_| ())).await?;
+    ctx.live.send("pubsub.bigtable", table, "created");
+    Ok(())
+}
+
+pub async fn bt_rows(ctx: &Ctx, table: Option<String>, sub: Option<String>, limit: i64) -> Result<Vec<Value>, ApiError> {
+    ctx.db.call(move |cn| {
+        let mut st = cn.prepare("SELECT sub, tbl, row_key, cells, at FROM pubsub_bt_rows WHERE (?1 IS NULL OR tbl=?1) AND (?2 IS NULL OR sub=?2) ORDER BY id DESC LIMIT ?3")?;
+        let v = st.query_map(params![table, sub, limit], |r| Ok(json!({"subscription": r.get::<_, String>(0)?, "table": r.get::<_, String>(1)?, "rowKey": r.get::<_, String>(2)?,
+            "cells": serde_json::from_str::<Value>(&r.get::<_, String>(3)?).unwrap_or(Value::Null), "writtenAt": r.get::<_, i64>(4)?})))?.filter_map(|x| x.ok()).collect();
+        Ok(v)
+    }).await
+}
+
+/// A BigQuery table's schema as set_pubsub_bigquery_table gave it: [{name, type, mode}].
+pub async fn set_bq_table(ctx: &Ctx, table: &str, schema: &Value) -> Result<(), ApiError> {
+    let (t, s) = (table.to_string(), schema.to_string());
+    ctx.db.call(move |cn| cn.execute("INSERT OR REPLACE INTO pubsub_bq_tables(tbl, schema) VALUES(?1,?2)", params![t, s]).map(|_| ())).await
+}
+
+pub async fn bq_table(ctx: &Ctx, table: &str) -> Result<Option<Value>, ApiError> {
+    let t = table.to_string();
+    Ok(ctx.db.call(move |cn| cn.query_row("SELECT schema FROM pubsub_bq_tables WHERE tbl=?1", [t], |r| r.get::<_, String>(0)).optional()).await?.and_then(|s| serde_json::from_str(&s).ok()))
+}
+
+pub async fn bq_tables(ctx: &Ctx) -> Result<Vec<(String, Value)>, ApiError> {
+    ctx.db.call(|cn| {
+        let mut st = cn.prepare("SELECT tbl, schema FROM pubsub_bq_tables ORDER BY tbl")?;
+        let v = st.query_map([], |r| Ok((r.get::<_, String>(0)?, serde_json::from_str(&r.get::<_, String>(1)?).unwrap_or(Value::Null))))?.filter_map(|x| x.ok()).collect();
+        Ok(v)
+    }).await
+}
+
+/// A subscriber was active (environment clock): what the expiration policy measures from.
+pub async fn seen(ctx: &Ctx, sub: &str) -> Result<(), ApiError> {
+    let (s, at) = (sub.to_string(), stuntman_core::clock::now(ctx));
+    ctx.db.call(move |cn| cn.execute("INSERT OR REPLACE INTO pubsub_sub_seen(name, at) VALUES(?1,?2)", params![s, at]).map(|_| ())).await
+}
+
+/// When a subscription was last active (environment clock); a subscription never seen counts from now.
+pub async fn last_seen(ctx: &Ctx, sub: &str) -> Result<i64, ApiError> {
+    let s = sub.to_string();
+    match ctx.db.call(move |cn| cn.query_row("SELECT at FROM pubsub_sub_seen WHERE name=?1", [s], |r| r.get::<_, i64>(0)).optional()).await? {
+        Some(t) => Ok(t),
+        None => { seen(ctx, sub).await?; Ok(stuntman_core::clock::now(ctx)) }
+    }
+}
+
+/// Why the last delivery of a push, BigQuery, Cloud Storage or Bigtable subscription failed; "" clears it.
+pub async fn set_error(ctx: &Ctx, sub: &str, e: &str) -> Result<(), ApiError> {
+    let (s, e2) = (sub.to_string(), e.to_string());
+    ctx.db.call(move |cn| if e2.is_empty() { cn.execute("DELETE FROM pubsub_sub_errors WHERE name=?1", [s]).map(|_| ()) }
+        else { cn.execute("INSERT OR REPLACE INTO pubsub_sub_errors(name, error, at) VALUES(?1,?2,?3)", params![s, e2, util::now_ms()]).map(|_| ()) }).await
+}
+
+pub async fn error_of(ctx: &Ctx, sub: &str) -> Result<Option<(String, i64)>, ApiError> {
+    let s = sub.to_string();
+    ctx.db.call(move |cn| cn.query_row("SELECT error, at FROM pubsub_sub_errors WHERE name=?1", [s], |r| Ok((r.get(0)?, r.get(1)?))).optional()).await
+}
+
+/// Ingestion progress of a topic: a Kafka partition's next offset, an object already read.
+pub async fn ingest_mark(ctx: &Ctx, topic: &str, k: &str) -> Result<Option<i64>, ApiError> {
+    let (t, k) = (topic.to_string(), k.to_string());
+    ctx.db.call(move |cn| cn.query_row("SELECT v FROM pubsub_ingest WHERE topic=?1 AND k=?2", params![t, k], |r| r.get(0)).optional()).await
+}
+
+pub async fn set_ingest_mark(ctx: &Ctx, topic: &str, k: &str, v: i64) -> Result<(), ApiError> {
+    let (t, k) = (topic.to_string(), k.to_string());
+    ctx.db.call(move |cn| cn.execute("INSERT OR REPLACE INTO pubsub_ingest(topic, k, v) VALUES(?1,?2,?3)", params![t, k, v]).map(|_| ())).await
+}
+
+/// Ids for messages a topic transform filtered out: Pub/Sub answers the publisher with an id but
+/// keeps nothing (the ids are taken from the same sequence, never reused).
+pub async fn reserve_ids(ctx: &Ctx, topic: &str, n: usize) -> Result<Vec<i64>, ApiError> {
+    if n == 0 { return Ok(vec![]) }
+    let t = topic.to_string();
+    ctx.db.call(move |cn| {
+        let tx = cn.transaction()?;
+        let mut ids = vec![];
+        for _ in 0..n {
+            tx.execute("INSERT INTO pubsub_messages(topic, data, published) VALUES(?1, x'', 0)", [&t])?;
+            ids.push(tx.last_insert_rowid());
+        }
+        tx.execute("DELETE FROM pubsub_messages WHERE topic=?1 AND published=0", [&t])?;
+        tx.commit()?;
+        Ok(ids)
+    }).await
+}
+
+/// Bytes of data out now in a subscription (StreamingPull's max_outstanding_bytes).
+pub async fn outstanding_bytes(ctx: &Ctx, sub: &str) -> Result<i64, ApiError> {
+    let s = sub.to_string();
+    ctx.db.call(move |cn| cn.query_row("SELECT COALESCE(SUM(LENGTH(m.data)),0) FROM pubsub_deliveries d JOIN pubsub_messages m ON m.id=d.msg WHERE d.sub=?1 AND d.state='outstanding' AND d.deadline>=?2 AND d.ack_id!=''",
+        params![s, util::now_ms()], |r| r.get(0))).await
 }

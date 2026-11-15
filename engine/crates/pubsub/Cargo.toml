@@ -21,6 +21,7 @@ futures.workspace = true
 # src/google.pubsub.v1.rs (no protoc at build time), like telemetry's opentelemetry-proto.
 prost = "0.13"
 prost-types = "0.13"
+rquickjs = { version = "0.9", default-features = false }
 tonic = { version = "0.13", default-features = false, features = ["transport", "codegen", "prost", "router", "server"] }
 
 [dev-dependencies]

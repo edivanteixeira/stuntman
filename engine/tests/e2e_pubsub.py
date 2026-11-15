@@ -6,8 +6,13 @@ the tools show. Then the rest of the API with the same clients: SchemaServiceCli
 Protocol Buffer schemas, revisions, ValidateMessage) and topics that validate what is published;
 snapshots and Seek; UpdateTopic and UpdateSubscription; filters; push subscriptions to a local HTTP
 receiver (wrapped and unwrapped, OIDC token, retry after a 500); BigQuery and Cloud Storage
-subscriptions (checked through the tools); exactly-once ack errors; DetachSubscription; paging. The
-.NET client (Google.Cloud.PubSub.V1) publishes too when dotnet is installed.
+subscriptions (checked through the tools); exactly-once ack errors; DetachSubscription; paging. And:
+Bigtable subscriptions; import topics (Amazon MSK read from Streams' Kafka, Cloud Storage read from
+a storage container, Kinesis fed by pubsub_ingest); JavaScript UDF transforms on topics and
+subscriptions; expiration on the environment clock; BigQuery table schemas with a dead-letter;
+typed Avro files; proto2 groups; retry-policy backoff on nacks; transient exactly-once ack failures
+the client retries; max_outstanding_bytes. The .NET client (Google.Cloud.PubSub.V1) publishes too
+when dotnet is installed.
 
     pip install google-cloud-pubsub fastavro cryptography
     cargo build -p stuntman && python3 tests/e2e_pubsub.py
@@ -139,6 +144,7 @@ def main():
         print("ok   tools: list_pubsub_topics, list_pubsub_messages, wait_for_pubsub_message")
 
         rest_of_the_api(s, pub, sub)
+        the_remaining_items(s, pub, sub)
 
         # .NET: PublisherClientBuilder with EmulatorDetection.EmulatorOrProduction.
         if shutil.which("dotnet"):
@@ -477,6 +483,244 @@ def rest_of_the_api(s, pub, sub):
     view = {x["name"]: x for t in s.call("GET", "/pubsub/topics")["topics"] for x in t["subscriptions"]}
     assert (view[push]["type"], view[bq]["type"], view[gcs]["type"], view[east]["detached"]) == ("push", "bigquery", "cloud_storage", True), view
     print("ok   DetachSubscription; list_pubsub_topics shows each subscription's type")
+
+
+UDF_TOPIC = """function redact(message, metadata) {
+  const d = JSON.parse(message.data);
+  if (d.status === "TEST") return null;
+  delete d.email;
+  message.data = JSON.stringify(d);
+  message.attributes["redacted"] = "true";
+  return message;
+}"""
+UDF_SUB = """function stamp(message, metadata) {
+  if (message.data.indexOf("BROKEN") >= 0) throw new Error("cannot read " + metadata.message_id);
+  message.attributes["seen_by"] = "stamp";
+  return message;
+}"""
+
+
+def the_remaining_items(s, pub, sub):
+    from google.api_core import exceptions as gx
+    from google.cloud.pubsub import SchemaServiceClient
+    from google.cloud.pubsub_v1 import types
+    from google.cloud.pubsub_v1.subscriber.exceptions import AcknowledgeStatus
+    from google.protobuf import duration_pb2
+    from google.pubsub_v1.types import Encoding, Schema
+    import fastavro, queue
+
+    plain = pubsub_v1_publisher()
+
+    def pull(name, n=10):
+        return sub.pull(request={"subscription": name, "max_messages": n, "return_immediately": True}, timeout=10).received_messages
+
+    def pull_ack(name, n=10):
+        got = pull(name, n)
+        if got:
+            sub.acknowledge(request={"subscription": name, "ack_ids": [m.ack_id for m in got]})
+        return got
+
+    def subs_view():
+        return {x["name"]: x for t in s.call("GET", "/pubsub/topics")["topics"] for x in t["subscriptions"]}
+
+    # ---- Bigtable subscriptions: default row key and a delimited key from JSON fields.
+    orders = f"{P}/topics/orders"
+    pub.create_topic(request={"name": orders})
+    bt, btk = f"{P}/subscriptions/orders-bigtable", f"{P}/subscriptions/orders-bigtable-keyed"
+    table = "projects/acme-stg/instances/ops/tables/orders"
+    sub.create_subscription(request={"name": bt, "topic": orders, "bigtable_config": {"table": table, "write_metadata": True}})
+    sub.create_subscription(request={"name": btk, "topic": orders, "bigtable_config": {"table": table + "-by-customer",
+        "column_family_mapping": {"delimited_key": {"key_fields": ["customer", "order"], "delimiter": b"#"}}}})
+    mid = plain.publish(orders, b'{"customer": "C-77", "order": "ORD-5001", "total": 18.5}', channel="web").result(10)
+    rows = wait(lambda: s.call("GET", f"/pubsub/bigtable?table={table}")["rows"], "a Bigtable row")
+    r = rows[0]
+    assert r["rowKey"].startswith(bt + "#") and r["rowKey"].endswith("#" + mid) and r["cells"]["data"][""].startswith('{"customer"'), r
+    assert r["cells"]["pubsub_metadata"]["message_id"] == mid and json.loads(r["cells"]["pubsub_metadata"]["attributes"]) == {"channel": "web"}, r
+    keyed = wait(lambda: s.call("GET", f"/pubsub/bigtable?table={table}-by-customer")["rows"], "a keyed Bigtable row")
+    assert keyed[0]["rowKey"] == "C-77#ORD-5001" and "pubsub_metadata" not in keyed[0]["cells"], keyed
+    assert subs_view()[bt]["type"] == "bigtable"
+    print("ok   Bigtable subscription: row key subscription#salt#id, data and pubsub_metadata families; delimited key")
+
+    # ---- Import topics: MSK from Streams' Kafka, Cloud Storage from a storage container, Kinesis fed by the tool.
+    for i in range(2):
+        s.call("POST", "/streams/topics/partner-orders/produce", {"key": f"C-{i}", "value": {"order": f"ORD-60{i}"}, "headers": {"source": "partner"}, "partition": 0})
+    msk = f"{P}/topics/orders-from-msk"
+    t = pub.create_topic(request={"name": msk, "ingestion_data_source_settings": {"aws_msk": {"cluster_arn": "arn:aws:kafka:us-east-1:111122223333:cluster/acme/1", "topic": "partner-orders",
+        "aws_role_arn": "arn:aws:iam::111122223333:role/pubsub", "gcp_service_account": "ingest@acme-stg.iam.gserviceaccount.com"}}})
+    assert t.ingestion_data_source_settings.aws_msk.state == 1, t
+    sub.create_subscription(request={"name": f"{msk}-app".replace("/topics/", "/subscriptions/"), "topic": msk})
+    got = wait(lambda: pull_ack(f"{msk}-app".replace("/topics/", "/subscriptions/")) or None, "MSK records ingested")
+    assert sorted(json.loads(m.message.data)["order"] for m in got) == ["ORD-600", "ORD-601"] and {m.message.ordering_key for m in got} == {"C-0", "C-1"} and got[0].message.attributes["source"] == "partner", got
+    s.call("POST", "/streams/topics/partner-orders/produce", {"key": "C-2", "value": {"order": "ORD-602"}, "partition": 0})
+    got = wait(lambda: pull_ack(f"{msk}-app".replace("/topics/", "/subscriptions/")) or None, "a later MSK record")
+    assert [json.loads(m.message.data)["order"] for m in got] == ["ORD-602"], got
+    gone = f"{P}/topics/orders-from-missing"
+    assert pub.create_topic(request={"name": gone, "ingestion_data_source_settings": {"confluent_cloud": {"bootstrap_server": "pkc-1.us-east-1.aws.confluent.cloud:9092", "cluster_id": "lkc-1", "topic": "nope", "identity_pool_id": "pool-1"}}}).ingestion_data_source_settings.confluent_cloud.state == 6
+    s.call("POST", "/services/s3/accounts", {"account": "acme-stg-inbound", "containers": ["acme-stg-inbound-files"]})
+    gcs_t = f"{P}/topics/orders-from-files"
+    pub.create_topic(request={"name": gcs_t, "ingestion_data_source_settings": {"cloud_storage": {"bucket": "acme-stg-inbound-files", "text_format": {"delimiter": "\n"}, "match_glob": "**.txt"}}})
+    sub.create_subscription(request={"name": f"{P}/subscriptions/orders-from-files-app", "topic": gcs_t})
+    s.call("PUT", "/storage/acme-stg-inbound/acme-stg-inbound-files/objects/daily/2026-11-15.txt", {"content": "ORD-7001 placed\nORD-7002 placed\n"})
+    s.call("PUT", "/storage/acme-stg-inbound/acme-stg-inbound-files/objects/daily/ignored.csv", {"content": "ORD-7003 placed\n"})
+    got = wait(lambda: pull_ack(f"{P}/subscriptions/orders-from-files-app") or None, "Cloud Storage lines ingested")
+    assert sorted(m.message.data for m in got) == [b"ORD-7001 placed", b"ORD-7002 placed"], got
+    kin = f"{P}/topics/orders-from-kinesis"
+    pub.create_topic(request={"name": kin, "ingestion_data_source_settings": {"aws_kinesis": {"stream_arn": "arn:aws:kinesis:us-east-1:111122223333:stream/orders",
+        "consumer_arn": "arn:aws:kinesis:us-east-1:111122223333:stream/orders/consumer/pubsub:1", "aws_role_arn": "arn:aws:iam::111122223333:role/pubsub", "gcp_service_account": "ingest@acme-stg.iam.gserviceaccount.com"}}})
+    sub.create_subscription(request={"name": f"{P}/subscriptions/orders-from-kinesis-app", "topic": kin})
+    r = s.call("POST", "/pubsub/topics/orders-from-kinesis/ingest", {"records": [{"data": {"order": "ORD-8001"}, "partition_key": "C-9"}]})
+    assert r["source"]["kind"] == "aws_kinesis" and r["source"]["state"] == "ACTIVE" and len(r["messageIds"]) == 1, r
+    m = pull_ack(f"{P}/subscriptions/orders-from-kinesis-app")[0].message
+    assert json.loads(m.data) == {"order": "ORD-8001"} and m.ordering_key == "C-9", m
+    view = {t["name"]: t for t in s.call("GET", "/pubsub/topics")["topics"]}
+    assert view[msk]["ingestion"]["state"] == "ACTIVE" and view[gcs_t]["ingestion"]["from"].startswith("gs://acme-stg-inbound-files"), view[msk]
+    print("ok   import topics: MSK from the Kafka topic (key → ordering key, headers), Cloud Storage lines (glob), Kinesis via pubsub_ingest; states")
+
+    # ---- JavaScript UDF transforms: on the topic (redact, drop TEST) and the subscription (stamp, fail).
+    udf_t = f"{P}/topics/orders-redacted"
+    try:
+        pub.create_topic(request={"name": udf_t, "message_transforms": [{"javascript_udf": {"function_name": "redact", "code": "function redact(m { return m }"}}]})
+        raise AssertionError("JavaScript that does not compile is refused")
+    except gx.InvalidArgument:
+        pass
+    pub.create_topic(request={"name": udf_t, "message_transforms": [{"javascript_udf": {"function_name": "redact", "code": UDF_TOPIC}}]})
+    udf_s = f"{P}/subscriptions/orders-redacted-app"
+    sub.create_subscription(request={"name": udf_s, "topic": udf_t, "message_transforms": [{"javascript_udf": {"function_name": "stamp", "code": UDF_SUB}}],
+                                     "retry_policy": {"minimum_backoff": duration_pb2.Duration(seconds=10), "maximum_backoff": duration_pb2.Duration(seconds=20)}})
+    ids = [plain.publish(udf_t, json.dumps(d).encode()).result(10) for d in ({"order": "ORD-9001", "email": "jane@example.com"}, {"order": "ORD-9002", "status": "TEST"}, {"order": "BROKEN"})]
+    assert all(ids) and len(set(ids)) == 3, "a filtered message still gets an id"
+    got = wait(lambda: pull_ack(udf_s) or None, "transformed messages")
+    assert [json.loads(m.message.data) for m in got] == [{"order": "ORD-9001"}] and dict(got[0].message.attributes) == {"redacted": "true", "seen_by": "stamp"}, got
+    err = wait(lambda: subs_view()[udf_s]["lastError"], "the subscription transform's error")
+    assert "cannot read" in err["error"], err
+    try:
+        pub.create_topic(request={"name": f"{P}/topics/ai", "message_transforms": [{"ai_inference": {"endpoint": "projects/acme-stg/locations/us-central1/endpoints/1"}}]})
+        raise AssertionError("AI inference is refused")
+    except gx.InvalidArgument:
+        pass
+    print("ok   transforms: topic UDF redacts and filters (id kept), subscription UDF stamps; a throwing UDF nacks with lastError")
+
+    # ---- Expiration on the environment clock.
+    idle = f"{P}/subscriptions/orders-idle"
+    sub.create_subscription(request={"name": idle, "topic": orders, "expiration_policy": {"ttl": duration_pb2.Duration(seconds=86400)}})
+    never = f"{P}/subscriptions/orders-forever"
+    sub.create_subscription(request={"name": never, "topic": orders, "expiration_policy": {}})
+    s.call("POST", "/clock/advance", {"by": "2d"})
+    try:
+        wait(lambda: idle not in subs_view(), "the idle subscription expiring")
+    finally:
+        s.call("POST", "/clock/advance", {"reset": True})
+    try:
+        sub.get_subscription(request={"subscription": idle})
+        raise AssertionError("expired")
+    except gx.NotFound:
+        pass
+    assert sub.get_subscription(request={"subscription": never}).name == never and subs_view()[never]["expiresAt"] is None
+    print("ok   expiration policy: idle a day past its ttl on the environment clock → deleted; ttl unset → never")
+
+    # ---- BigQuery table schema: use_table_schema, drop_unknown_fields; a row that does not fit is dead-lettered.
+    s.call("PUT", "/pubsub/bigquery/tables/acme-stg.sales.orders", {"schema": [{"name": "order", "type": "STRING", "mode": "REQUIRED"}, {"name": "total", "type": "FLOAT"}]})
+    dlq = f"{P}/topics/orders-bq-dlq"
+    pub.create_topic(request={"name": dlq})
+    bqs = f"{P}/subscriptions/orders-bq-table"
+    sub.create_subscription(request={"name": bqs, "topic": orders, "bigquery_config": {"table": "acme-stg.sales.orders", "use_table_schema": True, "drop_unknown_fields": True},
+        "dead_letter_policy": {"dead_letter_topic": dlq, "max_delivery_attempts": 5}, "retry_policy": {"minimum_backoff": duration_pb2.Duration(nanos=100_000_000), "maximum_backoff": duration_pb2.Duration(nanos=200_000_000)}})
+    plain.publish(orders, b'{"order": "ORD-5100", "total": 7.25, "coupon": "FALL"}').result(10)
+    plain.publish(orders, b'{"total": "a lot"}').result(10)
+    rows = wait(lambda: s.call("GET", "/pubsub/bigquery?table=acme-stg.sales.orders")["rows"], "the fitting row")
+    assert [x["row"] for x in rows] == [{"order": "ORD-5100", "total": 7.25}], rows
+    dead = wait(lambda: s.call("GET", "/pubsub/messages?topic=orders-bq-dlq")["messages"], "the misfit row dead-lettered", 30)
+    assert dead[0]["data"]["value"] == {"total": "a lot"} and "order" in subs_view()[bqs]["lastError"]["error"], dead
+    print("ok   BigQuery table schema: columns mapped, unknown dropped, a misfit retried then dead-lettered")
+
+    # ---- Cloud Storage Avro files with use_topic_schema: typed records.
+    typed = f"{P}/topics/shipments-typed"
+    sub.create_subscription(request={"name": f"{P}/subscriptions/shipments-typed-avro", "topic": typed, "cloud_storage_config": {"bucket": "acme-stg-typed-archive",
+        "max_messages": 1, "avro_config": {"use_topic_schema": True, "write_metadata": True}}})
+    plain.publish(typed, json.dumps({"shipment": "SHP-3010", "status": "CREATED", "weight_kg": 2.0}).encode()).result(10)
+    f = wait(lambda: s.call("GET", "/pubsub/storage?bucket=acme-stg-typed-archive")["files"], "a typed Avro file")[0]
+    rec = list(fastavro.reader(io.BytesIO(base64.b64decode(f["content"]))))[0]
+    assert rec["data"]["shipment"] == "SHP-3010" and rec["data"]["status"] == "CREATED" and rec["data"]["weight_kg"] == 2.0 and rec["message_id"], rec
+    print("ok   Cloud Storage Avro with use_topic_schema: data is a typed record (read by fastavro)")
+
+    # ---- Proto2: groups and required fields; unknown fields accepted.
+    sc = SchemaServiceClient()
+    p2 = 'syntax = "proto2";\nmessage Manifest {\n  required string shipment = 1;\n  repeated group Stop = 2 { required string city = 3; optional int32 parcels = 4; }\n}'
+    sc.create_schema(request={"parent": P, "schema_id": "manifest-proto2", "schema": {"type_": Schema.Type.PROTOCOL_BUFFER, "definition": p2}})
+    ok = b"\x0a\x05SHP-9\x13\x1a\x0bSpringfield\x20\x02\x14\x48\x07"
+    sc.validate_message(request={"parent": P, "name": f"{P}/schemas/manifest-proto2", "message": ok, "encoding": Encoding.BINARY})
+    try:
+        sc.validate_message(request={"parent": P, "name": f"{P}/schemas/manifest-proto2", "message": b"\x13\x1a\x01x\x14", "encoding": Encoding.BINARY})
+        raise AssertionError("required shipment is missing")
+    except gx.InvalidArgument:
+        pass
+    print("ok   proto2: a repeated group and an unknown field accepted; a missing required field refused")
+
+    # ---- Retry policy paces nacked pull messages.
+    paced = f"{P}/subscriptions/orders-paced"
+    sub.create_subscription(request={"name": paced, "topic": orders, "retry_policy": {"minimum_backoff": duration_pb2.Duration(seconds=2), "maximum_backoff": duration_pb2.Duration(seconds=4)}})
+    plain.publish(orders, b'{"order": "ORD-5200"}').result(10)
+    m = pull(paced)[0]
+    sub.modify_ack_deadline(request={"subscription": paced, "ack_ids": [m.ack_id], "ack_deadline_seconds": 0})
+    t0 = time.time()
+    assert not pull(paced), "the nack waits its minimum backoff"
+    again = wait(lambda: pull(paced), "the redelivery after the backoff", 10)
+    assert again[0].message.message_id == m.message.message_id and time.time() - t0 >= 1.8, time.time() - t0
+    sub.acknowledge(request={"subscription": paced, "ack_ids": [again[0].ack_id]})
+    print(f"ok   retry policy: a nacked message came back after {time.time() - t0:.1f}s (minimum 2 s)")
+
+    # ---- Exactly-once transient failures: the client retries until the ack lands.
+    eo = f"{P}/subscriptions/orders-exactly-once"
+    sub.create_subscription(request={"name": eo, "topic": orders, "enable_exactly_once_delivery": True})
+    plain.publish(orders, b'{"order": "ORD-5300"}').result(10)
+    s.call("PUT", "/pubsub/config", {"provoke": "ack_transient", "times": 3})
+    results = []
+
+    def on(m):
+        results.append(m.ack_with_response().result(timeout=60))
+    fut = sub.subscribe(eo, on)
+    try:
+        wait(lambda: results, "the ack after transient failures", 60)
+    finally:
+        fut.cancel()
+        try:
+            fut.result(5)
+        except Exception:
+            pass
+    assert results[0] == AcknowledgeStatus.SUCCESS and s.call("GET", "/pubsub/topics")["provoke"] is None, results
+    assert s.call("GET", "/pubsub/messages?subscription=orders-exactly-once")["subscription"]["acked"] == 1
+    print("ok   exactly-once: 3 TRANSIENT_FAILURE_UNORDERED_ACK_ID answers, the client retried, SUCCESS")
+
+    # ---- max_outstanding_bytes on a raw StreamingPull.
+    fc_t = f"{P}/topics/flow"
+    pub.create_topic(request={"name": fc_t})
+    fc = f"{P}/subscriptions/flow-bytes"
+    sub.create_subscription(request={"name": fc, "topic": fc_t})
+    for i in range(3):
+        plain.publish(fc_t, f"PAYLOAD-{i}-".encode() + b"x" * 50).result(10)
+    q = queue.Queue()
+    q.put(types.StreamingPullRequest(subscription=fc, stream_ack_deadline_seconds=60, max_outstanding_bytes=100))
+
+    def reqs():
+        while True:
+            r = q.get()
+            if r is None:
+                return
+            yield r
+    stream = sub.api.streaming_pull(requests=reqs())
+    first = next(stream)
+    assert len(first.received_messages) == 1, first
+    nxt = []
+    th = threading.Thread(target=lambda: nxt.append(next(stream)), daemon=True)
+    th.start()
+    th.join(1.5)
+    assert not nxt, "60 bytes out of 100: the next 60 waits"
+    q.put(types.StreamingPullRequest(ack_ids=[first.received_messages[0].ack_id]))
+    th.join(10)
+    assert nxt and len(nxt[0].received_messages) == 1, nxt
+    q.put(None)
+    stream.cancel()
+    print("ok   StreamingPull max_outstanding_bytes: one 60-byte message at a time under 100 bytes")
 
 
 def urllib_get(url):

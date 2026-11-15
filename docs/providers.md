@@ -187,10 +187,10 @@ points at Stuntman. See [Environments](environments.md#how-a-request-finds-its-e
 
 | | |
 |---|---|
-| **Speaks** | ActiveMQ "Classic" OpenWire on `:61616`, version 10 (Apache.NMS.ActiveMQ 1.8 and 2.x and the Java `activemq-client` negotiate down to it), loose encoding |
+| **Speaks** | ActiveMQ "Classic" OpenWire on `:61616`, version 10 (Apache.NMS.ActiveMQ 1.8 and 2.x and the Java `activemq-client` negotiate down to it), loose or tight encoding, with or without the marshal cache (what the client asks for) |
 | **Point your app at** | `activemq:tcp://localhost:61616` (NMS) or `tcp://localhost:61616` (Java), with the user and password you set |
-| **It keeps** | queues and topics, every message with its state (scheduled, pending, delivered, acked, dead_letter, expired, rolled_back, discarded) and redelivery count, the consumers connected now with their selectors, durable subscriptions (online or offline), local and XA transactions |
-| **You can provoke** | `set_activemq`: `refuse_login` (a SecurityException for everyone), `drop_after` (close the connection after N dispatched messages), `slow_dispatch` (a delay before each dispatch), `redeliver` (the next N acks are lost and those messages come again), `fail_commits` (the next N commits fail and roll back) |
+| **It keeps** | queues and topics (the dead-letter queues too), every message with its state (scheduled, pending, delivered, acked, dead_letter, expired, rolled_back, discarded) and redelivery count, the connections with their wire format, the consumers connected now with their selectors, durable subscriptions (online or offline), local and XA transactions |
+| **You can provoke** | `set_activemq`: `refuse_login` (a SecurityException for everyone), `drop_after` (close the connection after N dispatched messages), `slow_dispatch` (a delay before each dispatch), `redeliver` (the next N acks are lost and those messages come again), `fail_commits` (the next N commits fail and roll back), `max_redeliveries` (default 6) and `individual_dlq` |
 
 Connections, sessions, producers and consumers work as on a real broker: prefetch, `MessagePull` when the prefetch is 0
 (so `Receive(timeout)` returns null on time), auto, client and individual acks, poison acks (to dead_letter), queue
@@ -210,26 +210,42 @@ ack; what the app had already seen comes again as redelivered.
   header fields `JMSType`, `JMSCorrelationID`, `JMSPriority`, `JMSDeliveryMode`, `JMSTimestamp`, `JMSMessageID` (and
   `JMSXGroupID`, `JMSRedelivered`, `JMSXDeliveryCount`) and properties. An invalid one gets an
   `InvalidSelectorException`.
-- **Also:** dispatch by `JMSPriority` (9 first), message groups (`JMSXGroupID` sticks to one consumer until it leaves or
-  `JMSXGroupSeq` is -1), scheduled delivery (`AMQ_SCHEDULED_DELAY`), expiration (`JMSExpiration`: expired), a
-  `ProducerAck` per async send when the producer has a `producerWindowSize`, and compressed bodies inflated on arrival
-  (kept and dispatched as plain text or bytes).
+- **Dead letters.** As ActiveMQ does: a message the client poisons (its redelivery policy gave up), one redelivered
+  more than `max_redeliveries` times (default 6), and an expired persistent one go to `ActiveMQ.DLQ` (with
+  `individual_dlq`, `ActiveMQ.DLQ.Queue.<name>` / `ActiveMQ.DLQ.Topic.<name>`), with the `dlqDeliveryFailureCause`
+  property and their original destination; the original keeps its state and points at the copy (`movedTo`). An
+  expired non-persistent message is only dropped. The app consumes the DLQ like any queue.
+- **Scheduler.** `AMQ_SCHEDULED_DELAY`, `AMQ_SCHEDULED_PERIOD` with `AMQ_SCHEDULED_REPEAT` (repeat N: N+1 deliveries)
+  and `AMQ_SCHEDULED_CRON` (5 fields, UTC; each firing delivers once plus the repeats), on the environment's clock:
+  `advance_clock` brings them forward. `cancel_activemq_scheduled` stops one (a cron entry repeats until then).
+- **Consumers.** `noLocal` (a consumer does not get what its own connection sent), exclusive consumers
+  (`queue://orders?consumer.exclusive=true`: the first one takes the queue, the next one takes over when it leaves),
+  dispatch by `JMSPriority` (9 first) and message groups (`JMSXGroupID` sticks to one consumer until it leaves or
+  `JMSXGroupSeq` is -1).
+- **Also:** expiration (`JMSExpiration`), a `ProducerAck` per async send when the producer has a `producerWindowSize`,
+  compressed bodies inflated on arrival (zlib from Java, gzip from NMS 1.x; kept and dispatched as plain text or
+  bytes), blob messages (`ActiveMQBlobMessage`: the URL and MIME type are kept and delivered as they are; the broker
+  does not fetch nor store the blob), and the tight encoding and marshal cache when the client asks for them (the Java
+  client does by default).
 
-With no users set, any user name and password log in. Not implemented: `noLocal`, exclusive consumers, the scheduler's
-repeat and cron properties (`AMQ_SCHEDULED_PERIOD`, `AMQ_SCHEDULED_REPEAT`, `AMQ_SCHEDULED_CRON`), blob messages, the
-tight encoding and the marshal cache (both negotiated off). Expired and poisoned messages stay on their destination
-with their state instead of moving to `ActiveMQ.DLQ`. One port serves every environment: the default one answers.
+With no users set, any user name and password log in. Not implemented: the scheduler's management destination
+(`ActiveMQ.Scheduler.Management`: browse and remove jobs over JMS; use `cancel_activemq_scheduled`), consumer
+priority, and advisory messages (consumers on `ActiveMQ.Advisory.*` topics connect but get nothing). One port serves
+every environment: the default one answers.
 
 ```text
 set_activemq            {"users": {"acme": "s3cret"}}
 activemq_send           {"destination": "queue://positions", "text": "{\"truck\": \"TRK-100\"}", "properties": {"region": "north"}}
 activemq_send           {"destination": "queue://positions", "text": "later", "delay": "5s", "priority": 9, "ttl": "1m"}
+activemq_send           {"destination": "queue://reports", "text": "nightly", "cron": "0 2 * * *"}
+set_activemq            {"max_redeliveries": 2, "individual_dlq": true}
 wait_for_activemq_ack   {"destination": "queue://positions"}            → the app consumed and acked it
 list_activemq_messages  {"destination": "queue://positions", "state": "acked"}
 list_activemq_destinations                                              → durable subscriptions and transactions too
 ```
 
-Tools: `list_activemq_destinations`, `list_activemq_messages`, `activemq_send`, `set_activemq`, `wait_for_activemq_ack`.
+Tools: `list_activemq_destinations`, `list_activemq_messages`, `activemq_send`, `set_activemq`, `cancel_activemq_scheduled`,
+`wait_for_activemq_ack`.
 
 ## Streams (Kafka and Schema Registry)
 
@@ -263,8 +279,8 @@ compatible.
 |---|---|
 | **Speaks** | Google Cloud Pub/Sub's `google.pubsub.v1` gRPC on `:8085`, plaintext and without auth, as the official emulator: Publisher (CreateTopic, GetTopic, UpdateTopic, ListTopics, ListTopicSubscriptions, ListTopicSnapshots, DeleteTopic, DetachSubscription, Publish), Subscriber (CreateSubscription, GetSubscription, UpdateSubscription, ListSubscriptions, DeleteSubscription, ModifyPushConfig, Pull, StreamingPull, Acknowledge, ModifyAckDeadline, CreateSnapshot, GetSnapshot, ListSnapshots, UpdateSnapshot, DeleteSnapshot, Seek to a time or a snapshot) and SchemaService (CreateSchema, GetSchema, ListSchemas, ListSchemaRevisions, CommitSchema, RollbackSchema, DeleteSchemaRevision, DeleteSchema, ValidateSchema, ValidateMessage); every List pages with `page_size`/`page_token`; `POST /v1/projects/{p}/topics/{t}:publish` over REST on the same port |
 | **Point your app at** | `PUBSUB_EMULATOR_HOST=localhost:8085`; in .NET, `EmulatorDetection = EmulatorDetection.EmulatorOrProduction` on the client builder |
-| **It keeps** | topics with labels, schema settings, message retention, message storage policy and KMS key name (the last two kept, no effect); subscriptions of four kinds — pull, push, BigQuery, Cloud Storage — with filter, ack deadline, message ordering, exactly-once delivery, retention and retain-acked, retry policy and dead-letter topic; schemas with their revisions; snapshots; every message with its attributes and ordering key, and each subscription's state of it: pending, outstanding until its ack deadline, acked, dead-lettered; the rows BigQuery subscriptions wrote and the files Cloud Storage subscriptions wrote; settings in `pubsub/config.yaml` |
-| **You can provoke** | `set_pubsub` with `provoke` on Publish: `unavailable`, `deadline_exceeded`, `resource_exhausted` (clients retry these), `not_found`, `slow_publish` (`delay_ms`, 3 s), `duplicate` (a message comes again after its first ack); `times` limits it to the next N publishes, `topic` to one topic |
+| **It keeps** | topics with labels, schema settings, message retention, ingestion source (with its state), JavaScript transforms, message storage policy and KMS key name (the last two kept, no effect); subscriptions of five kinds — pull, push, BigQuery, Cloud Storage, Bigtable — with filter, JavaScript transforms, ack deadline, message ordering, exactly-once delivery, retention and retain-acked, expiration policy, retry policy and dead-letter topic; schemas with their revisions; snapshots; BigQuery table schemas; every message with its attributes and ordering key, and each subscription's state of it: pending, outstanding until its ack deadline, acked, dead-lettered; the rows BigQuery and Bigtable subscriptions wrote and the files Cloud Storage subscriptions wrote; settings in `pubsub/config.yaml` |
+| **You can provoke** | `set_pubsub` with `provoke` on Publish: `unavailable`, `deadline_exceeded`, `resource_exhausted` (clients retry these), `not_found`, `slow_publish` (`delay_ms`, 3 s), `duplicate` (a message comes again after its first ack); `times` limits it to the next N publishes, `topic` to one topic; `ack_transient`: acks and modacks on exactly-once subscriptions fail with `TRANSIENT_FAILURE_UNORDERED_ACK_ID` (the clients retry), `times` counting requests |
 
 A message goes to the subscriptions its topic has when it is published, unless the subscription's filter
 (`attributes.k = "v"`, `!=`, `attributes:k`, `hasPrefix(attributes.k, "x")`, `NOT`, `AND`, `OR`, parentheses) leaves
@@ -273,12 +289,20 @@ while one of its messages is out. With a dead-letter policy, `delivery_attempt` 
 `max_delivery_attempts` times moves to the dead-letter topic. With exactly-once delivery, an ack or modack of an
 expired ack id fails with INVALID_ARGUMENT and a `google.rpc.ErrorInfo` (`EXACTLY_ONCE_ACKID_FAILURE`, each id mapped to
 `PERMANENT_FAILURE_INVALID_ACK_ID`), and StreamingPull confirms acks and modacks; the clients' `ack_with_response`
-reads both. Deleting a topic leaves its subscriptions on `_deleted-topic_`; a detached subscription gets nothing more
+reads both; `set_pubsub` `ack_transient` makes them fail with `TRANSIENT_FAILURE_UNORDERED_ACK_ID` (listed in
+`temporary_failed_ack_ids` on the stream) until `times` runs out. StreamingPull honours `max_outstanding_messages`
+and `max_outstanding_bytes` (one message may go when none is out). A retry policy delays a nacked or expired pull
+message by its backoff (minimum doubling per attempt, up to maximum); without one it comes back at once. An expiration
+policy deletes a subscription idle (no pull, ack or successful delivery) longer than its ttl on the environment
+clock (`advance_clock` moves it); unset means 31 days, an empty ttl never. Deleting a topic leaves its subscriptions on `_deleted-topic_`; a detached subscription gets nothing more
 and cannot be pulled. One port serves every environment: the default one answers, or the one the `x-stuntman-env`
 gRPC metadata names.
 
-Schemas: Avro (JSON and binary encodings) and Protocol Buffers (the `.proto` text is parsed: messages, nested
-messages and enums, oneofs, maps, repeated and packed fields; binary and proto3 JSON are validated). A topic with
+Schemas: Avro (JSON and binary encodings) and Protocol Buffers (the `.proto` text is parsed: proto2 and proto3,
+messages, nested messages and enums, oneofs, maps, repeated and packed fields, proto2 groups and required fields;
+binary and proto3 JSON are validated). As a protobuf parser does, unknown fields in a binary message (groups too)
+are skipped and accepted, a missing proto2 required field is refused, and JSON refuses unknown fields. A definition
+with `import` is refused, as Pub/Sub refuses it, so the well-known types are not available. A topic with
 schema settings validates every publish against the revisions in its range, newest first, answers INVALID_ARGUMENT
 for a message none accepts, and stamps `googclient_schemaname`, `googclient_schemaencoding` and
 `googclient_schemarevisionid` on what subscribers receive.
@@ -294,7 +318,33 @@ message into a table Stuntman keeps (the topic schema's fields with `use_topic_s
 `subscription_name`, `message_id`, `publish_time`, `attributes` with `write_metadata`). Cloud Storage subscriptions
 batch messages into text or Avro files when `max_messages`, `max_bytes` or `max_duration` (5 min) is reached, named
 `<prefix><date time>_<uuid><suffix>`; when a Stuntman storage account has a container named like the bucket, the file
-lands there too. Snapshots keep what was unacked and everything published after; Seek to a snapshot or to a time
+lands there too; Avro files with `use_topic_schema` carry each message as a record of the topic's Avro schema (one
+revision per file). BigQuery tables take a schema from `set_pubsub_bigquery_table` (columns with type and mode):
+`use_table_schema` maps the message's JSON fields to columns, `drop_unknown_fields` drops the rest, and a row that does
+not fit (unknown field, missing REQUIRED column, wrong type) is not written: the message comes again after the
+backoff and, with a dead-letter policy, moves to the dead-letter topic; `lastError` says why. Bigtable subscriptions
+write a row per message into a table Stuntman keeps: row key `<subscription>#<salt>#<message id>` (the salt is two hex
+digits of the id's hash) or, with `column_family_mapping.delimited_key`, the message's JSON key fields joined by the
+delimiter; the data in family `data` with the empty qualifier; with `write_metadata`, family `pubsub_metadata`
+(`subscription_name`, `message_id`, `publish_time`, `attributes`, `ordering_key`).
+
+JavaScript UDF transforms (`message_transforms` on a topic or subscription) run in QuickJS with Pub/Sub's signature,
+`function f(message, metadata)`: `message` is `{data, attributes}`, `metadata` `{message_id, publish_time,
+ordering_key}`; the function returns the message or `null`. On a topic they run before the schema check: `null` drops
+the message (the publisher still gets an id; nothing is kept), a thrown error fails the whole publish with
+INVALID_ARGUMENT. On a subscription `null` acks without delivering and an error nacks (back after the backoff;
+`lastError` on the subscription). Each call has 500 ms and 32 MB. On a topic, `metadata.message_id` is empty (the id
+is given after the transform).
+
+Import topics: a topic with `ingestion_data_source_settings` keeps them and shows the source's state. Cloud Storage
+reads the objects of the Stuntman storage container named like the bucket (`match_glob`, `minimum_object_create_time`;
+text split at the delimiter, Avro records as their JSON, Pub/Sub Avro records as data and attributes with
+`original_message_ordering_key`), each object version once; with no such container the state is `BUCKET_NOT_FOUND`.
+Amazon MSK and Confluent Cloud read the Streams (Kafka) topic of that name from the earliest offset, then follow it;
+with no such topic the state is `TOPIC_NOT_FOUND`. Every source can be fed with `pubsub_ingest`. Ingested messages go
+through the topic's transforms and schema. Google documents no attribute mapping for Kafka, Kinesis or Event Hubs;
+Stuntman's is: Kafka value → data, key → ordering key, headers → attributes; Kinesis partition key → ordering key;
+Event Hubs partition key → ordering key, properties → attributes. Snapshots keep what was unacked and everything published after; Seek to a snapshot or to a time
 replays only what is retained (acked messages need `retain_acked_messages` or topic retention; topic retention reaches
 messages published before the subscription existed).
 
@@ -306,20 +356,18 @@ pubsub_publish             {"topic": "shipments", "data": {"shipment": "SHP-1041
 set_pubsub                 {"provoke": "unavailable", "times": 2}
 ```
 
-Tools: `list_pubsub_topics` (topics, subscriptions with type and filter, snapshots, schemas), `list_pubsub_messages`,
-`pubsub_publish`, `create_pubsub_subscription`, `set_pubsub_schema`, `list_pubsub_bigquery_rows`,
-`list_pubsub_storage_files`, `wait_for_pubsub_message`, `set_pubsub`. Short names (`shipments`) find the topic of that
+Tools: `list_pubsub_topics` (topics with ingestion and transforms, subscriptions with type, filter, last error and
+expiry, snapshots, schemas, BigQuery tables), `list_pubsub_messages`, `pubsub_publish`, `create_pubsub_subscription`,
+`set_pubsub_topic` (ingestion source, UDF), `pubsub_ingest`, `set_pubsub_schema`, `set_pubsub_bigquery_table`,
+`list_pubsub_bigquery_rows`, `list_pubsub_bigtable_rows`, `list_pubsub_storage_files`, `wait_for_pubsub_message`,
+`set_pubsub`. Short names (`shipments`) find the topic of that
 name, else use the `project` of `set_pubsub` (`acme-stg`).
 
-Limits: no Bigtable subscriptions and no ingestion sources (Kinesis, Cloud Storage, Event Hubs, MSK, Confluent) —
-both are refused; message transforms (JavaScript UDFs) are kept but not run; KMS key and message storage policy have
-no effect; a subscription's expiration policy is kept but subscriptions never expire. BigQuery tables have no table
-schema: `use_table_schema` and `drop_unknown_fields` are kept, rows hold what the message has. Cloud Storage Avro
-files carry the data as bytes (`use_topic_schema` is not applied) and the minimums Pub/Sub sets on `max_messages` and
-`max_duration` are not enforced, so tests can use small batches. Protocol Buffer schemas cannot import (as in Pub/Sub,
-so no well-known types), proto2 groups are refused, and unknown fields in binary messages are accepted. The retry
-policy paces push and BigQuery retries; a nacked pull message comes back at once. Exactly-once never answers
-`TRANSIENT_FAILURE_*`. Flow control counts messages, not bytes.
+Limits: AI inference transforms are refused (only JavaScript UDFs run). Kinesis and Event Hubs have no Stuntman
+backend, so those import topics only get what `pubsub_ingest` feeds; Cloud Storage ingestion reads Avro files with the
+null codec only. Bigtable tables have no row key schema (`row_key_schema` is refused; use `delimited_key`), and
+`column_family_mapping` only builds the row key. The KMS key and message storage policy have no effect. The minimums
+Pub/Sub sets on Cloud Storage `max_messages` and `max_duration` are not enforced, so tests can use small batches.
 
 ## Identity
 

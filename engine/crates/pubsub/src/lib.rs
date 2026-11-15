@@ -9,7 +9,9 @@ pub mod config;
 pub mod deliver;
 pub mod filter;
 pub mod grpc;
+pub mod ingest;
 pub mod schema;
+pub mod udf;
 pub mod store;
 pub mod tools;
 

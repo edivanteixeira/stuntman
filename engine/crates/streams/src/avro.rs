@@ -135,6 +135,16 @@ pub fn decode_exact(schema: &Value, b: &[u8]) -> Result<Value, String> {
     Ok(v)
 }
 
+/// `n` data one after another (the records of an object container file block); answers them and
+/// the bytes read.
+pub fn decode_seq(schema: &Value, b: &[u8], n: usize) -> Result<(Vec<Value>, usize), String> {
+    let mut names = HashMap::new();
+    collect(schema, &mut names);
+    let mut r = R::new(b);
+    let v = (0..n).map(|_| dec(&names, schema, &mut r)).collect::<Result<Vec<_>, _>>()?;
+    Ok((v, b.len() - r.left()))
+}
+
 fn dec(names: &HashMap<String, Value>, s: &Value, r: &mut R) -> Result<Value, String> {
     let s = named(names, s);
     if let Value::Array(br) = s {

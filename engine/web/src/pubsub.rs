@@ -19,13 +19,17 @@ fn project(full: &str) -> String {
 
 /// pull | push | BigQuery | Cloud Storage, as the subscription delivers.
 fn kind_label(x: &Value) -> String {
-    match s(x, "type").as_str() { "push" => "push".into(), "bigquery" => "BigQuery".into(), "cloud_storage" => "Cloud Storage".into(), _ => "pull".into() }
+    match s(x, "type").as_str() { "push" => "push".into(), "bigquery" => "BigQuery".into(), "cloud_storage" => "Cloud Storage".into(), "bigtable" => "Bigtable".into(), _ => "pull".into() }
 }
 
-/// Where a push, BigQuery or Cloud Storage subscription writes.
+fn ingestion_label(k: &str) -> &'static str {
+    match k { "aws_kinesis" => "Amazon Kinesis", "cloud_storage" => "Cloud Storage", "azure_event_hubs" => "Azure Event Hubs", "aws_msk" => "Amazon MSK", "confluent_cloud" => "Confluent Cloud", _ => "source" }
+}
+
+/// Where a push, BigQuery, Cloud Storage or Bigtable subscription writes.
 fn kind_detail(x: &Value) -> String {
     let d = &x["delivery"];
-    match s(x, "type").as_str() { "push" => s(d, "endpoint"), "bigquery" => s(d, "table"), "cloud_storage" => format!("gs://{} · {}", s(d, "bucket"), s(d, "format")), _ => String::new() }
+    match s(x, "type").as_str() { "push" => s(d, "endpoint"), "bigquery" => s(d, "table"), "cloud_storage" => format!("gs://{} · {}", s(d, "bucket"), s(d, "format")), "bigtable" => s(d, "table"), _ => String::new() }
 }
 
 #[component]
@@ -84,11 +88,17 @@ pub fn PubSub() -> impl IntoView {
                     {move || { let x = topic(); (!x["schema"].is_null()).then(|| view! {
                         <div class="small"><span class="caps">"Schema  "</span><span class="mono">{format!("{} · {}", short(&s(&x["schema"], "name")), s(&x["schema"], "encoding"))}</span>
                             <span class="cap">"  ·  every publish is validated; subscribers get googclient_schemaname, googclient_schemarevisionid"</span></div> }) }}
+                    {move || { let x = topic(); let ing = x["ingestion"].clone(); let tr: Vec<String> = x["transforms"].as_array().cloned().unwrap_or_default().iter().map(|v| v.as_str().unwrap_or_default().to_string()).collect();
+                        (!ing.is_null() || !tr.is_empty()).then(|| view! { <div class="small">
+                            {(!ing.is_null()).then(|| view! { <span class="caps">"Ingestion  "</span><span class="mono">{format!("{} · {}", ingestion_label(&s(&ing, "kind")), s(&ing, "from"))}</span>
+                                <span class=if s(&ing, "state") == "ACTIVE" { "ok" } else { "attn" }>{format!("  {}", s(&ing, "state"))}</span><span class="cap">"    "</span> })}
+                            {(!tr.is_empty()).then(|| view! { <span class="caps">"Transforms  "</span><span class="mono">{format!("{} (JavaScript)", tr.join(", "))}</span> })}</div> }) }}
                     {move || if tab.get() == "subscriptions" {
                         view! {
                             <table class="tbl"><tr><th>"Subscription"</th><th>"Type"</th><th>"Filter"</th><th>"Ack deadline"</th><th>"Ordering"</th><th>"Dead-letter"</th><th>"Pending"</th><th>"Outstanding"</th><th>"Acked"</th><th>"Dead"</th></tr>
                                 {topic()["subscriptions"].as_array().cloned().unwrap_or_default().into_iter().map(|x| view! { <tr><td class="mono" title=s(&x, "name")>{short(&s(&x, "name"))}{x["detached"].as_bool().unwrap_or(false).then(|| view! { <span class="small cap">" · detached"</span> })}</td>
-                                    <td>{kind_label(&x)}{(!kind_detail(&x).is_empty()).then(|| view! { <div class="mono small cap">{kind_detail(&x)}</div> })}</td><td class="mono small">{if x["filter"].is_null() { "—".to_string() } else { s(&x, "filter") }}</td>
+                                    <td>{kind_label(&x)}{(!kind_detail(&x).is_empty()).then(|| view! { <div class="mono small cap">{kind_detail(&x)}</div> })}
+                                        {(!x["lastError"].is_null()).then(|| view! { <div class="small danger" title=s(&x["lastError"], "error")>{s(&x["lastError"], "error").chars().take(60).collect::<String>()}</div> })}</td><td class="mono small">{if x["filter"].is_null() { "—".to_string() } else { s(&x, "filter") }}</td>
                                     <td class="mono">{format!("{} s", n(&x, "ackDeadlineSeconds"))}</td><td>{if x["messageOrdering"].as_bool().unwrap_or(false) { "ordered" } else { "—" }}</td>
                                     <td class="mono">{if x["deadLetterTopic"].is_null() { "—".to_string() } else { format!("{} · {}", short(&s(&x, "deadLetterTopic")), n(&x, "maxDeliveryAttempts")) }}</td>
                                     <td class="mono">{n(&x, "pending").to_string()}</td><td class="mono">{n(&x, "outstanding").to_string()}</td><td class="mono">{n(&x, "acked").to_string()}</td>
@@ -131,7 +141,7 @@ pub fn PubSub() -> impl IntoView {
                         }.into_any()
                     }}
                     <div class="caps" style="margin-top:14px">"Provoke on publish"</div>
-                    <div class="row" style="gap:6px;flex-wrap:wrap">{[("unavailable", "Unavailable"), ("deadline_exceeded", "Deadline exceeded"), ("resource_exhausted", "Resource exhausted"), ("not_found", "Not found"), ("slow_publish", "Slow publish (3 s)"), ("duplicate", "Duplicate"), ("none", "Normal")].into_iter().map(|(k, l)| view! {
+                    <div class="row" style="gap:6px;flex-wrap:wrap">{[("unavailable", "Unavailable"), ("deadline_exceeded", "Deadline exceeded"), ("resource_exhausted", "Resource exhausted"), ("not_found", "Not found"), ("slow_publish", "Slow publish (3 s)"), ("duplicate", "Duplicate"), ("ack_transient", "Ack transient"), ("none", "Normal")].into_iter().map(|(k, l)| view! {
                         <button class="btn small" class:primary=move || if k == "none" { provoked().is_empty() && !data.get().is_null() } else { provoked() == k } on:click=move |_| provoke(k)>{l}</button> }).collect_view()}</div>
                     <div class="mono small cap">{move || format!("export PUBSUB_EMULATOR_HOST={}   ·   any project id works; short names use {}", s(&data.get()["connect"], "PUBSUB_EMULATOR_HOST"), s(&data.get(), "project"))}</div>
                 </div>

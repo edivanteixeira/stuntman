@@ -1,0 +1,428 @@
+# Google Maps Platform web services: Geocoding (forward and reverse), Directions, Distance Matrix,
+# Places Autocomplete and Place Details. The key picks the refusals: none is REQUEST_DENIED,
+# invalid… is a refused key, over… is OVER_QUERY_LIMIT. Addresses come from the places table
+# (matched lower-cased, or by place_id); "Nowhere" finds nothing. Lets run alphabetically.
+service:
+  name: google-maps
+  title: Google Maps
+  origin: community
+  description: Geocoding, directions, distance matrix and places (Maps web services)
+  base_url: https://maps.googleapis.com/maps/api
+  real_host: maps.googleapis.com
+  billing:
+    enabled: true
+    per_call: 0.005
+    warn_above: 1000/day
+  limits:
+    latency: 60ms..180ms
+routes:
+  - route: GET /maps/api/geocode/json
+    billable: true
+    let:
+      list: "'results'"
+      why: "'Invalid request. Missing the \\'address\\', \\'components\\', \\'latlng\\' or \\'place_id\\' parameter.'"
+      place: "has(query.latlng) ? lookup('places', 'latlng', query.latlng) : (has(query.place_id) ? lookup('places', 'place_id', query.place_id) : lookup('places', 'q', lower(default(query.address, ''))))"
+    decide:
+      - when: "!query.key"
+        answer: no_key
+      - when: query.key.startsWith('invalid')
+        answer: bad_key
+      - when: query.key.startsWith('over')
+        answer: over_limit
+      - when: "!query.address && !query.latlng && !query.place_id && !query.components"
+        answer: invalid_request
+      - when: lower(default(query.address, '')).contains('nowhere')
+        answer: zero_results
+      - when: has(place)
+        answer: geocoded
+      - when: has(query.latlng)
+        answer: unnamed_road
+      - answer: zero_results
+  - route: GET /maps/api/directions/json
+    billable: true
+    let: &between
+      list: "__path.contains('distancematrix') ? 'rows' : 'routes'"
+      why: "__path.contains('distancematrix') ? 'Invalid request. Missing the \\'origins\\' or \\'destinations\\' parameter.' : 'Invalid request. Missing the \\'origin\\' or \\'destination\\' parameter.'"
+      a_oq: default(query.origin, default(query.origins, ''))
+      b_dq: default(query.destination, default(query.destinations, ''))
+      c_o: default(lookup('places', 'q', lower(a_oq)), lookup('places', 'ref', a_oq))
+      d_d: default(lookup('places', 'q', lower(b_dq)), lookup('places', 'ref', b_dq))
+      e_oe: default(c_o, data.places[0])
+      f_de: default(d_d, data.places[1])
+      g_dy: (f_de.lat - e_oe.lat) * 110574
+      h_cos: 1 - (e_oe.lat * 0.0174533) * (e_oe.lat * 0.0174533) / 2 + (e_oe.lat * 0.0174533) * (e_oe.lat * 0.0174533) * (e_oe.lat * 0.0174533) * (e_oe.lat * 0.0174533) / 24
+      i_dx: (f_de.lng - e_oe.lng) * 111320 * h_cos
+      j_ax: "i_dx < 0 ? -i_dx : i_dx"
+      k_ay: "g_dy < 0 ? -g_dy : g_dy"
+      l_line: "j_ax > k_ay ? j_ax + 0.41 * k_ay : k_ay + 0.41 * j_ax"
+      m_dist: "query.mode == 'walking' ? l_line * 1.25 : l_line * 1.35"
+      n_dur: "query.mode == 'walking' ? m_dist / 1.3 : (query.mode == 'bicycling' ? m_dist / 4.5 : m_dist / 8.3)"
+    decide:
+      - when: "!query.key"
+        answer: no_key
+      - when: query.key.startsWith('invalid')
+        answer: bad_key
+      - when: query.key.startsWith('over')
+        answer: over_limit
+      - when: "!query.origin || !query.destination"
+        answer: invalid_request
+      - when: lower(a_oq).contains('nowhere') || lower(b_dq).contains('nowhere')
+        answer: directions_not_found
+      - when: m_dist > 5000000
+        answer: zero_results
+      - answer: directions
+  - route: GET /maps/api/distancematrix/json
+    billable: true
+    let: *between
+    decide:
+      - when: "!query.key"
+        answer: no_key
+      - when: query.key.startsWith('invalid')
+        answer: bad_key
+      - when: query.key.startsWith('over')
+        answer: over_limit
+      - when: "!query.origins || !query.destinations"
+        answer: invalid_request
+      - answer: matrix
+  - route: GET /maps/api/place/autocomplete/json
+    billable: true
+    let:
+      list: "'predictions'"
+      why: "'Invalid request. Missing the \\'input\\' parameter.'"
+    decide:
+      - when: "!query.key"
+        answer: no_key
+      - when: query.key.startsWith('invalid')
+        answer: bad_key
+      - when: query.key.startsWith('over')
+        answer: over_limit
+      - when: "!query.input"
+        answer: invalid_request
+      - when: lower(query.input).contains('nowhere')
+        answer: zero_results
+      - answer: predictions
+  - route: GET /maps/api/place/details/json
+    billable: true
+    let:
+      list: "'html_attributions'"
+      why: "'Invalid request. Missing the \\'place_id\\' parameter.'"
+      place: lookup('places', 'place_id', query.place_id)
+    decide:
+      - when: "!query.key"
+        answer: no_key
+      - when: query.key.startsWith('invalid')
+        answer: bad_key
+      - when: query.key.startsWith('over')
+        answer: over_limit
+      - when: "!query.place_id"
+        answer: invalid_request
+      - when: has(place)
+        answer: details
+      - answer: not_found
+answers:
+  - name: geocoded
+    note: the address (or coordinates, or place_id) is in the places table
+    sentence: "Geocoded {{ default(query.address, default(query.latlng, query.place_id)) }} → {{ place.lat }},{{ place.lng }}"
+    body: |
+      {
+        "results": [{
+          "address_components": {{ json(place.components) }},
+          "formatted_address": {{ place.formatted | json }},
+          "geometry": {
+            "location": {"lat": {{ place.lat }}, "lng": {{ place.lng }}},
+            "location_type": "ROOFTOP",
+            "viewport": {
+              "northeast": {"lat": {{ place.lat + 0.0013 | round(7) }}, "lng": {{ place.lng + 0.0013 | round(7) }}},
+              "southwest": {"lat": {{ place.lat - 0.0013 | round(7) }}, "lng": {{ place.lng - 0.0013 | round(7) }}}
+            }
+          },
+          "place_id": "{{ place.place_id }}",
+          "plus_code": {"compound_code": "{{ place.plus }}", "global_code": "{{ place.plus_global }}"},
+          "types": {{ json(place.types) }}
+        }],
+        "status": "OK"
+      }
+  - name: unnamed_road
+    template: handlebars
+    note: reverse geocoding of coordinates not in the table; an unnamed road at those coordinates
+    sentence: "Reverse geocoded {{ query.latlng }}: Unnamed Road"
+    body: |
+      {
+        "results": [{
+          "address_components": [{"long_name": "Unnamed Road", "short_name": "Unnamed Road", "types": ["route"]}],
+          "formatted_address": "Unnamed Road",
+          "geometry": {
+            "location": {"lat": {{regexExtract request.query.latlng '^\s*-?[0-9.]+'}}, "lng": {{regexExtract request.query.latlng '-?[0-9.]+\s*$'}}},
+            "location_type": "GEOMETRIC_CENTER"
+          },
+          "place_id": "ChIJSynthUnnamedRoad0000000",
+          "types": ["route"]
+        }],
+        "status": "OK"
+      }
+  - name: directions
+    note: a driving (or walking, bicycling) route between two table addresses; unknown ones fall back to the first two rows
+    sentence: "Directions {{ query.origin }} → {{ query.destination }}: {{ m_dist / 1000 | round(1) }} km"
+    body: |
+      {
+        "geocoded_waypoints": [
+          {"geocoder_status": "OK", "place_id": "{{ e_oe.place_id }}", "types": {{ json(e_oe.types) }}},
+          {"geocoder_status": "OK", "place_id": "{{ f_de.place_id }}", "types": {{ json(f_de.types) }}}
+        ],
+        "routes": [{
+          "bounds": {
+            "northeast": {"lat": {{ e_oe.lat > f_de.lat ? e_oe.lat : f_de.lat }}, "lng": {{ e_oe.lng > f_de.lng ? e_oe.lng : f_de.lng }}},
+            "southwest": {"lat": {{ e_oe.lat < f_de.lat ? e_oe.lat : f_de.lat }}, "lng": {{ e_oe.lng < f_de.lng ? e_oe.lng : f_de.lng }}}
+          },
+          "copyrights": "Map data ©2026",
+          "legs": [{
+            "distance": {"text": "{{ m_dist / 1000 | round(1) }} km", "value": {{ int(m_dist) }}},
+            "duration": {"text": "{{ int(n_dur / 60) + 1 }} mins", "value": {{ int(n_dur) }}},
+            "end_address": {{ (has(d_d) ? f_de.formatted : b_dq) | json }},
+            "end_location": {"lat": {{ f_de.lat }}, "lng": {{ f_de.lng }}},
+            "start_address": {{ (has(c_o) ? e_oe.formatted : a_oq) | json }},
+            "start_location": {"lat": {{ e_oe.lat }}, "lng": {{ e_oe.lng }}},
+            "steps": [{
+              "distance": {"text": "{{ m_dist / 1000 | round(1) }} km", "value": {{ int(m_dist) }}},
+              "duration": {"text": "{{ int(n_dur / 60) + 1 }} mins", "value": {{ int(n_dur) }}},
+              "end_location": {"lat": {{ f_de.lat }}, "lng": {{ f_de.lng }}},
+              "html_instructions": "Head <b>southwest</b> toward <b>{{ f_de.street }}</b>",
+              "polyline": {"points": "nyxnCnqf{Gk@_BwAiEeAeDuBeG"},
+              "start_location": {"lat": {{ e_oe.lat }}, "lng": {{ e_oe.lng }}},
+              "travel_mode": "{{ upper(default(query.mode, 'driving')) }}"
+            }],
+            "traffic_speed_entry": [],
+            "via_waypoint": []
+          }],
+          "overview_polyline": {"points": "nyxnCnqf{Gk@_BwAiEeAeDuBeG"},
+          "summary": "{{ f_de.street }}",
+          "warnings": [],
+          "waypoint_order": []
+        }],
+        "status": "OK"
+      }
+  - name: directions_not_found
+    note: an origin or destination could not be geocoded
+    sentence: "Directions: {{ query.origin }} or {{ query.destination }} not found"
+    body: '{"geocoded_waypoints": [{"geocoder_status": "ZERO_RESULTS"}], "routes": [], "status": "NOT_FOUND"}'
+  - name: matrix
+    note: one origin by one destination (elements NOT_FOUND for Nowhere, ZERO_RESULTS over 5,000 km)
+    sentence: "Distance matrix {{ query.origins }} → {{ query.destinations }}: {{ m_dist / 1000 | round(1) }} km"
+    body: |
+      {
+        "destination_addresses": [{{ (has(d_d) ? f_de.formatted : b_dq) | json }}],
+        "origin_addresses": [{{ (has(c_o) ? e_oe.formatted : a_oq) | json }}],
+        "rows": [{"elements": [{{ lower(a_oq).contains('nowhere') || lower(b_dq).contains('nowhere') ? '{"status": "NOT_FOUND"}' : (m_dist > 5000000 ? '{"status": "ZERO_RESULTS"}' : '{"distance": {"text": "' + string(int(m_dist / 100) / 10) + ' km", "value": ' + string(int(default(m_dist, 0))) + '}, "duration": {"text": "' + string(int(n_dur / 60) + 1) + ' mins", "value": ' + string(int(default(n_dur, 0))) + '}, "status": "OK"}') }}]}],
+        "status": "OK"
+      }
+  - name: predictions
+    note: the São Paulo addresses of the table, whatever the input (Nowhere finds nothing)
+    sentence: "Autocomplete “{{ query.input }}”: 3 predictions"
+    body: |
+      {
+        "predictions": [
+          {"description": "{{ data.places[0].short }}", "matched_substrings": [{"length": {{ size(query.input) }}, "offset": 0}], "place_id": "{{ data.places[0].place_id }}", "reference": "{{ data.places[0].place_id }}",
+           "structured_formatting": {"main_text": "{{ data.places[0].street }}", "main_text_matched_substrings": [{"length": {{ size(query.input) }}, "offset": 0}], "secondary_text": "São Paulo - SP, Brazil"},
+           "terms": [{"offset": 0, "value": "{{ data.places[0].street }}"}, {"offset": 23, "value": "São Paulo"}, {"offset": 34, "value": "SP"}, {"offset": 38, "value": "Brazil"}], "types": ["route", "geocode"]},
+          {"description": "{{ data.places[1].short }}", "matched_substrings": [{"length": {{ size(query.input) }}, "offset": 0}], "place_id": "{{ data.places[1].place_id }}", "reference": "{{ data.places[1].place_id }}",
+           "structured_formatting": {"main_text": "{{ data.places[1].street }}", "main_text_matched_substrings": [{"length": {{ size(query.input) }}, "offset": 0}], "secondary_text": "São Paulo - SP, Brazil"},
+           "terms": [{"offset": 0, "value": "{{ data.places[1].street }}"}, {"offset": 25, "value": "São Paulo"}, {"offset": 36, "value": "SP"}, {"offset": 40, "value": "Brazil"}], "types": ["route", "geocode"]},
+          {"description": "{{ data.places[2].short }}", "matched_substrings": [{"length": {{ size(query.input) }}, "offset": 0}], "place_id": "{{ data.places[2].place_id }}", "reference": "{{ data.places[2].place_id }}",
+           "structured_formatting": {"main_text": "{{ data.places[2].street }}", "main_text_matched_substrings": [{"length": {{ size(query.input) }}, "offset": 0}], "secondary_text": "São Paulo - SP, Brazil"},
+           "terms": [{"offset": 0, "value": "{{ data.places[2].street }}"}, {"offset": 13, "value": "São Paulo"}, {"offset": 24, "value": "SP"}, {"offset": 28, "value": "Brazil"}], "types": ["route", "geocode"]}
+        ],
+        "status": "OK"
+      }
+  - name: details
+    note: the place_id is in the places table
+    sentence: "Place details {{ query.place_id }}: {{ place.name }}"
+    body: |
+      {
+        "html_attributions": [],
+        "result": {
+          "address_components": {{ json(place.components) }},
+          "adr_address": {{ place.formatted | json }},
+          "formatted_address": {{ place.formatted | json }},
+          "geometry": {
+            "location": {"lat": {{ place.lat }}, "lng": {{ place.lng }}},
+            "viewport": {
+              "northeast": {"lat": {{ place.lat + 0.0013 | round(7) }}, "lng": {{ place.lng + 0.0013 | round(7) }}},
+              "southwest": {"lat": {{ place.lat - 0.0013 | round(7) }}, "lng": {{ place.lng - 0.0013 | round(7) }}}
+            }
+          },
+          "name": {{ place.name | json }},
+          "place_id": "{{ place.place_id }}",
+          "reference": "{{ place.place_id }}",
+          "types": {{ json(place.types) }},
+          "url": "https://maps.google.com/?q={{ place.name }}",
+          "utc_offset": {{ place.utc_offset }},
+          "vicinity": {{ place.vicinity | json }}
+        },
+        "status": "OK"
+      }
+  - name: zero_results
+    note: nothing found (an address with Nowhere, or a route over 5,000 km)
+    sentence: "Nothing found for {{ default(query.address, default(query.input, default(query.origin, query.latlng))) }}"
+    body: '{"{{ list }}": [], "status": "ZERO_RESULTS"}'
+  - name: not_found
+    note: the place_id is not in the table
+    sentence: "No place {{ query.place_id }}"
+    body: '{"html_attributions": [], "status": "NOT_FOUND"}'
+  - name: invalid_request
+    note: a required parameter is missing
+    sentence: "Invalid request: a parameter is missing"
+    body: '{"error_message": "{{ why }}", "{{ list }}": [], "status": "INVALID_REQUEST"}'
+  - name: no_key
+    note: no key parameter
+    sentence: "Refused: no API key"
+    body: '{"error_message": "You must use an API key to authenticate each request to Google Maps Platform APIs. For additional information, please refer to http://g.co/dev/maps-no-account", "{{ list }}": [], "status": "REQUEST_DENIED"}'
+  - name: bad_key
+    note: a key that starts with invalid
+    sentence: "Refused: the API key is invalid"
+    body: '{"error_message": "The provided API key is invalid. ", "{{ list }}": [], "status": "REQUEST_DENIED"}'
+  - name: over_limit
+    note: a key that starts with over (the daily quota is spent)
+    sentence: "Refused: over the query limit"
+    body: '{"error_message": "You have exceeded your daily request quota for this API. If you did not set a custom daily request quota, verify your project has an active billing account: http://g.co/dev/maps-no-account", "{{ list }}": [], "status": "OVER_QUERY_LIMIT"}'
+data:
+  # q: the address lower-cased as an app sends it; ref: "place_id:…" as directions take it;
+  # latlng: the exact coordinates reverse geocoding answers for.
+  places:
+    - q: rua das palmeiras, 120, são paulo
+      place_id: ChIJSynthPalmeiras120SaoPaulo
+      ref: place_id:ChIJSynthPalmeiras120SaoPaulo
+      latlng: '-23.5643,-46.6527'
+      name: R. das Palmeiras, 120
+      street: R. das Palmeiras
+      short: R. das Palmeiras - Jardim Exemplo, São Paulo - SP, Brazil
+      formatted: R. das Palmeiras, 120 - Jardim Exemplo, São Paulo - SP, 01310-100, Brazil
+      vicinity: R. das Palmeiras, 120 - Jardim Exemplo, São Paulo
+      lat: -23.5643
+      lng: -46.6527
+      plus: CF8W+73 Jardim Exemplo, São Paulo - SP, Brazil
+      plus_global: 588MCF8W+73
+      utc_offset: -180
+      types: [street_address]
+      components:
+        - {long_name: '120', short_name: '120', types: [street_number]}
+        - {long_name: Rua das Palmeiras, short_name: R. das Palmeiras, types: [route]}
+        - {long_name: Jardim Exemplo, short_name: Jardim Exemplo, types: [political, sublocality, sublocality_level_1]}
+        - {long_name: São Paulo, short_name: São Paulo, types: [administrative_area_level_2, political]}
+        - {long_name: São Paulo, short_name: SP, types: [administrative_area_level_1, political]}
+        - {long_name: Brazil, short_name: BR, types: [country, political]}
+        - {long_name: 01310-100, short_name: 01310-100, types: [postal_code]}
+    - q: avenida dos testes, 1500, são paulo
+      place_id: ChIJSynthTestes1500SaoPaulo
+      ref: place_id:ChIJSynthTestes1500SaoPaulo
+      latlng: '-23.5781,-46.6869'
+      name: Av. dos Testes, 1500
+      street: Av. dos Testes
+      short: Av. dos Testes - Vila Simulada, São Paulo - SP, Brazil
+      formatted: Av. dos Testes, 1500 - Vila Simulada, São Paulo - SP, 04538-000, Brazil
+      vicinity: Av. dos Testes, 1500 - Vila Simulada, São Paulo
+      lat: -23.5781
+      lng: -46.6869
+      plus: CDC7+Q6 Vila Simulada, São Paulo - SP, Brazil
+      plus_global: 588MCDC7+Q6
+      utc_offset: -180
+      types: [street_address]
+      components:
+        - {long_name: '1500', short_name: '1500', types: [street_number]}
+        - {long_name: Avenida dos Testes, short_name: Av. dos Testes, types: [route]}
+        - {long_name: Vila Simulada, short_name: Vila Simulada, types: [political, sublocality, sublocality_level_1]}
+        - {long_name: São Paulo, short_name: São Paulo, types: [administrative_area_level_2, political]}
+        - {long_name: São Paulo, short_name: SP, types: [administrative_area_level_1, political]}
+        - {long_name: Brazil, short_name: BR, types: [country, political]}
+        - {long_name: 04538-000, short_name: 04538-000, types: [postal_code]}
+    - q: rua alfa, 42, são paulo
+      place_id: ChIJSynthAlfa42SaoPaulo
+      ref: place_id:ChIJSynthAlfa42SaoPaulo
+      latlng: '-23.5534,-46.6553'
+      name: R. Alfa, 42
+      street: R. Alfa
+      short: R. Alfa - Bela Vista, São Paulo - SP, Brazil
+      formatted: R. Alfa, 42 - Bela Vista, São Paulo - SP, 01317-000, Brazil
+      vicinity: R. Alfa, 42 - Bela Vista, São Paulo
+      lat: -23.5534
+      lng: -46.6553
+      plus: CFWV+J3 Bela Vista, São Paulo - SP, Brazil
+      plus_global: 588MCFWV+J3
+      utc_offset: -180
+      types: [street_address]
+      components:
+        - {long_name: '42', short_name: '42', types: [street_number]}
+        - {long_name: Rua Alfa, short_name: R. Alfa, types: [route]}
+        - {long_name: Bela Vista, short_name: Bela Vista, types: [political, sublocality, sublocality_level_1]}
+        - {long_name: São Paulo, short_name: São Paulo, types: [administrative_area_level_2, political]}
+        - {long_name: São Paulo, short_name: SP, types: [administrative_area_level_1, political]}
+        - {long_name: Brazil, short_name: BR, types: [country, political]}
+        - {long_name: 01317-000, short_name: 01317-000, types: [postal_code]}
+    - q: alameda beta, 300, são paulo
+      place_id: ChIJSynthBeta300SaoPaulo
+      ref: place_id:ChIJSynthBeta300SaoPaulo
+      latlng: '-23.6008,-46.665'
+      name: Alameda Beta, 300
+      street: Alameda Beta
+      short: Alameda Beta - Moema, São Paulo - SP, Brazil
+      formatted: Alameda Beta, 300 - Moema, São Paulo - SP, 04077-000, Brazil
+      vicinity: Alameda Beta, 300 - Moema, São Paulo
+      lat: -23.6008
+      lng: -46.665
+      plus: CCXM+M2 Moema, São Paulo - SP, Brazil
+      plus_global: 588MCCXM+M2
+      utc_offset: -180
+      types: [street_address]
+      components:
+        - {long_name: '300', short_name: '300', types: [street_number]}
+        - {long_name: Alameda Beta, short_name: Alameda Beta, types: [route]}
+        - {long_name: Moema, short_name: Moema, types: [political, sublocality, sublocality_level_1]}
+        - {long_name: São Paulo, short_name: São Paulo, types: [administrative_area_level_2, political]}
+        - {long_name: São Paulo, short_name: SP, types: [administrative_area_level_1, political]}
+        - {long_name: Brazil, short_name: BR, types: [country, political]}
+        - {long_name: 04077-000, short_name: 04077-000, types: [postal_code]}
+    - q: 123 example street, springfield, il
+      place_id: ChIJSynthExampleSt123Springfield
+      ref: place_id:ChIJSynthExampleSt123Springfield
+      latlng: '39.7817,-89.6501'
+      name: 123 Example St
+      street: Example St
+      short: Example St, Springfield, IL, USA
+      formatted: 123 Example St, Springfield, IL 62701, USA
+      vicinity: 123 Example St, Springfield
+      lat: 39.7817
+      lng: -89.6501
+      plus: Q8J2+MX Springfield, Illinois, USA
+      plus_global: 86FFQ8J2+MX
+      utc_offset: -360
+      types: [street_address]
+      components:
+        - {long_name: '123', short_name: '123', types: [street_number]}
+        - {long_name: Example Street, short_name: Example St, types: [route]}
+        - {long_name: Springfield, short_name: Springfield, types: [locality, political]}
+        - {long_name: Sangamon County, short_name: Sangamon County, types: [administrative_area_level_2, political]}
+        - {long_name: Illinois, short_name: IL, types: [administrative_area_level_1, political]}
+        - {long_name: United States, short_name: US, types: [country, political]}
+        - {long_name: '62701', short_name: '62701', types: [postal_code]}
+    - q: 500 sample avenue, austin, tx
+      place_id: ChIJSynthSampleAve500Austin
+      ref: place_id:ChIJSynthSampleAve500Austin
+      latlng: '30.2672,-97.7431'
+      name: 500 Sample Ave
+      street: Sample Ave
+      short: Sample Ave, Austin, TX, USA
+      formatted: 500 Sample Ave, Austin, TX 78701, USA
+      vicinity: 500 Sample Ave, Austin
+      lat: 30.2672
+      lng: -97.7431
+      plus: 76869+V4 Austin, Texas, USA
+      plus_global: 8624769+V4
+      utc_offset: -360
+      types: [street_address]
+      components:
+        - {long_name: '500', short_name: '500', types: [street_number]}
+        - {long_name: Sample Avenue, short_name: Sample Ave, types: [route]}
+        - {long_name: Austin, short_name: Austin, types: [locality, political]}
+        - {long_name: Travis County, short_name: Travis County, types: [administrative_area_level_2, political]}
+        - {long_name: Texas, short_name: TX, types: [administrative_area_level_1, political]}
+        - {long_name: United States, short_name: US, types: [country, political]}
+        - {long_name: '78701', short_name: '78701', types: [postal_code]}

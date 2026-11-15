@@ -1,0 +1,77 @@
+# Comtele SMS (Brazil), API v2: send an SMS to one or more numbers and read the report of the last
+# send. Point the app at http://localhost:8028/comtele/api/v2 (or resolve sms.comtele.com.br to
+# Stuntman) with any auth-key header; a key starting with "invalid" is refused.
+# The send route and its body (Sender, Receivers, Content) follow Comtele's v2 docs. The exact
+# success and error messages, and the report route's shape, are not confirmed against the real API:
+# the report here is a simplification (the last send only) - check them before relying on them.
+service:
+  name: comtele
+  title: Comtele SMS
+  origin: community
+  region: BR
+  description: SMS sending (API v2)
+  base_url: https://sms.comtele.com.br/api/v2
+  real_host: sms.comtele.com.br
+  billing:
+    enabled: true
+    per_call: 0.08
+    warn_above: 1000/day
+  limits:
+    latency: 250ms..700ms
+routes:
+  - route: POST /api/v2/send
+    billable: true
+    let:
+      a_id: "uuid()"
+    # Only accepted sends are kept (keep runs before decide): refused ones go under "refused".
+    keep:
+      state: sends
+      key: "has(headers['auth-key']) && !headers['auth-key'].startsWith('invalid') && size(default(body.Receivers, '')) > 0 && size(default(body.Content, '')) > 0 ? 'last' : 'refused'"
+    decide:
+      - when: "!has(headers['auth-key']) || headers['auth-key'].startsWith('invalid')"
+        answer: bad_key
+      - when: "size(default(body.Receivers, '')) == 0"
+        answer: no_receivers
+      - when: "size(default(body.Content, '')) == 0"
+        answer: no_content
+      - when: "!string(body.Receivers).matches('^[0-9 ,+()-]+$')"
+        answer: bad_receivers
+      - answer: sent
+  - route: GET /api/v2/reports
+    let:
+      a_last: "state.sends['last']"
+    decide:
+      - when: "!has(headers['auth-key']) || headers['auth-key'].startsWith('invalid')"
+        answer: bad_key
+      - answer: report
+answers:
+  - name: sent
+    sentence: "SMS from {{ default(body.Sender, 'the app') }} to {{ body.Receivers }}: {{ body.Content }}"
+    body: |-
+      {"Success": true, "Object": {"requestUniqueId": "{{ a_id }}"}, "Message": "Mensagem enviada com sucesso."}
+  - name: report
+    sentence: "Report of the last send{{ has(a_last) ? ' (to ' + a_last.body.Receivers + ')' : ': none yet' }}"
+    body: |-
+      {"Success": true, "Object": [{{ has(a_last) ? '{"Sender": ' + json(a_last.body.Sender) + ', "Receiver": ' + json(a_last.body.Receivers) + ', "Content": ' + json(a_last.body.Content) + ', "Status": "Entregue"}' : '' }}], "Message": ""}
+  - name: bad_key
+    status: 401
+    note: no auth-key header, or one starting with "invalid"
+    sentence: "Refused: invalid auth-key"
+    body: '{"Success": false, "Object": null, "Message": "Chave de autenticação inválida."}'
+  - name: no_receivers
+    status: 400
+    sentence: "Refused: Receivers is empty"
+    body: '{"Success": false, "Object": null, "Message": "O campo Receivers é obrigatório."}'
+  - name: no_content
+    status: 400
+    sentence: "Refused: Content is empty"
+    body: '{"Success": false, "Object": null, "Message": "O campo Content é obrigatório."}'
+  - name: bad_receivers
+    status: 400
+    sentence: "Refused: {{ body.Receivers }} is not a list of numbers"
+    body: '{"Success": false, "Object": null, "Message": "Receivers deve conter números separados por vírgula."}'
+  - name: no_credits
+    status: 400
+    note: exists only to be forced (the account has no SMS credits)
+    sentence: "Refused: no credits"
+    body: '{"Success": false, "Object": null, "Message": "Saldo insuficiente."}'

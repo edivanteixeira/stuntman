@@ -1,0 +1,172 @@
+# Nominatim (OpenStreetMap geocoder): /search and /reverse in format json or jsonv2 (the default).
+# A request without a User-Agent is blocked with 403, as the usage policy says. Search matches the
+# q of the places table lower-cased (else []); reverse finds the row in the same 0.01° cell
+# (about 1 km), else "Unable to geocode".
+service:
+  name: nominatim
+  title: Nominatim
+  origin: community
+  description: OpenStreetMap geocoding - search and reverse
+  base_url: https://nominatim.openstreetmap.org
+  real_host: nominatim.openstreetmap.org
+  limits:
+    latency: 150ms..400ms
+routes:
+  - route: GET ~/search(?:\.php)?
+    let:
+      cls: "query.format == 'json' ? 'class' : 'category'"
+      place: lookup('places', 'q', lower(default(query.q, '')))
+    decide:
+      - when: "!headers['user-agent']"
+        answer: blocked
+      - when: "!query.q && !query.street && !query.city && !query.postalcode"
+        answer: nothing_to_search
+      - when: has(place)
+        answer: found
+      - answer: none
+  - route: GET ~/reverse(?:\.php)?
+    let:
+      cls: "query.format == 'json' ? 'class' : 'category'"
+      place: "lookup('places', 'cell', string(int(double(query.lat) * 100)) + ',' + string(int(double(query.lon) * 100)))"
+    decide:
+      - when: "!headers['user-agent']"
+        answer: blocked
+      - when: "!query.lat || !query.lon"
+        answer: need_coordinates
+      - when: has(place)
+        answer: reversed
+      - answer: unable
+answers:
+  - name: found
+    note: one match from the places table (address with addressdetails=1)
+    sentence: "Found “{{ query.q }}”: {{ place.name }}"
+    body: |
+      [{
+        "place_id": {{ place.place_id }},
+        "licence": "Data © OpenStreetMap contributors, ODbL 1.0. http://osm.org/copyright",
+        "osm_type": "{{ place.osm_type }}",
+        "osm_id": {{ place.osm_id }},
+        "lat": "{{ place.lat }}",
+        "lon": "{{ place.lon }}",
+        "{{ cls }}": "{{ place.class }}",
+        "type": "{{ place.type }}",
+        "place_rank": {{ place.place_rank }},
+        "importance": {{ place.importance }},
+        "addresstype": "{{ place.addresstype }}",
+        "name": {{ place.name | json }},
+        "display_name": {{ place.display_name | json }},{{ query.addressdetails == '1' ? '\n  "address": ' + json(place.address) + ',' : '' }}
+        "boundingbox": {{ json(place.boundingbox) }}
+      }]
+  - name: none
+    note: nothing matches the query
+    sentence: "Nothing for “{{ query.q }}”"
+    body: '[]'
+  - name: reversed
+    note: the places-table row in the same 0.01° cell as lat,lon
+    sentence: "Reverse {{ query.lat }},{{ query.lon }}: {{ place.name }}"
+    body: |
+      {
+        "place_id": {{ place.place_id }},
+        "licence": "Data © OpenStreetMap contributors, ODbL 1.0. http://osm.org/copyright",
+        "osm_type": "{{ place.osm_type }}",
+        "osm_id": {{ place.osm_id }},
+        "lat": "{{ place.lat }}",
+        "lon": "{{ place.lon }}",
+        "{{ cls }}": "{{ place.class }}",
+        "type": "{{ place.type }}",
+        "place_rank": {{ place.place_rank }},
+        "importance": {{ place.importance }},
+        "addresstype": "{{ place.addresstype }}",
+        "name": {{ place.name | json }},
+        "display_name": {{ place.display_name | json }},
+        "address": {{ json(place.address) }},
+        "boundingbox": {{ json(place.boundingbox) }}
+      }
+  - name: unable
+    note: no place near the coordinates (the sea, or outside the table)
+    sentence: "Reverse {{ query.lat }},{{ query.lon }}: unable to geocode"
+    body: '{"error": "Unable to geocode"}'
+  - name: need_coordinates
+    status: 400
+    note: /reverse without lat and lon
+    sentence: "Reverse without coordinates"
+    body: '{"error": {"code": 400, "message": "Need coordinates or OSM object to lookup."}}'
+  - name: nothing_to_search
+    status: 400
+    note: /search without q (or a structured field)
+    sentence: "Search without a query"
+    body: '{"error": {"code": 400, "message": "Nothing to search for."}}'
+  - name: blocked
+    status: 403
+    note: no User-Agent header (the usage policy requires one that identifies the app)
+    sentence: "Blocked: no User-Agent"
+    headers: {Content-Type: text/html; charset=utf-8}
+    body: |
+      <html><head><title>Access blocked</title></head><body><h1>Access blocked</h1><p>You have been blocked because you have violated the <a href="https://operations.osmfoundation.org/policies/nominatim/">usage policy</a> of OSM's Nominatim geocoding service. Please be aware that OSM's resources are limited and shared between many users. The usage policy is there to ensure that the service remains usable for everybody.</p><p>Please review the terms and make sure that your software adheres to the terms. You should in particular verify that you have set a <b>custom HTTP referrer or HTTP user agent</b> that identifies your application, and that you are not overusing the service with massive bulk requests.</p></body></html>
+data:
+  # q: what an app searches for, lower-cased; cell: int(lat*100),int(lon*100) for reverse.
+  places:
+    - q: rua das palmeiras, são paulo
+      cell: '-2356,-4665'
+      place_id: 302114567
+      osm_type: way
+      osm_id: 152233441
+      lat: '-23.5643000'
+      lon: '-46.6527000'
+      class: highway
+      type: residential
+      place_rank: 26
+      importance: 0.0533
+      addresstype: road
+      name: Rua das Palmeiras
+      display_name: Rua das Palmeiras, Jardim Exemplo, São Paulo, Região Imediata de São Paulo, Região Metropolitana de São Paulo, São Paulo, Região Sudeste, 01310-100, Brasil
+      boundingbox: ['-23.5651000', '-23.5635000', '-46.6540000', '-46.6514000']
+      address: {road: Rua das Palmeiras, suburb: Jardim Exemplo, city: São Paulo, state_district: Região Metropolitana de São Paulo, state: São Paulo, ISO3166-2-lvl4: BR-SP, region: Região Sudeste, postcode: 01310-100, country: Brasil, country_code: br}
+    - q: avenida dos testes, são paulo
+      cell: '-2357,-4668'
+      place_id: 302114982
+      osm_type: way
+      osm_id: 152233907
+      lat: '-23.5781000'
+      lon: '-46.6869000'
+      class: highway
+      type: primary
+      place_rank: 26
+      importance: 0.0815
+      addresstype: road
+      name: Avenida dos Testes
+      display_name: Avenida dos Testes, Vila Simulada, São Paulo, Região Imediata de São Paulo, Região Metropolitana de São Paulo, São Paulo, Região Sudeste, 04538-000, Brasil
+      boundingbox: ['-23.5812000', '-23.5750000', '-46.6901000', '-46.6837000']
+      address: {road: Avenida dos Testes, suburb: Vila Simulada, city: São Paulo, state_district: Região Metropolitana de São Paulo, state: São Paulo, ISO3166-2-lvl4: BR-SP, region: Região Sudeste, postcode: 04538-000, country: Brasil, country_code: br}
+    - q: rua alfa, são paulo
+      cell: '-2355,-4665'
+      place_id: 302115210
+      osm_type: way
+      osm_id: 152234118
+      lat: '-23.5534000'
+      lon: '-46.6553000'
+      class: highway
+      type: secondary
+      place_rank: 26
+      importance: 0.0533
+      addresstype: road
+      name: Rua Alfa
+      display_name: Rua Alfa, Bela Vista, São Paulo, Região Imediata de São Paulo, Região Metropolitana de São Paulo, São Paulo, Região Sudeste, 01317-000, Brasil
+      boundingbox: ['-23.5541000', '-23.5527000', '-46.6560000', '-46.6546000']
+      address: {road: Rua Alfa, suburb: Bela Vista, city: São Paulo, state_district: Região Metropolitana de São Paulo, state: São Paulo, ISO3166-2-lvl4: BR-SP, region: Região Sudeste, postcode: 01317-000, country: Brasil, country_code: br}
+    - q: example street, springfield
+      cell: '3978,-8965'
+      place_id: 287455120
+      osm_type: way
+      osm_id: 19876543
+      lat: '39.7817000'
+      lon: '-89.6501000'
+      class: highway
+      type: residential
+      place_rank: 26
+      importance: 0.0533
+      addresstype: road
+      name: Example Street
+      display_name: Example Street, Springfield, Sangamon County, Illinois, 62701, United States
+      boundingbox: ['39.7809000', '39.7825000', '-89.6512000', '-89.6490000']
+      address: {road: Example Street, city: Springfield, county: Sangamon County, state: Illinois, ISO3166-2-lvl4: US-IL, postcode: '62701', country: United States, country_code: us}

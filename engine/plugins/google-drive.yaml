@@ -1,0 +1,250 @@
+# Google Drive API v3 with Google's OAuth 2.0: the consent page (accounts.google.com), the token
+# endpoint (oauth2.googleapis.com: authorization_code with PKCE, refresh_token, revoke) and Drive
+# (www.googleapis.com/drive/v3 and /upload/drive/v3). All three hosts live under one prefix:
+# http://localhost:8028/google-drive/o/oauth2/v2/auth, …/google-drive/token, …/google-drive/drive/v3.
+# Any Bearer works on Drive except a revoked one. Synthetic accounts (the "cpf" column is the sub).
+service:
+  name: google-drive
+  title: Google Drive
+  origin: community
+  description: Files, uploads and OAuth consent (Drive API v3)
+  base_url: https://www.googleapis.com/drive/v3
+  real_host: www.googleapis.com
+  limits:
+    latency: 60ms..200ms
+pages:
+  - route: GET /o/oauth2/v2/auth
+    title: Sign in with Google
+    ask: "{{ query.client_id | default('The app') }} wants to access your Google Drive ({{ query.scope | default('drive.file') }})"
+    fields:
+      - person: {from: accounts, label: Choose an account}
+    buttons: [Continue, Cancel]
+    checks: [redirect_uri, pkce_s256]
+routes:
+  # grant_type=refresh_token is answered here; authorization_code falls through to the grant route.
+  # A refresh token is accepted when it looks like Google's ("1//…") and was not revoked.
+  - route: POST /token
+    fallthrough: true
+    decide:
+      - when: "body.grant_type != 'refresh_token'"
+        answer: not_matched
+      - when: "!has(body.refresh_token)"
+        answer: refresh_missing
+      - when: "('Bearer ' + body.refresh_token) in state.revoked"
+        answer: refresh_revoked
+      - when: "!body.refresh_token.startsWith('1//')"
+        answer: refresh_malformed
+      - answer: refreshed
+  # ponytail: the engine's grant answer has no refresh_token; apps that need one get it from
+  # data.accounts[].refresh_token in a test (or any "1//…" string).
+  - route: POST ~/token
+    grant: authorization_code
+  - route: POST /revoke
+    let:
+      token: "default(query.token, body.token)"
+    keep:
+      state: revoked
+      key: "'Bearer ' + default(query.token, body.token)"
+    decide:
+      - when: "!has(token)"
+        answer: revoke_invalid
+      - answer: revoked
+  - route: GET /drive/v3/about
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: login_required
+      - when: "headers.authorization in state.revoked"
+        answer: auth_invalid
+      - when: "!has(query.fields)"
+        answer: fields_required
+      - answer: about
+  # q picks folders (mimeType = 'application/vnd.google-apps.folder') or trashed files (none);
+  # pageToken=page2 is the second page. pageSize is not applied.
+  - route: GET /drive/v3/files
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: login_required
+      - when: "headers.authorization in state.revoked"
+        answer: auth_invalid
+      - when: "string(query.q).contains('trashed = true') || string(query.q).contains('trashed=true')"
+        answer: files_none
+      - when: "string(query.q).contains('application/vnd.google-apps.folder')"
+        answer: folders
+      - when: "query.pageToken == 'page2'"
+        answer: files_page2
+      - when: "has(query.pageToken)"
+        answer: invalid_page_token
+      - answer: files_page1
+  - route: GET /drive/v3/files/{id}
+    let:
+      file: "default(lookup('files', 'id', path.id), default(lookup('files_page2', 'id', path.id), lookup('folders', 'id', path.id)))"
+      kept: "state.files[path.id]"
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: login_required
+      - when: "headers.authorization in state.revoked"
+        answer: auth_invalid
+      - when: "has(file) && has(query.fields)"
+        answer: file_full
+      - when: "has(file)"
+        answer: file
+      - when: "has(kept)"
+        answer: file_kept
+      - answer: file_not_found
+  - route: POST /drive/v3/files
+    let:
+      new_id: "'1' + random_id() + random_id() + random_id() + random_id()"
+    keep:
+      state: files
+      key: new_id
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: login_required
+      - when: "headers.authorization in state.revoked"
+        answer: auth_invalid
+      - answer: created
+  # uploadType=multipart (multipart/related: metadata + content), media (content only) or
+  # resumable (a session URI in Location, then PUT the bytes there).
+  - route: POST /upload/drive/v3/files
+    let:
+      new_id: "'1' + random_id() + random_id() + random_id() + random_id()"
+    keep:
+      state: files
+      key: new_id
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: login_required
+      - when: "headers.authorization in state.revoked"
+        answer: auth_invalid
+      - when: "query.uploadType == 'multipart' && !string(headers['content-type']).startsWith('multipart/related')"
+        answer: bad_content_type
+      - when: "query.uploadType == 'multipart' || query.uploadType == 'media'"
+        answer: uploaded
+      - when: "query.uploadType == 'resumable'"
+        answer: resumable_session
+      - answer: upload_type_missing
+  - route: PUT /upload/drive/v3/files
+    let:
+      new_id: "'1' + random_id() + random_id() + random_id() + random_id()"
+    decide:
+      - when: "!has(query.upload_id)"
+        answer: upload_type_missing
+      - answer: uploaded
+answers:
+  - name: not_matched
+    note: not a refresh; the authorization_code grant route answers instead
+    body: '{}'
+  - name: refreshed
+    sentence: "Access token refreshed"
+    body: '{"access_token": "ya29.a0{{ random_id() }}{{ random_id() }}{{ random_id() }}", "expires_in": 3599, "scope": "https://www.googleapis.com/auth/drive.file openid", "token_type": "Bearer"}'
+  - name: refresh_revoked
+    status: 400
+    note: the refresh token was revoked (POST /revoke) or the user removed the app's access
+    sentence: "Refresh refused: token revoked (invalid_grant)"
+    body: '{"error": "invalid_grant", "error_description": "Token has been expired or revoked."}'
+  - name: refresh_malformed
+    status: 400
+    sentence: "Refresh refused: not a Google refresh token (invalid_grant)"
+    body: '{"error": "invalid_grant", "error_description": "Bad Request"}'
+  - name: refresh_missing
+    status: 400
+    sentence: "Refresh refused: no refresh_token"
+    body: '{"error": "invalid_request", "error_description": "Missing required parameter: refresh_token"}'
+  - name: invalid_client
+    status: 401
+    note: the client secret is wrong; force it with route POST /token
+    sentence: "Token refused: invalid_client"
+    body: '{"error": "invalid_client", "error_description": "Unauthorized"}'
+  - name: revoked
+    sentence: "Token revoked"
+    body: '{}'
+  - name: revoke_invalid
+    status: 400
+    sentence: "Revoke refused: no token"
+    body: '{"error": "invalid_token", "error_description": "Bad Request"}'
+  - name: login_required
+    status: 401
+    sentence: "Refused: no access token (401 UNAUTHENTICATED)"
+    headers: {www-authenticate: 'Bearer realm="https://accounts.google.com/"'}
+    body: '{"error": {"code": 401, "message": "Request is missing required authentication credential. Expected OAuth 2 access token, login cookie or other valid authentication credential. See https://developers.google.com/identity/sign-in/web/devconsole-project.", "errors": [{"message": "Login Required.", "domain": "global", "reason": "required", "location": "Authorization", "locationType": "header"}], "status": "UNAUTHENTICATED"}}'
+  - name: auth_invalid
+    status: 401
+    note: the access token was revoked
+    sentence: "Refused: invalid credentials (401 UNAUTHENTICATED)"
+    headers: {www-authenticate: 'Bearer realm="https://accounts.google.com/", error="invalid_token"'}
+    body: '{"error": {"code": 401, "message": "Request had invalid authentication credentials. Expected OAuth 2 access token, login cookie or other valid authentication credential. See https://developers.google.com/identity/sign-in/web/devconsole-project.", "errors": [{"message": "Invalid Credentials", "domain": "global", "reason": "authError", "location": "Authorization", "locationType": "header"}], "status": "UNAUTHENTICATED"}}'
+  - name: rate_limit_exceeded
+    status: 403
+    note: per-user quota; the app should back off exponentially. Exists only to be forced
+    sentence: "Rate limit exceeded (403 rateLimitExceeded)"
+    body: '{"error": {"code": 403, "message": "Rate Limit Exceeded", "errors": [{"message": "Rate Limit Exceeded", "domain": "usageLimits", "reason": "rateLimitExceeded"}], "status": "PERMISSION_DENIED"}}'
+  - name: fields_required
+    status: 400
+    sentence: "about refused: fields is required"
+    body: '{"error": {"code": 400, "message": "The ''fields'' parameter is required for this method.", "errors": [{"message": "The ''fields'' parameter is required for this method.", "domain": "global", "reason": "required", "location": "fields", "locationType": "parameter"}]}}'
+  - name: about
+    sentence: "About {{ data.accounts[0].email }}"
+    body: |
+      {"user": {"kind": "drive#user", "displayName": {{ json(data.accounts[0].name) }}, "photoLink": {{ json(data.accounts[0].photo) }}, "me": true,
+       "permissionId": {{ json(data.accounts[0].permission_id) }}, "emailAddress": {{ json(data.accounts[0].email) }}}{{ query.fields.contains('storageQuota') || query.fields == '*' ? ', "storageQuota": {"limit": "16106127360", "usage": "734003200", "usageInDrive": "524288000", "usageInDriveTrash": "1048576"}' : '' }}}
+  - name: files_page1
+    sentence: "Listed {{ size(data.files) }} files (page 1 of 2)"
+    body: '{"kind": "drive#fileList", "nextPageToken": "page2", "incompleteSearch": false, "files": {{ json(data.files) }}}'
+  - name: files_page2
+    sentence: "Listed {{ size(data.files_page2) }} files (page 2 of 2)"
+    body: '{"kind": "drive#fileList", "incompleteSearch": false, "files": {{ json(data.files_page2) }}}'
+  - name: folders
+    sentence: "Listed {{ size(data.folders) }} folders"
+    body: '{"kind": "drive#fileList", "incompleteSearch": false, "files": {{ json(data.folders) }}}'
+  - name: files_none
+    sentence: "No files match {{ query.q }}"
+    body: '{"kind": "drive#fileList", "incompleteSearch": false, "files": []}'
+  - name: invalid_page_token
+    status: 400
+    sentence: "Refused: invalid pageToken {{ query.pageToken }}"
+    body: '{"error": {"code": 400, "message": "Invalid Value", "errors": [{"message": "Invalid Value", "domain": "global", "reason": "invalid", "location": "pageToken", "locationType": "parameter"}]}}'
+  - name: file
+    sentence: "File {{ file.name }}"
+    body: '{"kind": "drive#file", "id": "{{ file.id }}", "name": {{ json(file.name) }}, "mimeType": "{{ file.mimeType }}"}'
+  - name: file_full
+    sentence: "File {{ file.name }} (fields={{ query.fields }})"
+    body: '{{ json(file) }}'
+  - name: file_kept
+    sentence: "File {{ path.id }} (created here)"
+    body: '{"kind": "drive#file", "id": "{{ path.id }}", "name": {{ json(default(kept.body.name, ''Untitled'')) }}, "mimeType": {{ json(default(kept.body.mimeType, ''application/octet-stream'')) }}}'
+  - name: file_not_found
+    status: 404
+    sentence: "No file {{ path.id }} (404 notFound)"
+    body: '{"error": {"code": 404, "message": "File not found: {{ path.id }}.", "errors": [{"message": "File not found: {{ path.id }}.", "domain": "global", "reason": "notFound", "location": "fileId", "locationType": "parameter"}]}}'
+  - name: created
+    sentence: "Created {{ body.mimeType == 'application/vnd.google-apps.folder' ? 'the folder' : 'the file' }} {{ body.name | default('Untitled') }}"
+    body: '{"kind": "drive#file", "id": "{{ new_id }}", "name": {{ json(default(body.name, ''Untitled'')) }}, "mimeType": {{ json(default(body.mimeType, ''application/octet-stream'')) }}}'
+  # ponytail: the multipart metadata part is not parsed, so the name is "Untitled" (Drive's name
+  # for an upload without metadata); GET the file id for what was kept.
+  - name: uploaded
+    sentence: "Uploaded {{ size(raw) }} bytes ({{ query.uploadType | default('resumable') }})"
+    body: '{"kind": "drive#file", "id": "{{ new_id }}", "name": "Untitled", "mimeType": {{ json(query.uploadType == ''media'' ? default(headers[''content-type''], ''application/octet-stream'') : ''application/octet-stream'') }}}'
+  - name: resumable_session
+    sentence: "Resumable upload session opened"
+    headers: {location: 'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=ADPycd{{ random_id() }}{{ random_id() }}', content-length: '0'}
+    body: ''
+  - name: bad_content_type
+    status: 400
+    sentence: "Upload refused: multipart needs multipart/related"
+    body: '{"error": {"code": 400, "message": "Bad content type. Please use multipart.", "errors": [{"message": "Bad content type. Please use multipart.", "domain": "global", "reason": "badContent"}]}}'
+  - name: upload_type_missing
+    status: 400
+    note: the message is close to Google's, not verified word for word
+    sentence: "Upload refused: uploadType missing"
+    body: '{"error": {"code": 400, "message": "Invalid Value", "errors": [{"message": "Invalid Value", "domain": "global", "reason": "invalid", "location": "uploadType", "locationType": "parameter"}]}}'
+data:
+  accounts:
+    - {name: Emma Carter, email: emma.carter@acme.example.com, cpf: '108234567890123456781', permission_id: '04563228391872643501', photo: 'https://lh3.googleusercontent.com/a/default-user=s64', refresh_token: '1//0gAcmeEmmaCarterRefreshTokenSynthetic'}
+    - {name: Noah Price, email: noah.price@globex.example.com, cpf: '108234567890123456792', permission_id: '04563228391872643512', photo: 'https://lh3.googleusercontent.com/a/default-user=s64', refresh_token: '1//0gGlobexNoahPriceRefreshTokenSynthetic'}
+  files:
+    - {kind: 'drive#file', id: 1Zx8mQ4vKp2sT7aB3cD9eF0gH1iJ2kL3m, name: Q4 plan.docx, mimeType: application/vnd.openxmlformats-officedocument.wordprocessingml.document, parents: [1FoldAcmeContracts00000000000000], size: '48211', modifiedTime: '2026-11-12T10:15:00.000Z', webViewLink: 'https://drive.google.com/file/d/1Zx8mQ4vKp2sT7aB3cD9eF0gH1iJ2kL3m/view'}
+    - {kind: 'drive#file', id: 1Yw7lP3uJo1rS6zA2bC8dE9fG0hI1jK2l, name: Globex contract.pdf, mimeType: application/pdf, parents: [1FoldAcmeContracts00000000000000], size: '210334', modifiedTime: '2026-11-10T18:02:00.000Z', webViewLink: 'https://drive.google.com/file/d/1Yw7lP3uJo1rS6zA2bC8dE9fG0hI1jK2l/view'}
+  files_page2:
+    - {kind: 'drive#file', id: 1Xv6kO2tIn0qR5yZ1aB7cD8eF9gH0iJ1k, name: Budget 2027, mimeType: application/vnd.google-apps.spreadsheet, parents: [root], modifiedTime: '2026-11-01T09:30:00.000Z', webViewLink: 'https://docs.google.com/spreadsheets/d/1Xv6kO2tIn0qR5yZ1aB7cD8eF9gH0iJ1k/edit'}
+  folders:
+    - {kind: 'drive#file', id: 1FoldAcmeContracts00000000000000, name: Contracts, mimeType: application/vnd.google-apps.folder, parents: [root], modifiedTime: '2026-10-20T12:00:00.000Z', webViewLink: 'https://drive.google.com/drive/folders/1FoldAcmeContracts00000000000000'}

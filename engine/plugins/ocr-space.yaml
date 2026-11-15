@@ -1,0 +1,93 @@
+# OCR.space Parse API: POST /parse/image with a multipart file, a url or a base64Image, and the key
+# in the apikey header or form field (GET /parse/imageurl takes them in the query). The text comes
+# from the images table by filename or url, else a sample invoice. A key starting with invalid is
+# refused; over 1 MB is the free tier's "file too large".
+service:
+  name: ocr-space
+  title: OCR.space
+  origin: community
+  description: OCR - text from images and PDFs (Parse API)
+  base_url: https://api.ocr.space
+  real_host: api.ocr.space
+  limits:
+    latency: 800ms..2500ms
+    rate: 500/day
+routes:
+  - route: POST /parse/image
+    let: &ocr
+      key: default(headers.apikey, default(body.apikey, query.apikey))
+      source: "size(files) > 0 ? files[0].filename : default(body.url, query.url)"
+      img: "lookup('images', 'name', size(files) > 0 ? files[0].filename : default(body.url, query.url))"
+    decide: &ocr_rules
+      - when: "!key"
+        answer: no_key
+      - when: key.startsWith('invalid')
+        answer: invalid_key
+      - when: "size(files) == 0 && !body.url && !body.base64Image && !query.url"
+        answer: no_input
+      - when: (size(files) > 0 && files[0].size > 1048576) || size(default(body.base64Image, '')) > 1398200
+        answer: too_large
+      - answer: parsed
+  - route: GET /parse/imageurl
+    let: *ocr
+    decide: *ocr_rules
+answers:
+  - name: parsed
+    note: the text of the images-table row for the file or url, else a sample invoice
+    sentence: "Read {{ default(source, 'a base64 image') }}: {{ size(default(img.text, data.images[0].text)) }} characters"
+    body: |
+      {
+        "ParsedResults": [{
+          "TextOverlay": {"Lines": [], "HasOverlay": false, "Message": "Text overlay is not provided as it is not requested"},
+          "TextOrientation": "0",
+          "FileParseExitCode": 1,
+          "ParsedText": {{ default(img.text, data.images[0].text) | json }},
+          "ErrorMessage": "",
+          "ErrorDetails": ""
+        }],
+        "OCRExitCode": 1,
+        "IsErroredOnProcessing": false,
+        "ProcessingTimeInMilliseconds": "{{ 250 + now_ms() % 900 }}",
+        "SearchablePDFURL": "Searchable PDF not generated as it was not requested."
+      }
+  - name: too_large
+    note: over the free tier's 1 MB (1024 KB) file limit
+    sentence: "Refused {{ default(source, 'a base64 image') }}: over 1024 KB"
+    body: |
+      {
+        "OCRExitCode": 99,
+        "IsErroredOnProcessing": true,
+        "ErrorMessage": ["File failed validation. File size exceeds the maximum permissible file size limit of 1024 KB"],
+        "ProcessingTimeInMilliseconds": "15"
+      }
+  - name: no_input
+    note: no file, url or base64Image
+    sentence: "Refused: no image sent"
+    body: |
+      {
+        "OCRExitCode": 99,
+        "IsErroredOnProcessing": true,
+        "ErrorMessage": ["Unable to recognize the file type", "E216:Unable to detect the file extension, or the file extension is incorrect, and no file type provided in filetype parameter"],
+        "ProcessingTimeInMilliseconds": "0"
+      }
+  - name: invalid_key
+    status: 403
+    note: an API key that starts with invalid
+    sentence: "Refused: the API key is invalid"
+    body: '{"OCRExitCode": 99, "IsErroredOnProcessing": true, "ErrorMessage": ["The API key is invalid"], "ProcessingTimeInMilliseconds": "0"}'
+  - name: no_key
+    status: 403
+    note: no apikey header, form field or query parameter
+    sentence: "Refused: no API key"
+    body: '{"OCRExitCode": 99, "IsErroredOnProcessing": true, "ErrorMessage": ["No API key provided. Get your free API key at https://ocr.space/ocrapi"], "ProcessingTimeInMilliseconds": "0"}'
+data:
+  # name: the uploaded filename or the url. The first row is the default text.
+  images:
+    - name: invoice.png
+      text: "INVOICE 2026-0042\r\nAcme Corporation\r\n100 Example Road, Springfield\r\nBill to: Globex Inc.\r\nWidgets x 10 ....... $250.00\r\nShipping ........... $15.00\r\nTOTAL .............. $265.00\r\n"
+    - name: receipt.jpg
+      text: "GLOBEX MARKET\r\n2026-11-14 10:42\r\nCoffee 1 x 4.50\r\nBagel 1 x 3.25\r\nTOTAL 7.75\r\nThank you!\r\n"
+    - name: https://files.example.com/cnh.jpg
+      text: "CARTEIRA NACIONAL DE HABILITAÇÃO\r\nNOME\r\nMARIA EXEMPLO SILVA\r\nCPF 111.444.777-35\r\nCATEGORIA B\r\n"
+    - name: blank.png
+      text: ""

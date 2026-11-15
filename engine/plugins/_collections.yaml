@@ -3,3 +3,12 @@ collections:
   - name: Brazil · ICP-Brasil
     description: "Everything a Brazilian signing app calls: identity checks, consent and cloud certificates. Synthetic CPFs; every certificate comes from the Stuntman Test CA."
     plugins: [serpro-datavalid, gcc-consent, birdid, vidaas, restpki]
+  - name: Logistics & fiscal
+    description: "Routes, geocoding, OCR, company lookup and NF-e events for a freight or fiscal app. Synthetic CNPJs and addresses."
+    plugins: [osrm, google-maps, nominatim, ocr-space, receitaws, sefaz-nfe, comtele]
+  - name: Payments & notifications
+    description: "Charges with signed webhooks, transactional email and push: the calls a SaaS makes when a customer pays."
+    plugins: [stripe, resend, onesignal]
+  - name: Workplace & dev tools
+    description: "Microsoft 365, Google Drive, scheduling, outreach, Azure DevOps and observability queries. Accounts at acme and globex."
+    plugins: [microsoft-graph, google-drive, calendly, lemlist, azure-devops, newrelic]

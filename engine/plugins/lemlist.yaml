@@ -1,0 +1,233 @@
+# lemlist API (api.lemlist.com/api) for the Acme Growth team: team, campaigns, leads and webhooks,
+# plus an MCP server on /mcp with a few of lemlist's MCP tools. Auth is Basic with an empty user and
+# the API key as the password (or ?access_token=KEY); any key works. Point the app at
+# http://localhost:8028/lemlist/api and an MCP client at http://localhost:8028/lemlist/mcp.
+service:
+  name: lemlist
+  title: lemlist
+  origin: community
+  description: Outreach campaigns, leads and webhooks (+ MCP tools)
+  base_url: https://api.lemlist.com/api
+  real_host: api.lemlist.com
+  limits:
+    latency: 150ms..400ms
+mcp:
+  path: /mcp
+  name: lemlist
+  instructions: Read and change the Acme Growth team's lemlist campaigns and leads.
+routes:
+  - route: GET /api/team
+    decide:
+      - when: "!headers.authorization.startsWith('Basic ') && !has(query.access_token)"
+        answer: unauthorized
+      - answer: team
+  # ?version=v2 answers {campaigns, pagination}; without it, the v1 array.
+  - route: GET /api/campaigns
+    decide:
+      - when: "!headers.authorization.startsWith('Basic ') && !has(query.access_token)"
+        answer: unauthorized
+      - when: "query.version == 'v2'"
+        answer: campaigns_v2
+      - answer: campaigns
+  # ?deduplicate=true refuses a lead already added (here: to any campaign).
+  - route: POST /api/campaigns/{campaignId}/leads/{email}
+    let:
+      campaign: "lookup('campaigns', '_id', path.campaignId)"
+      known: "default(state.leads[path.email], lookup('leads', 'email', path.email))"
+    keep:
+      state: leads
+      key: "!has(campaign) || (query.deduplicate == 'true' && has(known)) ? '__refused' : path.email"
+    decide:
+      - when: "!headers.authorization.startsWith('Basic ') && !has(query.access_token)"
+        answer: unauthorized
+      - when: "!has(campaign)"
+        answer: campaign_not_found
+      - when: "query.deduplicate == 'true' && has(known)"
+        answer: lead_duplicate
+      - answer: lead_added
+  # ponytail: a lead added here is found by email, but the campaign it went to is not kept.
+  - route: GET /api/leads/{email}
+    let:
+      seeded: "lookup('leads', 'email', path.email)"
+      kept: "state.leads[path.email]"
+    decide:
+      - when: "!headers.authorization.startsWith('Basic ') && !has(query.access_token)"
+        answer: unauthorized
+      - when: "has(seeded)"
+        answer: lead
+      - when: "has(kept)"
+        answer: lead_kept
+      - answer: lead_not_found
+  # Pauses the lead in every campaign (or only ?campaignId=…).
+  - route: POST /api/leads/pause/{email}
+    let:
+      lead: "default(lookup('leads', 'email', path.email), state.leads[path.email])"
+    decide:
+      - when: "!headers.authorization.startsWith('Basic ') && !has(query.access_token)"
+        answer: unauthorized
+      - when: "!has(lead)"
+        answer: lead_not_found
+      - answer: lead_paused
+  - route: GET /api/hooks
+    decide:
+      - when: "!headers.authorization.startsWith('Basic ') && !has(query.access_token)"
+        answer: unauthorized
+      - answer: hooks
+  - route: POST /api/hooks
+    receive:
+      body: [targetUrl]
+      missing: target_url_missing
+    let:
+      hook_id: "'hoo_' + random_id() + random_id()"
+    keep:
+      state: hooks
+      key: hook_id
+    decide:
+      - when: "!headers.authorization.startsWith('Basic ') && !has(query.access_token)"
+        answer: unauthorized
+      - answer: hook_created
+  - route: DELETE /api/hooks/{hookId}
+    decide:
+      - when: "!headers.authorization.startsWith('Basic ') && !has(query.access_token)"
+        answer: unauthorized
+      - when: "!has(state.hooks[path.hookId]) && !has(lookup('hooks', '_id', path.hookId))"
+        answer: hook_not_found
+      - answer: hook_deleted
+  # MCP tools (names as lemlist's MCP server has them).
+  - tool: get_campaigns
+    description: List the team's campaigns with their status.
+    input_schema:
+      type: object
+      properties:
+        status: {type: string, description: "running, paused, draft or ended"}
+    decide:
+      - answer: tool_campaigns
+  - tool: add_leads_to_campaign
+    description: Add one or more leads (by email) to a campaign.
+    input_schema:
+      type: object
+      required: [campaignId, leads]
+      properties:
+        campaignId: {type: string}
+        leads:
+          type: array
+          items:
+            type: object
+            required: [email]
+            properties:
+              email: {type: string}
+              firstName: {type: string}
+              lastName: {type: string}
+              companyName: {type: string}
+    let:
+      campaign: "lookup('campaigns', '_id', body.campaignId)"
+    decide:
+      - when: "!has(campaign)"
+        answer: tool_campaign_not_found
+      - answer: tool_leads_added
+  - tool: get_team_info
+    description: The team, its members and plan.
+    decide:
+      - answer: tool_team
+answers:
+  # lemlist answers most errors as plain text.
+  - name: unauthorized
+    status: 401
+    note: no Basic credentials and no access_token
+    sentence: "Refused: no API key (401)"
+    headers: {content-type: text/plain; charset=utf-8}
+    raw: true
+    body: Unauthorized
+  - name: rate_limited
+    status: 429
+    note: lemlist allows about 20 calls per 2 s per key; exists only to be forced
+    sentence: "Rate limited (429), retry after 2 s"
+    headers: {Retry-After: '2', X-RateLimit-Limit: '20', X-RateLimit-Remaining: '0', X-RateLimit-Reset: '2'}
+    body: '{"message": "Too many requests, please retry later"}'
+  - name: team
+    sentence: "Team {{ data.team.name }}"
+    body: '{{ json(data.team) }}'
+  - name: campaigns
+    sentence: "Listed {{ size(data.campaigns) }} campaigns"
+    body: '{{ json(data.campaigns) }}'
+  - name: campaigns_v2
+    sentence: "Listed {{ size(data.campaigns) }} campaigns (v2)"
+    body: '{"campaigns": {{ json(data.campaigns) }}, "pagination": {"totalRecords": {{ size(data.campaigns) }}, "currentPage": 1, "nextPage": null, "totalPage": 1}}'
+  - name: campaign_not_found
+    status: 404
+    note: the wording is close to lemlist's, not verified word for word
+    sentence: "No campaign {{ path.campaignId }}"
+    headers: {content-type: text/plain; charset=utf-8}
+    raw: true
+    body: Campaign not found
+  - name: lead_duplicate
+    status: 409
+    note: deduplicate=true and the lead is already in a campaign; status and wording not verified
+    sentence: "{{ path.email }} not added: already in a campaign (deduplicate)"
+    headers: {content-type: text/plain; charset=utf-8}
+    raw: true
+    body: Lead already in a campaign
+  - name: lead_added
+    sentence: "Added {{ path.email }} to {{ campaign.name }}"
+    body: |
+      {"_id": "lea_{{ random_id() }}{{ random_id() }}", "email": "{{ path.email }}", "firstName": {{ json(default(body.firstName, null)) }}, "lastName": {{ json(default(body.lastName, null)) }},
+       "companyName": {{ json(default(body.companyName, null)) }}, "isPaused": false, "campaignId": "{{ campaign._id }}", "campaignName": {{ json(campaign.name) }}, "contactId": "ctc_{{ random_id() }}{{ random_id() }}"}
+  - name: lead
+    sentence: "Lead {{ seeded.email }}"
+    body: '[{{ json(seeded) }}]'
+  - name: lead_kept
+    sentence: "Lead {{ path.email }} (added here)"
+    body: '[{"email": "{{ path.email }}", "firstName": {{ json(default(kept.body.firstName, null)) }}, "lastName": {{ json(default(kept.body.lastName, null)) }}, "companyName": {{ json(default(kept.body.companyName, null)) }}, "isPaused": false, "state": "scanned"}]'
+  - name: lead_not_found
+    status: 404
+    note: the wording is close to lemlist's, not verified word for word
+    sentence: "No lead {{ path.email }}"
+    headers: {content-type: text/plain; charset=utf-8}
+    raw: true
+    body: Lead not found
+  - name: lead_paused
+    sentence: "Paused {{ path.email }}{{ has(query.campaignId) ? ' in ' + query.campaignId : ' in every campaign' }}"
+    body: '[{"_id": {{ json(default(lead._id, null)) }}, "email": "{{ path.email }}", "campaignId": {{ json(default(query.campaignId, lead.campaignId)) }}, "isPaused": true}]'
+  - name: hooks
+    sentence: "Listed {{ size(data.hooks) }} webhooks"
+    body: '{{ json(data.hooks) }}'
+  - name: hook_created
+    sentence: "Webhook {{ body.type | default('every event') }} to {{ body.targetUrl }}"
+    body: '{"_id": "{{ hook_id }}", "targetUrl": {{ json(body.targetUrl) }}, "type": {{ json(default(body.type, null)) }}, "campaignId": {{ json(default(body.campaignId, null)) }}, "createdAt": "{{ now() }}"}'
+  - name: target_url_missing
+    status: 400
+    sentence: "Webhook refused: no targetUrl"
+    headers: {content-type: text/plain; charset=utf-8}
+    raw: true
+    body: targetUrl is required
+  - name: hook_deleted
+    sentence: "Deleted webhook {{ path.hookId }}"
+    body: '{"_id": "{{ path.hookId }}"}'
+  - name: hook_not_found
+    status: 404
+    sentence: "No webhook {{ path.hookId }}"
+    headers: {content-type: text/plain; charset=utf-8}
+    raw: true
+    body: Hook not found
+  - name: tool_campaigns
+    sentence: "MCP: listed {{ size(data.campaigns) }} campaigns"
+    body: '{{ json(data.campaigns) }}'
+  - name: tool_campaign_not_found
+    status: 404
+    sentence: "MCP: no campaign {{ body.campaignId }}"
+    body: '{"error": "Campaign {{ body.campaignId }} not found."}'
+  - name: tool_leads_added
+    sentence: "MCP: added {{ size(body.leads) }} lead(s) to {{ campaign.name }}"
+    body: '{"campaignId": "{{ campaign._id }}", "campaignName": {{ json(campaign.name) }}, "added": {{ size(body.leads) }}, "leads": {{ json(body.leads) }}}'
+  - name: tool_team
+    sentence: "MCP: team {{ data.team.name }}"
+    body: '{{ json(data.team) }}'
+data:
+  team: {_id: tea_AcmeGrowth01, name: Acme Growth, userIds: [usr_EmmaCarter01, usr_LiamFoster02], createdBy: usr_EmmaCarter01, createdAt: '2025-01-15T10:00:00.000Z', beta: [], hooks: [], billing: {quantity: 2, ok: true, plan: email-pro}}
+  campaigns:
+    - {_id: cam_Q4OutboundSaaS, name: Q4 outbound - SaaS, labels: [outbound], createdAt: '2026-10-01T09:00:00.000Z', createdBy: usr_EmmaCarter01, status: running, archived: false, hasError: false, errors: [], sendUser: {_id: usr_EmmaCarter01, email: emma.carter@acme.example.com, firstName: Emma, lastName: Carter}}
+    - {_id: cam_GlobexFollowUp, name: Globex follow-up, labels: [], createdAt: '2026-09-12T09:00:00.000Z', createdBy: usr_LiamFoster02, status: paused, archived: false, hasError: false, errors: [], sendUser: {_id: usr_LiamFoster02, email: liam.foster@acme.example.com, firstName: Liam, lastName: Foster}}
+  leads:
+    - {_id: lea_LilyParker001, email: lily.parker@globex.example.com, firstName: Lily, lastName: Parker, companyName: Globex, isPaused: false, campaignId: cam_Q4OutboundSaaS, campaignName: Q4 outbound - SaaS, state: emailsOpened, contactId: ctc_LilyParker001}
+  hooks:
+    - {_id: hoo_AcmeCrmSync001, targetUrl: 'https://crm.acme.example.com/lemlist/events', type: emailsReplied, createdAt: '2026-08-01T10:00:00.000Z'}

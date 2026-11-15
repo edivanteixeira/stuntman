@@ -1,0 +1,180 @@
+# ReceitaWS: public CNPJ lookup (GET /v1/cnpj/{cnpj}), the free tier: 3 calls a minute, then 429.
+# The check digits are computed (wrong ones answer "CNPJ inválido"); the companies table answers
+# for its CNPJs (formatted or digits only); any other valid CNPJ is rejected by the Receita.
+# Synthetic companies only. Lets run alphabetically: a_n, b_s1, c_dv1, d_s2, e_dv2.
+service:
+  name: receitaws
+  title: ReceitaWS
+  origin: community
+  region: BR
+  description: CNPJ lookup - company registration data from the Receita Federal
+  base_url: https://receitaws.com.br/v1
+  real_host: receitaws.com.br
+  limits:
+    latency: 200ms..900ms
+    rate: 3/min
+routes:
+  - route: GET /v1/cnpj/{cnpj}
+    let:
+      a_n: double(digits(path.cnpj))
+      b_s1: (int(a_n / 10000000000000) % 10) * 5 + (int(a_n / 1000000000000) % 10) * 4 + (int(a_n / 100000000000) % 10) * 3 + (int(a_n / 10000000000) % 10) * 2 + (int(a_n / 1000000000) % 10) * 9 + (int(a_n / 100000000) % 10) * 8 + (int(a_n / 10000000) % 10) * 7 + (int(a_n / 1000000) % 10) * 6 + (int(a_n / 100000) % 10) * 5 + (int(a_n / 10000) % 10) * 4 + (int(a_n / 1000) % 10) * 3 + (int(a_n / 100) % 10) * 2
+      c_dv1: "b_s1 % 11 < 2 ? 0 : 11 - b_s1 % 11"
+      d_s2: (int(a_n / 10000000000000) % 10) * 6 + (int(a_n / 1000000000000) % 10) * 5 + (int(a_n / 100000000000) % 10) * 4 + (int(a_n / 10000000000) % 10) * 3 + (int(a_n / 1000000000) % 10) * 2 + (int(a_n / 100000000) % 10) * 9 + (int(a_n / 10000000) % 10) * 8 + (int(a_n / 1000000) % 10) * 7 + (int(a_n / 100000) % 10) * 6 + (int(a_n / 10000) % 10) * 5 + (int(a_n / 1000) % 10) * 4 + (int(a_n / 100) % 10) * 3 + c_dv1 * 2
+      e_dv2: "d_s2 % 11 < 2 ? 0 : 11 - d_s2 % 11"
+      company: lookup('companies', 'cnpj', path.cnpj)
+    decide:
+      - when: size(digits(path.cnpj)) != 14 || a_n == 0 || a_n % 100 != c_dv1 * 10 + e_dv2
+        answer: invalid_cnpj
+      - when: has(company)
+        answer: found
+      - answer: rejected
+answers:
+  - name: found
+    note: a company of the table (ATIVA, BAIXADA or INAPTA)
+    sentence: "Looked up {{ company.cnpj }}: {{ company.nome }} ({{ company.situacao }})"
+    body: '{{ json(company) }}'
+  - name: invalid_cnpj
+    note: wrong length or check digits
+    sentence: "CNPJ {{ path.cnpj }} is invalid"
+    body: '{"status": "ERROR", "message": "CNPJ inválido"}'
+  - name: rejected
+    note: a valid CNPJ the Receita does not know
+    sentence: "CNPJ {{ path.cnpj }} rejected by the Receita"
+    body: '{"status": "ERROR", "message": "CNPJ rejeitado pela Receita Federal"}'
+  - name: '429'
+    status: 429
+    note: over the free tier's 3 calls a minute
+    sentence: "Too many requests (free tier: 3 a minute)"
+    headers: {Content-Type: text/plain; charset=utf-8}
+    body: Too many requests, please try again later.
+data:
+  # Each row is the ReceitaWS answer as it comes; lookup matches cnpj by its digits.
+  companies:
+    - status: OK
+      ultima_atualizacao: '2026-11-10T03:12:41.000Z'
+      cnpj: 11.222.333/0001-81
+      tipo: MATRIZ
+      porte: DEMAIS
+      nome: ACME TECNOLOGIA LTDA
+      fantasia: ACME
+      abertura: 10/05/2010
+      atividade_principal: [{code: 62.01-5-01, text: Desenvolvimento de programas de computador sob encomenda}]
+      atividades_secundarias: [{code: 62.04-0-00, text: Consultoria em tecnologia da informação}, {code: 63.11-9-00, text: 'Tratamento de dados, provedores de serviços de aplicação e serviços de hospedagem na internet'}]
+      natureza_juridica: 206-2 - Sociedade Empresária Limitada
+      logradouro: RUA DAS PALMEIRAS
+      numero: '120'
+      complemento: ANDAR 4
+      cep: 01.310-100
+      bairro: JARDIM EXEMPLO
+      municipio: SAO PAULO
+      uf: SP
+      email: contato@acme.example.com
+      telefone: (11) 4000-0001
+      efr: ''
+      situacao: ATIVA
+      data_situacao: 10/05/2010
+      motivo_situacao: ''
+      situacao_especial: ''
+      data_situacao_especial: ''
+      capital_social: '250000.00'
+      qsa: [{nome: EMMA CARTER SOUZA, qual: 49-Sócio-Administrador}, {nome: LIAM FOSTER LIMA, qual: 22-Sócio}]
+      simples: {optante: false, data_opcao: null, data_exclusao: null, ultima_atualizacao: '2026-11-10T03:12:41.000Z'}
+      simei: {optante: false, data_opcao: null, data_exclusao: null, ultima_atualizacao: '2026-11-10T03:12:41.000Z'}
+      extra: {}
+      billing: {free: true, database: true}
+    - status: OK
+      ultima_atualizacao: '2026-11-08T14:05:09.000Z'
+      cnpj: 44.555.666/0001-81
+      tipo: MATRIZ
+      porte: EMPRESA DE PEQUENO PORTE
+      nome: GLOBEX COMERCIO DE ALIMENTOS LTDA
+      fantasia: GLOBEX MARKET
+      abertura: 22/03/2016
+      atividade_principal: [{code: 47.12-1-00, text: 'Comércio varejista de mercadorias em geral, com predominância de produtos alimentícios - minimercados, mercearias e armazéns'}]
+      atividades_secundarias: [{code: 56.11-2-03, text: 'Lanchonetes, casas de chá, de sucos e similares'}]
+      natureza_juridica: 206-2 - Sociedade Empresária Limitada
+      logradouro: AVENIDA DOS TESTES
+      numero: '1500'
+      complemento: LOJA 2
+      cep: 04.538-000
+      bairro: VILA SIMULADA
+      municipio: SAO PAULO
+      uf: SP
+      email: ''
+      telefone: (11) 4000-0002
+      efr: ''
+      situacao: ATIVA
+      data_situacao: 22/03/2016
+      motivo_situacao: ''
+      situacao_especial: ''
+      data_situacao_especial: ''
+      capital_social: '80000.00'
+      qsa: [{nome: OLIVIA BROOKS PEREIRA, qual: 49-Sócio-Administrador}]
+      simples: {optante: true, data_opcao: 22/03/2016, data_exclusao: null, ultima_atualizacao: '2026-11-08T14:05:09.000Z'}
+      simei: {optante: false, data_opcao: null, data_exclusao: null, ultima_atualizacao: '2026-11-08T14:05:09.000Z'}
+      extra: {}
+      billing: {free: true, database: true}
+    - status: OK
+      ultima_atualizacao: '2026-10-30T09:41:22.000Z'
+      cnpj: 12.345.678/0001-95
+      tipo: MATRIZ
+      porte: MICRO EMPRESA
+      nome: INICIAL EXEMPLO SERVICOS LTDA
+      fantasia: ''
+      abertura: 04/08/2012
+      atividade_principal: [{code: 82.11-3-00, text: Serviços combinados de escritório e apoio administrativo}]
+      atividades_secundarias: []
+      natureza_juridica: 206-2 - Sociedade Empresária Limitada
+      logradouro: RUA ALFA
+      numero: '42'
+      complemento: ''
+      cep: 01.317-000
+      bairro: BELA VISTA
+      municipio: SAO PAULO
+      uf: SP
+      email: ''
+      telefone: ''
+      efr: ''
+      situacao: BAIXADA
+      data_situacao: 15/01/2024
+      motivo_situacao: EXTINCAO POR ENCERRAMENTO LIQUIDACAO VOLUNTARIA
+      situacao_especial: ''
+      data_situacao_especial: ''
+      capital_social: '10000.00'
+      qsa: [{nome: NOAH PRICE COSTA, qual: 49-Sócio-Administrador}]
+      simples: {optante: false, data_opcao: null, data_exclusao: null, ultima_atualizacao: '2026-10-30T09:41:22.000Z'}
+      simei: {optante: false, data_opcao: null, data_exclusao: null, ultima_atualizacao: '2026-10-30T09:41:22.000Z'}
+      extra: {}
+      billing: {free: true, database: true}
+    - status: OK
+      ultima_atualizacao: '2026-11-01T18:27:55.000Z'
+      cnpj: 98.765.432/0001-98
+      tipo: MATRIZ
+      porte: DEMAIS
+      nome: SIMULADA INDUSTRIA DE PLASTICOS S.A.
+      fantasia: SIMULADA
+      abertura: 17/11/1998
+      atividade_principal: [{code: 22.29-3-99, text: Fabricação de artefatos de material plástico para outros usos não especificados anteriormente}]
+      atividades_secundarias: []
+      natureza_juridica: 205-4 - Sociedade Anônima Fechada
+      logradouro: ALAMEDA BETA
+      numero: '300'
+      complemento: GALPAO 3
+      cep: 04.077-000
+      bairro: MOEMA
+      municipio: SAO PAULO
+      uf: SP
+      email: fiscal@simulada.example.com
+      telefone: (11) 4000-0004
+      efr: ''
+      situacao: INAPTA
+      data_situacao: 03/06/2025
+      motivo_situacao: OMISSAO DE DECLARACOES
+      situacao_especial: ''
+      data_situacao_especial: ''
+      capital_social: '1500000.00'
+      qsa: [{nome: AVA REED MARTINS, qual: 10-Diretor}, {nome: ETHAN MOORE ALVES, qual: 10-Diretor}]
+      simples: {optante: false, data_opcao: null, data_exclusao: null, ultima_atualizacao: '2026-11-01T18:27:55.000Z'}
+      simei: {optante: false, data_opcao: null, data_exclusao: null, ultima_atualizacao: '2026-11-01T18:27:55.000Z'}
+      extra: {}
+      billing: {free: true, database: true}

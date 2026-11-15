@@ -1,0 +1,147 @@
+# Resend email API: send one email or a batch, read an email back, and the event webhooks
+# (email.sent at once, email.delivered or email.bounced 2 s later) signed by Svix.
+# Point the SDK at it: RESEND_BASE_URL=http://localhost:8028/resend (or resolve api.resend.com to
+# Stuntman); webhooks go to settings.webhook_url. A recipient with "bounce" in it bounces, as
+# bounced@resend.dev does.
+service:
+  name: resend
+  title: Resend
+  origin: community
+  description: Transactional email API with Svix-signed event webhooks
+  base_url: https://api.resend.com
+  real_host: api.resend.com
+  limits:
+    latency: 80ms..250ms
+  webhooks:
+    sign: svix
+    secret: secret://resend-webhook-secret
+    tolerance: 300
+  idempotency:
+    header: Idempotency-Key
+routes:
+  - route: POST /emails
+    let: &email_lets
+      a_id: "has(path.id) ? path.id : uuid()"
+      b_src: "has(path.id) ? state.emails[path.id].body : body"
+      c_to: "json(b_src.to).startsWith('[') ? b_src.to : [b_src.to]"
+      d_bounce: "json(c_to).contains('bounce')"
+    keep:
+      state: emails
+      key: a_id
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: missing_api_key
+      - when: "!headers.authorization.startsWith('Bearer re_')"
+        answer: invalid_api_key
+      - when: "!has(body.from)"
+        answer: missing_from
+      - when: "!has(body.to)"
+        answer: missing_to
+      - when: "!has(body.subject)"
+        answer: missing_subject
+      - when: "!body.from.contains('@')"
+        answer: invalid_from_address
+      - answer: sent
+    send:
+      - url: "{{ answer == 'sent' ? data.settings[0].webhook_url : '' }}"
+        event: email.sent
+        body: |-
+          {"type": "email.sent", "created_at": "{{ now() }}", "data": {"created_at": "{{ now() }}", "email_id": "{{ a_id }}", "from": {{ body.from | json }}, "to": {{ c_to | json }}, "subject": {{ body.subject | json }}{{ has(body.tags) ? ', "tags": ' + json(body.tags) : '' }}}}
+      - url: "{{ answer == 'sent' ? data.settings[0].webhook_url : '' }}"
+        delay: 2s
+        event: email.delivered
+        body: |-
+          {"type": "{{ d_bounce ? 'email.bounced' : 'email.delivered' }}", "created_at": "{{ now() }}", "data": {"created_at": "{{ now() }}", "email_id": "{{ a_id }}", "from": {{ body.from | json }}, "to": {{ c_to | json }}, "subject": {{ body.subject | json }}{{ d_bounce ? ', "bounce": {"message": "The recipient\'s email provider sent a hard bounce message, but didn\'t specify the reason for the hard bounce. We recommend removing the recipient\'s email address from your mailing list.", "subType": "General", "type": "Permanent"}' : '' }}}}
+  # Up to 100 emails in one call; each gets an id. Only the first 10 get one here.
+  # ponytail: ids are written out for 10 items (templates have no loops); batch emails are not kept
+  # for GET /emails/{id} and send no webhooks.
+  - route: POST /emails/batch
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: missing_api_key
+      - when: "!headers.authorization.startsWith('Bearer re_')"
+        answer: invalid_api_key
+      - when: "!has(body[0])"
+        answer: empty_batch
+      - when: "!has(body[0].from) || !has(body[0].to) || !has(body[0].subject)"
+        answer: batch_invalid
+      - answer: batch_sent
+  - route: GET /emails/{id}
+    let: *email_lets
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: missing_api_key
+      - when: "!headers.authorization.startsWith('Bearer re_')"
+        answer: invalid_api_key
+      - when: "!(path.id in state.emails)"
+        answer: not_found
+      - answer: email
+answers:
+  - name: sent
+    sentence: "Email {{ a_id }} from {{ body.from }} to {{ json(c_to) }}: {{ body.subject }}"
+    body: '{"id": "{{ a_id }}"}'
+  - name: batch_sent
+    sentence: "Batch of {{ size(body) }} email(s)"
+    body: |-
+      {"data": [{"id": "{{ uuid() }}"}{{ size(body) > 1 ? ', {"id": "' + uuid() + '"}' : '' }}{{ size(body) > 2 ? ', {"id": "' + uuid() + '"}' : '' }}{{ size(body) > 3 ? ', {"id": "' + uuid() + '"}' : '' }}{{ size(body) > 4 ? ', {"id": "' + uuid() + '"}' : '' }}{{ size(body) > 5 ? ', {"id": "' + uuid() + '"}' : '' }}{{ size(body) > 6 ? ', {"id": "' + uuid() + '"}' : '' }}{{ size(body) > 7 ? ', {"id": "' + uuid() + '"}' : '' }}{{ size(body) > 8 ? ', {"id": "' + uuid() + '"}' : '' }}{{ size(body) > 9 ? ', {"id": "' + uuid() + '"}' : '' }}]}
+  - name: email
+    sentence: "Read email {{ a_id }}: {{ d_bounce ? 'bounced' : 'delivered' }}"
+    body: |-
+      {"object": "email", "id": "{{ a_id }}", "to": {{ c_to | json }}, "from": {{ b_src.from | json }}, "created_at": "{{ state.emails[path.id].at | tz('UTC') }}", "subject": {{ b_src.subject | json }}, "html": {{ b_src.html | json }}, "text": {{ b_src.text | json }}, "bcc": {{ b_src.bcc | json }}, "cc": {{ b_src.cc | json }}, "reply_to": {{ b_src.reply_to | json }}, "last_event": "{{ d_bounce ? 'bounced' : 'delivered' }}", "scheduled_at": {{ b_src.scheduled_at | json }}}
+  - name: missing_api_key
+    status: 401
+    sentence: "Refused: no API key"
+    body: '{"statusCode": 401, "name": "missing_api_key", "message": "Missing API key in the authorization header. Include the following header in the request: Authorization: Bearer YOUR_API_KEY"}'
+  - name: invalid_api_key
+    status: 403
+    note: the key is not a Resend key (Bearer re_…)
+    sentence: "Refused: invalid API key"
+    body: '{"statusCode": 403, "name": "invalid_api_key", "message": "API key is invalid"}'
+  - name: missing_from
+    status: 422
+    sentence: "Refused: from missing"
+    body: '{"statusCode": 422, "name": "missing_required_field", "message": "Missing `from` field."}'
+  - name: missing_to
+    status: 422
+    sentence: "Refused: to missing"
+    body: '{"statusCode": 422, "name": "missing_required_field", "message": "Missing `to` field."}'
+  - name: missing_subject
+    status: 422
+    sentence: "Refused: subject missing"
+    body: '{"statusCode": 422, "name": "missing_required_field", "message": "Missing `subject` field."}'
+  - name: invalid_from_address
+    status: 422
+    sentence: "Refused: from {{ body.from }} is not an address"
+    body: '{"statusCode": 422, "name": "invalid_from_address", "message": "Invalid `from` field. The email address needs to follow the `email@example.com` or `Name <email@example.com>` format."}'
+  - name: empty_batch
+    status: 422
+    sentence: "Refused: empty batch"
+    body: '{"statusCode": 422, "name": "validation_error", "message": "The batch must contain at least one email."}'
+  - name: batch_invalid
+    status: 422
+    sentence: "Refused: the first email of the batch misses from, to or subject"
+    body: '{"statusCode": 422, "name": "validation_error", "message": "Each email in the batch needs `from`, `to` and `subject`."}'
+  - name: not_found
+    status: 404
+    sentence: "No email {{ path.id }}"
+    body: '{"statusCode": 404, "name": "not_found", "message": "Email not found"}'
+  - name: domain_not_verified
+    status: 403
+    note: exists only to be forced (sending from a domain not verified in Resend)
+    sentence: "Refused: domain not verified"
+    body: '{"statusCode": 403, "name": "validation_error", "message": "The example.com domain is not verified. Please, add and verify your domain on https://resend.com/domains"}'
+  - name: rate_limit_exceeded
+    status: 429
+    note: exists only to be forced (more than 2 requests a second)
+    sentence: "Rate limited (429)"
+    headers: {retry-after: '1'}
+    body: '{"statusCode": 429, "name": "rate_limit_exceeded", "message": "Too many requests. You can only make 2 requests per second. See rate limit response headers for more information. Or contact support to increase rate limit."}'
+  - name: daily_quota_exceeded
+    status: 429
+    note: exists only to be forced
+    sentence: "Daily quota exceeded (429)"
+    body: '{"statusCode": 429, "name": "daily_quota_exceeded", "message": "You have reached your daily email sending quota."}'
+data:
+  # Where the event webhooks go: the app's endpoint (set_data resend settings to change it).
+  settings:
+    - {webhook_url: 'http://localhost:3000/api/webhooks/resend'}

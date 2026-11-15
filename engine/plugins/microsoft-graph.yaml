@@ -1,0 +1,312 @@
+# Microsoft Graph v1.0: users, mail, calendar, Teams and change-notification subscriptions for the
+# Contoso tenant. Any "Authorization: Bearer <token>" works (Entra ID is not checked); /me is the
+# first user. Point the Graph client at http://localhost:8028/microsoft-graph/v1.0 (or resolve
+# graph.microsoft.com to Stuntman with the Test CA). Synthetic data only.
+service:
+  name: microsoft-graph
+  title: Microsoft Graph
+  origin: community
+  description: Users, mail, calendar, Teams and subscriptions (Graph v1.0)
+  base_url: https://graph.microsoft.com/v1.0
+  real_host: graph.microsoft.com
+  limits:
+    latency: 80ms..250ms
+routes:
+  - route: GET /v1.0/me
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - answer: me
+  - route: GET /v1.0/users
+    let:
+      match: "lookup('user_filters', 'filter', string(query['$filter']).lower())"
+      user: "lookup('users', 'id', match.id)"
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - when: "has(query['$filter'])"
+        answer: users_filtered
+      - answer: users
+  - route: GET /v1.0/users/{id}
+    let:
+      user: "default(lookup('users', 'id', path.id), lookup('users', 'userPrincipalName', path.id))"
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - when: "!has(user)"
+        answer: user_not_found
+      - answer: user
+  - route: GET /v1.0/users/{id}/photo/$value
+    let:
+      user: "default(lookup('users', 'id', path.id), lookup('users', 'userPrincipalName', path.id))"
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - when: "!has(user)"
+        answer: user_not_found
+      - answer: image_not_found
+  - route: GET /v1.0/users/{id}/chats
+    let:
+      user: "default(lookup('users', 'id', path.id), lookup('users', 'userPrincipalName', path.id))"
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - when: "!has(user)"
+        answer: user_not_found
+      - answer: chats
+  - route: POST /v1.0/users/{id}/sendMail
+    receive:
+      body: [message]
+      missing: empty_payload
+    let:
+      user: "default(lookup('users', 'id', path.id), lookup('users', 'userPrincipalName', path.id))"
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - when: "!has(user)"
+        answer: mailbox_not_found
+      - when: "size(body.message.toRecipients) == 0"
+        answer: invalid_recipients
+      - answer: mail_sent
+  - route: GET /v1.0/users/{id}/mailFolders/inbox/messages
+    let:
+      user: "default(lookup('users', 'id', path.id), lookup('users', 'userPrincipalName', path.id))"
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - when: "!has(user)"
+        answer: mailbox_not_found
+      - answer: inbox
+  # ponytail: the window is required but not applied; every event of the user is in it.
+  - route: GET /v1.0/users/{id}/calendarView
+    let:
+      user: "default(lookup('users', 'id', path.id), lookup('users', 'userPrincipalName', path.id))"
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - when: "!has(user)"
+        answer: mailbox_not_found
+      - when: "!has(query.startDateTime) || !has(query.endDateTime)"
+        answer: time_window_missing
+      - answer: calendar_view
+  - route: POST /v1.0/users/{id}/events
+    let:
+      event_id: "'AAMkAGI2' + random_id() + random_id() + 'AAA='"
+      user: "default(lookup('users', 'id', path.id), lookup('users', 'userPrincipalName', path.id))"
+    keep:
+      state: events
+      key: event_id
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - when: "!has(user)"
+        answer: mailbox_not_found
+      - answer: event_created
+  - route: GET /v1.0/teams/{id}
+    let:
+      team: "lookup('teams', 'id', path.id)"
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - when: "!has(team)"
+        answer: team_not_found
+      - answer: team
+  - route: GET /v1.0/teams/{id}/channels
+    let:
+      team: "lookup('teams', 'id', path.id)"
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - when: "!has(team)"
+        answer: team_not_found
+      - answer: channels
+  # How apps list teams: $filter=resourceProvisioningOptions/Any(x:x eq 'Team'). The groups table
+  # holds only Team groups, so the unfiltered list is the same.
+  - route: GET /v1.0/groups
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - answer: groups
+  - route: GET /v1.0/organization
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - answer: organization
+  # Change notifications: Graph answers 201 and POSTs the validation handshake to notificationUrl
+  # (?validationToken=…, URL-encoded); the app must echo the decoded token as text/plain.
+  # ponytail: the handshake goes after the 201 (Graph waits for it before answering).
+  - route: POST /v1.0/subscriptions
+    receive:
+      body: [changeType, notificationUrl, resource, expirationDateTime]
+      missing: subscription_invalid
+    let:
+      sub_id: "uuid()"
+      validation_token: "'Validation%3A%20Testing%20client%20application%20reachability%20for%20subscription%20Request-Id%3A%20' + uuid()"
+    keep:
+      state: subscriptions
+      key: sub_id
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - when: "!body.notificationUrl.startsWith('https://') && !body.notificationUrl.startsWith('http://')"
+        answer: subscription_invalid
+      - answer: subscription_created
+    send:
+      - url: "{{ body.notificationUrl }}?validationToken={{ validation_token }}"
+        event: subscription.validation
+answers:
+  - name: unauthenticated
+    status: 401
+    note: no Bearer token (Graph says "Access token is empty.")
+    sentence: "Refused: no access token (InvalidAuthenticationToken)"
+    headers: {www-authenticate: 'Bearer realm="", authorization_uri="https://login.microsoftonline.com/common/oauth2/authorize", client_id="00000003-0000-0000-c000-000000000000"'}
+    body: '{"error": {"code": "InvalidAuthenticationToken", "message": "Access token is empty.", "innerError": {"date": "{{ now() }}", "request-id": "{{ uuid() }}", "client-request-id": "{{ uuid() }}"}}}'
+  - name: request_denied
+    status: 403
+    note: the token lacks the permission (User.Read.All, Mail.Send…); exists only to be forced
+    sentence: "Refused: insufficient privileges (Authorization_RequestDenied)"
+    body: '{"error": {"code": "Authorization_RequestDenied", "message": "Insufficient privileges to complete the operation.", "innerError": {"date": "{{ now() }}", "request-id": "{{ uuid() }}", "client-request-id": "{{ uuid() }}"}}}'
+  - name: throttled
+    status: 429
+    note: Graph throttling; the app must wait Retry-After seconds. Exists only to be forced
+    sentence: "Throttled (429), retry after 10 s"
+    headers: {Retry-After: '10'}
+    body: '{"error": {"code": "TooManyRequests", "message": "Too many requests.", "innerError": {"date": "{{ now() }}", "request-id": "{{ uuid() }}", "client-request-id": "{{ uuid() }}"}}}'
+  - name: me_app_only
+    status: 400
+    note: /me with an app-only token (client credentials); exists only to be forced
+    sentence: "/me refused: app-only token"
+    body: '{"error": {"code": "BadRequest", "message": "/me request is only valid with delegated authentication flow.", "innerError": {"date": "{{ now() }}", "request-id": "{{ uuid() }}", "client-request-id": "{{ uuid() }}"}}}'
+  - name: me
+    sentence: "Signed-in user: {{ data.users[0].displayName }}"
+    body: |
+      {"@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users/$entity", "id": "{{ data.users[0].id }}",
+       "businessPhones": {{ json(data.users[0].businessPhones) }}, "displayName": {{ json(data.users[0].displayName) }},
+       "givenName": {{ json(data.users[0].givenName) }}, "surname": {{ json(data.users[0].surname) }}, "jobTitle": {{ json(data.users[0].jobTitle) }},
+       "mail": {{ json(data.users[0].mail) }}, "mobilePhone": {{ json(data.users[0].mobilePhone) }}, "officeLocation": {{ json(data.users[0].officeLocation) }},
+       "preferredLanguage": {{ json(data.users[0].preferredLanguage) }}, "userPrincipalName": {{ json(data.users[0].userPrincipalName) }}}
+  - name: users
+    sentence: "Listed {{ size(data.users) }} users"
+    body: '{"@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users", "value": {{ json(data.users) }}}'
+  - name: users_filtered
+    sentence: "Users where {{ query['$filter'] }}: {{ has(user) ? user.displayName : 'none' }}"
+    body: '{"@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users", "value": [{{ has(user) ? json(user) : '''' }}]}'
+  - name: user
+    sentence: "User {{ user.displayName }}"
+    body: '{{ json(user) }}'
+  - name: user_not_found
+    status: 404
+    sentence: "No user {{ path.id }} (Request_ResourceNotFound)"
+    body: '{"error": {"code": "Request_ResourceNotFound", "message": "Resource ''{{ path.id }}'' does not exist or one of its queried reference-property objects are not present.", "innerError": {"date": "{{ now() }}", "request-id": "{{ uuid() }}", "client-request-id": "{{ uuid() }}"}}}'
+  - name: mailbox_not_found
+    status: 404
+    sentence: "No mailbox for {{ path.id }} (ErrorInvalidUser)"
+    body: '{"error": {"code": "ErrorInvalidUser", "message": "The requested user ''{{ path.id }}'' is invalid."}}'
+  - name: image_not_found
+    status: 404
+    note: no photo was uploaded for this user (what most tenants answer)
+    sentence: "{{ user.displayName }} has no photo (ImageNotFound)"
+    body: '{"error": {"code": "ImageNotFound", "message": "Exception of type ''Microsoft.Fast.Profile.Core.Exception.ImageNotFoundException'' was thrown.", "innerError": {"date": "{{ now() }}", "request-id": "{{ uuid() }}", "client-request-id": "{{ uuid() }}"}}}'
+  - name: chats
+    sentence: "Chats of {{ user.displayName }}"
+    body: '{"@odata.context": "https://graph.microsoft.com/v1.0/$metadata#chats", "@odata.count": {{ size(default(data.chats[user.id], [])) }}, "value": {{ json(default(data.chats[user.id], [])) }}}'
+  - name: mail_sent
+    status: 202
+    sentence: "{{ user.displayName }} sent “{{ body.message.subject | default('(no subject)') }}” to {{ size(body.message.toRecipients) }} recipient(s)"
+  - name: empty_payload
+    status: 400
+    sentence: "sendMail refused: no message"
+    body: '{"error": {"code": "ErrorInvalidRequest", "message": "Empty Payload. JSON content expected."}}'
+  - name: invalid_recipients
+    status: 400
+    sentence: "sendMail refused: no recipients"
+    body: '{"error": {"code": "ErrorInvalidRecipients", "message": "At least one recipient is not valid., Recipient is not valid."}}'
+  - name: inbox
+    sentence: "Inbox of {{ user.displayName }}"
+    body: '{"@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users(''{{ user.id }}'')/mailFolders(''inbox'')/messages", "value": {{ json(default(data.messages[user.id], [])) }}}'
+  - name: calendar_view
+    sentence: "Calendar of {{ user.displayName }} from {{ query.startDateTime }} to {{ query.endDateTime }}"
+    body: '{"@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users(''{{ user.id }}'')/calendarView", "value": {{ json(default(data.events[user.id], [])) }}}'
+  - name: time_window_missing
+    status: 400
+    sentence: "calendarView refused: no startDateTime/endDateTime"
+    body: '{"error": {"code": "ErrorInvalidParameter", "message": "This request requires a time window specified by the query string parameters StartDateTime and EndDateTime."}}'
+  - name: event_created
+    status: 201
+    sentence: "{{ user.displayName }} created the event “{{ body.subject | default('(no subject)') }}”"
+    body: |
+      {"@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('{{ user.id }}')/events/$entity", "id": "{{ event_id }}",
+       "createdDateTime": "{{ now() }}", "lastModifiedDateTime": "{{ now() }}", "subject": {{ json(default(body.subject, '')) }},
+       "body": {{ json(default(body.body, {})) }}, "start": {{ json(body.start) }}, "end": {{ json(body.end) }},
+       "location": {{ json(default(body.location, {})) }}, "attendees": {{ json(default(body.attendees, [])) }}, "isOnlineMeeting": {{ json(default(body.isOnlineMeeting, false)) }},
+       "organizer": {"emailAddress": {"name": "{{ user.displayName }}", "address": "{{ user.mail }}"}},
+       "webLink": "https://outlook.office365.com/owa/?itemid={{ event_id }}&exvsurl=1&path=/calendar/item"}
+  - name: team
+    sentence: "Team {{ team.displayName }}"
+    body: '{{ json(team) }}'
+  - name: team_not_found
+    status: 404
+    sentence: "No team {{ path.id }}"
+    body: '{"error": {"code": "NotFound", "message": "No team found with Group Id {{ path.id }}", "innerError": {"date": "{{ now() }}", "request-id": "{{ uuid() }}", "client-request-id": "{{ uuid() }}"}}}'
+  - name: channels
+    sentence: "Channels of {{ team.displayName }}"
+    body: '{"@odata.context": "https://graph.microsoft.com/v1.0/$metadata#teams(''{{ team.id }}'')/channels", "@odata.count": {{ size(default(data.channels[team.id], [])) }}, "value": {{ json(default(data.channels[team.id], [])) }}}'
+  - name: groups
+    sentence: "Listed {{ size(data.groups) }} groups{{ has(query['$filter']) ? ' (Teams)' : '' }}"
+    body: '{"@odata.context": "https://graph.microsoft.com/v1.0/$metadata#groups", "value": {{ json(data.groups) }}}'
+  - name: organization
+    sentence: "Tenant {{ data.organization[0].displayName }}"
+    body: '{"@odata.context": "https://graph.microsoft.com/v1.0/$metadata#organization", "value": {{ json(data.organization) }}}'
+  - name: subscription_created
+    status: 201
+    sentence: "Subscribed to {{ body.changeType }} on {{ body.resource }}; validation sent to {{ body.notificationUrl }}"
+    body: |
+      {"@odata.context": "https://graph.microsoft.com/v1.0/$metadata#subscriptions/$entity", "id": "{{ sub_id }}", "resource": {{ json(body.resource) }},
+       "applicationId": "8f0f5c51-7c55-4f53-9b44-2d6b0d9c1a01", "changeType": {{ json(body.changeType) }}, "clientState": {{ json(default(body.clientState, null)) }},
+       "notificationUrl": {{ json(body.notificationUrl) }}, "notificationQueryOptions": null, "lifecycleNotificationUrl": {{ json(default(body.lifecycleNotificationUrl, null)) }},
+       "expirationDateTime": {{ json(body.expirationDateTime) }}, "creatorId": "{{ data.users[0].id }}", "includeResourceData": null,
+       "latestSupportedTlsVersion": "v1_2", "encryptionCertificate": null, "encryptionCertificateId": null, "notificationUrlAppId": null}
+  - name: subscription_invalid
+    status: 400
+    sentence: "Subscription refused: changeType, notificationUrl, resource and expirationDateTime are required"
+    body: '{"error": {"code": "InvalidRequest", "message": "Subscription validation request failed. Must specify changeType, notificationUrl, resource and expirationDateTime.", "innerError": {"date": "{{ now() }}", "request-id": "{{ uuid() }}", "client-request-id": "{{ uuid() }}"}}}'
+data:
+  users:
+    - {id: 6e7b768e-07e2-4810-8459-485f84f8f204, displayName: Emma Carter, givenName: Emma, surname: Carter, jobTitle: Operations Manager, mail: emma.carter@contoso.example.com, userPrincipalName: emma.carter@contoso.example.com, mobilePhone: null, officeLocation: 18/2111, preferredLanguage: en-US, businessPhones: ['+1 425 555 0109']}
+    - {id: 87d349ed-44d7-43e1-9a83-5f2406dee5bd, displayName: Liam Foster, givenName: Liam, surname: Foster, jobTitle: Account Executive, mail: liam.foster@contoso.example.com, userPrincipalName: liam.foster@contoso.example.com, mobilePhone: '+1 206 555 0110', officeLocation: 131/1104, preferredLanguage: en-US, businessPhones: ['+1 206 555 0114']}
+    - {id: 48d31887-5fad-4d73-a9f5-3c356e68a038, displayName: Olivia Brooks, givenName: Olivia, surname: Brooks, jobTitle: Support Lead, mail: olivia.brooks@contoso.example.com, userPrincipalName: olivia.brooks@contoso.example.com, mobilePhone: null, officeLocation: 20/1101, preferredLanguage: en-US, businessPhones: ['+1 412 555 0109']}
+  # $filter values the users route understands (lowercase); any other filter finds nobody.
+  user_filters:
+    - {filter: "mail eq 'emma.carter@contoso.example.com'", id: 6e7b768e-07e2-4810-8459-485f84f8f204}
+    - {filter: "userprincipalname eq 'emma.carter@contoso.example.com'", id: 6e7b768e-07e2-4810-8459-485f84f8f204}
+    - {filter: "mail eq 'liam.foster@contoso.example.com'", id: 87d349ed-44d7-43e1-9a83-5f2406dee5bd}
+    - {filter: "userprincipalname eq 'liam.foster@contoso.example.com'", id: 87d349ed-44d7-43e1-9a83-5f2406dee5bd}
+    - {filter: "mail eq 'olivia.brooks@contoso.example.com'", id: 48d31887-5fad-4d73-a9f5-3c356e68a038}
+    - {filter: "userprincipalname eq 'olivia.brooks@contoso.example.com'", id: 48d31887-5fad-4d73-a9f5-3c356e68a038}
+  organization:
+    - {id: 2f4a9838-26b7-47ee-be60-ccc1fdec5953, displayName: Contoso, countryLetterCode: US, tenantType: AAD, createdDateTime: '2024-03-01T15:00:00Z', verifiedDomains: [{name: contoso.example.com, type: Managed, isDefault: true, isInitial: false, capabilities: 'Email, OfficeCommunicationsOnline'}]}
+  groups:
+    - {id: 02bd9fd6-8f93-4758-87c3-1fb73740a315, displayName: Operations, description: Operations team, mail: operations@contoso.example.com, mailEnabled: true, securityEnabled: false, groupTypes: [Unified], visibility: Private, resourceProvisioningOptions: [Team]}
+    - {id: 8090c93e-ba7c-433e-9f39-08c7ba07c0b3, displayName: Sales, description: Sales team, mail: sales@contoso.example.com, mailEnabled: true, securityEnabled: false, groupTypes: [Unified], visibility: Public, resourceProvisioningOptions: [Team]}
+  teams:
+    - {id: 02bd9fd6-8f93-4758-87c3-1fb73740a315, displayName: Operations, description: Operations team, isArchived: false, visibility: private, webUrl: 'https://teams.microsoft.com/l/team/19%3a0a1b2c3d4e5f@thread.tacv2/conversations?groupId=02bd9fd6-8f93-4758-87c3-1fb73740a315&tenantId=2f4a9838-26b7-47ee-be60-ccc1fdec5953', internalId: '19:0a1b2c3d4e5f@thread.tacv2', memberSettings: {allowCreateUpdateChannels: true}, messagingSettings: {allowUserEditMessages: true}}
+    - {id: 8090c93e-ba7c-433e-9f39-08c7ba07c0b3, displayName: Sales, description: Sales team, isArchived: false, visibility: public, webUrl: 'https://teams.microsoft.com/l/team/19%3a9f8e7d6c5b4a@thread.tacv2/conversations?groupId=8090c93e-ba7c-433e-9f39-08c7ba07c0b3&tenantId=2f4a9838-26b7-47ee-be60-ccc1fdec5953', internalId: '19:9f8e7d6c5b4a@thread.tacv2', memberSettings: {allowCreateUpdateChannels: true}, messagingSettings: {allowUserEditMessages: true}}
+  # Channels by team id.
+  channels:
+    02bd9fd6-8f93-4758-87c3-1fb73740a315:
+      - {id: '19:0a1b2c3d4e5f@thread.tacv2', createdDateTime: '2024-03-02T10:00:00Z', displayName: General, description: Operations team, email: '', membershipType: standard, webUrl: 'https://teams.microsoft.com/l/channel/19%3a0a1b2c3d4e5f%40thread.tacv2/General?groupId=02bd9fd6-8f93-4758-87c3-1fb73740a315'}
+      - {id: '19:5e6f7a8b9c0d@thread.tacv2', createdDateTime: '2024-03-05T10:00:00Z', displayName: Incidents, description: On-call and incidents, email: '', membershipType: standard, webUrl: 'https://teams.microsoft.com/l/channel/19%3a5e6f7a8b9c0d%40thread.tacv2/Incidents?groupId=02bd9fd6-8f93-4758-87c3-1fb73740a315'}
+    8090c93e-ba7c-433e-9f39-08c7ba07c0b3:
+      - {id: '19:9f8e7d6c5b4a@thread.tacv2', createdDateTime: '2024-03-02T10:00:00Z', displayName: General, description: Sales team, email: '', membershipType: standard, webUrl: 'https://teams.microsoft.com/l/channel/19%3a9f8e7d6c5b4a%40thread.tacv2/General?groupId=8090c93e-ba7c-433e-9f39-08c7ba07c0b3'}
+  # Chats, inbox messages and calendar events by user id.
+  chats:
+    6e7b768e-07e2-4810-8459-485f84f8f204:
+      - {id: '19:6e7b768e-07e2-4810-8459-485f84f8f204_87d349ed-44d7-43e1-9a83-5f2406dee5bd@unq.gbl.spaces', topic: null, createdDateTime: '2024-04-10T14:00:00Z', lastUpdatedDateTime: '2026-11-10T16:21:00Z', chatType: oneOnOne, tenantId: 2f4a9838-26b7-47ee-be60-ccc1fdec5953, webUrl: 'https://teams.microsoft.com/l/chat/19%3a6e7b768e_87d349ed%40unq.gbl.spaces/0'}
+      - {id: '19:3a9c1d7e2b4f4e6a8c0d@thread.v2', topic: Q4 launch, createdDateTime: '2026-09-01T09:00:00Z', lastUpdatedDateTime: '2026-11-12T11:05:00Z', chatType: group, tenantId: 2f4a9838-26b7-47ee-be60-ccc1fdec5953, webUrl: 'https://teams.microsoft.com/l/chat/19%3a3a9c1d7e2b4f4e6a8c0d%40thread.v2/0'}
+  messages:
+    6e7b768e-07e2-4810-8459-485f84f8f204:
+      - {id: 'AAMkAGI2THVSAAA=', receivedDateTime: '2026-11-14T13:02:00Z', sentDateTime: '2026-11-14T13:01:58Z', subject: Renewal quote for Globex, bodyPreview: Hi Emma, attached is the renewal quote for next year., importance: normal, isRead: false, hasAttachments: true, webLink: 'https://outlook.office365.com/owa/?ItemID=AAMkAGI2THVSAAA%3D', from: {emailAddress: {name: Liam Foster, address: liam.foster@contoso.example.com}}, toRecipients: [{emailAddress: {name: Emma Carter, address: emma.carter@contoso.example.com}}]}
+      - {id: 'AAMkAGI2THVTAAA=', receivedDateTime: '2026-11-13T08:40:00Z', sentDateTime: '2026-11-13T08:39:51Z', subject: Your ticket 4821 was updated, bodyPreview: The support team replied to ticket 4821., importance: normal, isRead: true, hasAttachments: false, webLink: 'https://outlook.office365.com/owa/?ItemID=AAMkAGI2THVTAAA%3D', from: {emailAddress: {name: Acme Support, address: support@acme.example.com}}, toRecipients: [{emailAddress: {name: Emma Carter, address: emma.carter@contoso.example.com}}]}
+  events:
+    6e7b768e-07e2-4810-8459-485f84f8f204:
+      - {id: 'AAMkAGI2EVT1AAA=', subject: Weekly operations sync, isOnlineMeeting: true, start: {dateTime: '2026-11-16T15:00:00.0000000', timeZone: UTC}, end: {dateTime: '2026-11-16T15:30:00.0000000', timeZone: UTC}, location: {displayName: Microsoft Teams Meeting}, organizer: {emailAddress: {name: Emma Carter, address: emma.carter@contoso.example.com}}, attendees: [{type: required, status: {response: accepted, time: '2026-11-10T09:00:00Z'}, emailAddress: {name: Liam Foster, address: liam.foster@contoso.example.com}}]}

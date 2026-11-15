@@ -1,0 +1,112 @@
+# OneSignal push notifications: create a notification (to subscription or player ids, aliases or
+# segments) and read its delivery stats. Answers on both the legacy https://onesignal.com/api/v1 and
+# the current https://api.onesignal.com paths. Point the SDK's base path at
+# http://localhost:8028/onesignal/api/v1 (or resolve onesignal.com / api.onesignal.com to Stuntman).
+# Ids starting with "invalid" come back in errors.invalid_player_ids; segments count the segments table.
+service:
+  name: onesignal
+  title: OneSignal
+  origin: community
+  description: Push notifications and their delivery stats
+  base_url: https://onesignal.com/api/v1
+  real_host: api.onesignal.com
+  limits:
+    latency: 120ms..400ms
+routes:
+  # Authorization: Basic <REST API key> (legacy) or Key <REST API key>; any key is accepted.
+  - route: POST ~(?:/api/v1)?/notifications
+    let: &notification_lets
+      a_id: "has(path.id) ? path.id : uuid()"
+      b_src: "has(path.id) ? state.notifications[path.id].body : body"
+      c_ids: "default(b_src.include_subscription_ids, b_src.include_player_ids)"
+      # ponytail: the first 5 ids are checked (no loops in expressions); more ids count as valid.
+      e0: "c_ids[0].startsWith('invalid')"
+      e1: "c_ids[1].startsWith('invalid')"
+      e2: "c_ids[2].startsWith('invalid')"
+      e3: "c_ids[3].startsWith('invalid')"
+      e4: "c_ids[4].startsWith('invalid')"
+      f_bad: >-
+        (e0 ? json(c_ids[0]) : '')
+        + (e1 ? (e0 ? ',' : '') + json(c_ids[1]) : '')
+        + (e2 ? (e0 || e1 ? ',' : '') + json(c_ids[2]) : '')
+        + (e3 ? (e0 || e1 || e2 ? ',' : '') + json(c_ids[3]) : '')
+        + (e4 ? (e0 || e1 || e2 || e3 ? ',' : '') + json(c_ids[4]) : '')
+      g_nbad: "int((e0 ? 1 : 0) + (e1 ? 1 : 0) + (e2 ? 1 : 0) + (e3 ? 1 : 0) + (e4 ? 1 : 0))"
+      h_count: >-
+        int(has(c_ids) ? size(c_ids) - g_nbad
+        : has(b_src.include_aliases) ? size(b_src.include_aliases.external_id)
+        : has(b_src.include_external_user_ids) ? size(b_src.include_external_user_ids)
+        : default(lookup('segments', 'name', b_src.included_segments[0]).subscriptions, 0))
+    keep:
+      state: notifications
+      key: a_id
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: no_auth
+      - when: "!has(body.app_id)"
+        answer: no_app_id
+      - when: "!has(body.contents) && !has(body.template_id)"
+        answer: no_contents
+      - when: "!has(c_ids) && !has(body.include_aliases) && !has(body.include_external_user_ids) && !has(body.included_segments) && !has(body.filters)"
+        answer: no_target
+      - when: h_count == 0
+        answer: all_unsubscribed
+      - answer: created
+  - route: GET ~(?:/api/v1)?/notifications/(?P<id>[^/]+)
+    let: *notification_lets
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: no_auth
+      - when: "!has(query.app_id)"
+        answer: no_app_id
+      - when: "!(path.id in state.notifications)"
+        answer: not_found
+      - answer: stats
+answers:
+  - name: created
+    sentence: "Push {{ a_id }} to {{ h_count }} subscription(s){{ g_nbad > 0 ? ', ' + g_nbad + ' invalid id(s)' : '' }}"
+    body: |-
+      {"id": "{{ a_id }}", "external_id": {{ body.external_id | json }}{{ f_bad != '' ? ', "errors": {"invalid_player_ids": [' + f_bad + ']}' : '' }}}
+  - name: all_unsubscribed
+    note: no one would get it (every id invalid, or an empty segment); 200 with an empty id
+    sentence: "Push not sent: all included players are not subscribed"
+    body: |-
+      {"id": "", "external_id": null, "errors": {{ f_bad != '' ? '{"invalid_player_ids": [' + f_bad + ']}' : '["All included players are not subscribed"]' }}}
+  - name: stats
+    sentence: "Stats of push {{ a_id }}: {{ h_count }} delivered"
+    body: |-
+      {"id": "{{ a_id }}", "app_id": {{ b_src.app_id | json }}, "external_id": {{ b_src.external_id | json }}, "contents": {{ b_src.contents | json }}, "headings": {{ b_src.headings | json }}, "data": {{ b_src.data | json }}, "url": {{ b_src.url | json }}, "included_segments": {{ b_src.included_segments | json }}, "include_player_ids": {{ c_ids | json }}, "successful": {{ h_count }}, "failed": 0, "errored": 0, "converted": {{ int(h_count / 10) }}, "received": {{ h_count }}, "remaining": 0, "queued_at": {{ int(state.notifications[path.id].at / 1000) }}, "send_after": {{ int(state.notifications[path.id].at / 1000) }}, "completed_at": {{ int(state.notifications[path.id].at / 1000) + 2 }}, "canceled": false, "platform_delivery_stats": {"ios": {"successful": {{ int(h_count / 2) }}, "failed": 0, "errored": 0, "converted": 0, "received": {{ int(h_count / 2) }}}, "android": {"successful": {{ h_count - int(h_count / 2) }}, "failed": 0, "errored": 0, "converted": 0, "received": {{ h_count - int(h_count / 2) }}}}}
+  - name: no_auth
+    status: 400
+    sentence: "Refused: no REST API key"
+    body: '{"errors": ["Please include a case-sensitive header of Authorization: Key <YOUR-REST-API-KEY-HERE> with a valid REST API key."], "reference": ["https://documentation.onesignal.com/docs/keys-and-ids"]}'
+  - name: no_app_id
+    status: 400
+    sentence: "Refused: app_id missing"
+    body: '{"errors": ["app_id not found. You may be missing a Content-Type: application/json header."]}'
+  - name: no_contents
+    status: 400
+    sentence: "Refused: no contents"
+    body: '{"errors": ["Message Notifications must have English language content"]}'
+  - name: no_target
+    status: 400
+    sentence: "Refused: no one to send to"
+    body: '{"errors": ["You must include which players, segments, or tags you wish to send this notification to."]}'
+  - name: not_found
+    status: 404
+    sentence: "No notification {{ path.id }}"
+    body: '{"errors": ["Couldn''t find a notification with id: {{ path.id }}"]}'
+  - name: invalid_key
+    status: 403
+    note: exists only to be forced (a key from another app)
+    sentence: "Refused: access denied"
+    body: '{"errors": ["Access denied.  Please include an ''Authorization: Key ...'' header with a valid API key (https://documentation.onesignal.com/docs/keys-and-ids)."]}'
+data:
+  # Segments and how many subscriptions each reaches (included_segments; only the first is counted).
+  segments:
+    - {name: Total Subscriptions, subscriptions: 1250}
+    - {name: Subscribed Users, subscriptions: 1250}
+    - {name: Active Users, subscriptions: 830}
+    - {name: Engaged Users, subscriptions: 310}
+    - {name: Inactive Users, subscriptions: 420}
+    - {name: Empty Segment, subscriptions: 0}

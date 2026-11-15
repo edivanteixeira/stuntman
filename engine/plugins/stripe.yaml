@@ -1,0 +1,511 @@
+# Stripe API (test mode): customers, PaymentIntents with Stripe's test payment methods (pm_card_visa,
+# pm_card_chargeDeclined, pm_card_authenticationRequired…), Checkout and billing-portal sessions,
+# subscriptions, invoices and refunds. Form-encoded bodies, any secret key, Idempotency-Key replays,
+# webhooks signed as Stripe signs them. Point the SDK at it: stripe.api_base / STRIPE_API_BASE =
+# http://localhost:8028/stripe (or resolve api.stripe.com to Stuntman); webhooks go to settings.webhook_url.
+#
+# Reading this file: lets run in alphabetical order, so the ones a later let reads are named a_…, b_…
+# Each `view` is the Stripe object, rendered once and used by the answer and the webhook. Numbers in a
+# view are wrapped in int(): a bare 0 in a map would come out as 0.0.
+# A subscription's id carries its customer (sub_<customer>): one subscription per customer, so that
+# GET /v1/subscriptions?customer= and GET /v1/invoices?customer= can find it (expressions cannot
+# filter a list of kept objects).
+service:
+  name: stripe
+  title: Stripe
+  origin: community
+  description: Payments, subscriptions and invoices (test mode) with signed webhooks
+  base_url: https://api.stripe.com
+  real_host: api.stripe.com
+  limits:
+    latency: 150ms..450ms
+  webhooks:
+    sign: stripe
+    header: Stripe-Signature
+    secret: secret://stripe-webhook-secret
+    tolerance: 300
+  idempotency:
+    header: Idempotency-Key
+routes:
+  # ---------------------------------------------------------------- customers
+  - route: POST /v1/customers
+    let: &customer_lets
+      a_id: "has(path.id) ? path.id : 'cus_' + random_id() + random_id()"
+      b_src: "has(path.id) ? state.customers[path.id].body : body"
+      c_at: "has(path.id) ? state.customers[path.id].at : now_ms()"
+      view: >-
+        {"id": a_id, "object": "customer", "address": null, "balance": int(0), "created": int(c_at / 1000),
+        "currency": null, "default_source": null, "delinquent": false, "description": b_src.description,
+        "discount": null, "email": b_src.email,
+        "invoice_settings": {"custom_fields": null, "default_payment_method": b_src['invoice_settings[default_payment_method]'], "footer": null, "rendering_options": null},
+        "livemode": false, "metadata": {}, "name": b_src.name, "next_invoice_sequence": int(1), "phone": b_src.phone,
+        "preferred_locales": [], "shipping": null, "tax_exempt": "none", "test_clock": null}
+    keep:
+      state: customers
+      key: a_id
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: no_api_key
+      - when: has(body.email) && !body.email.contains('@')
+        answer: email_invalid
+      - answer: customer
+  - route: GET /v1/customers/{id}
+    let: *customer_lets
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: no_api_key
+      - when: "!(path.id in state.customers)"
+        answer: no_such_customer
+      - answer: customer
+
+  # ---------------------------------------------------------------- payment intents
+  # The outcome comes from the payment method (the cards table): pm_card_visa succeeds,
+  # pm_card_chargeDeclined… is declined (402), pm_card_authenticationRequired needs 3D Secure
+  # (requires_action, next_action.redirect_to_url). Confirming that one again counts as the
+  # customer having passed the challenge. capture_method=manual stops at requires_capture.
+  - route: POST /v1/payment_intents
+    let: &pi_lets
+      a_id: "has(path.id) ? path.id : 'pi_3' + random_id() + random_id()"
+      b_src: "has(path.id) ? state.payment_intents[path.id].body : body"
+      c_pm: "default(body.payment_method, b_src.payment_method)"
+      d_card: "lookup('cards', 'payment_method', c_pm)"
+      e_stage: "__method == 'GET' ? 'get' : __path.endsWith('/confirm') ? 'confirm' : __path.endsWith('/capture') ? 'capture' : 'create'"
+      f_confirming: "e_stage == 'confirm' || b_src.confirm == 'true' || a_id in state.pi_confirms"
+      f_passed: "e_stage == 'confirm' ? (b_src.confirm == 'true' || a_id in state.pi_confirms) : e_stage == 'get' ? (b_src.confirm == 'true' && a_id in state.pi_confirms) : false"
+      g_status: >-
+        e_stage == 'capture' || (e_stage == 'get' && a_id in state.pi_captures) ? 'succeeded'
+        : !has(c_pm) ? 'requires_payment_method'
+        : !f_confirming ? 'requires_confirmation'
+        : d_card.outcome == 'declined' ? 'requires_payment_method'
+        : d_card.outcome == 'requires_action' && !f_passed ? 'requires_action'
+        : b_src.capture_method == 'manual' ? 'requires_capture'
+        : 'succeeded'
+      h_event: >-
+        g_status == 'succeeded' ? 'payment_intent.succeeded'
+        : g_status == 'requires_action' ? 'payment_intent.requires_action'
+        : g_status == 'requires_capture' ? 'payment_intent.amount_capturable_updated'
+        : has(c_pm) && f_confirming && g_status == 'requires_payment_method' ? 'payment_intent.payment_failed'
+        : ''
+      i_return: "default(body.return_url, b_src.return_url)"
+      view: >-
+        {"id": a_id, "object": "payment_intent", "amount": int(b_src.amount),
+        "amount_capturable": g_status == 'requires_capture' ? int(b_src.amount) : int(0),
+        "amount_received": g_status == 'succeeded' ? default(int(body.amount_to_capture), int(b_src.amount)) : int(0),
+        "capture_method": default(b_src.capture_method, 'automatic_async'),
+        "client_secret": a_id + '_secret_' + a_id.sha256(),
+        "confirmation_method": "automatic",
+        "created": int((has(path.id) ? state.payment_intents[path.id].at : now_ms()) / 1000),
+        "currency": b_src.currency, "customer": b_src.customer, "description": b_src.description,
+        "last_payment_error": h_event == 'payment_intent.payment_failed' ? {"code": d_card.code, "decline_code": d_card.decline_code, "message": d_card.message, "payment_method": {"id": c_pm, "object": "payment_method", "type": "card"}, "type": "card_error"} : null,
+        "latest_charge": g_status == 'succeeded' || g_status == 'requires_capture' ? 'ch_' + a_id.sha256() : null,
+        "livemode": false, "metadata": {},
+        "next_action": g_status == 'requires_action' ? {"type": "redirect_to_url", "redirect_to_url": {"return_url": i_return, "url": has(i_return) ? i_return + '?payment_intent=' + a_id + '&payment_intent_client_secret=' + a_id + '_secret_' + a_id.sha256() + '&redirect_status=succeeded' : 'https://hooks.stripe.com/3d_secure_2/hosted?payment_intent=' + a_id}} : null,
+        "payment_method": c_pm, "payment_method_types": ["card"], "receipt_email": b_src.receipt_email,
+        "setup_future_usage": b_src.setup_future_usage, "status": g_status}
+    keep:
+      state: payment_intents
+      key: a_id
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: no_api_key
+      - when: "!has(body.amount)"
+        answer: missing_amount
+      - when: "!has(body.currency)"
+        answer: missing_currency
+      - when: int(body.amount) < 50
+        answer: amount_too_small
+      - when: body.confirm == 'true' && !has(body.payment_method)
+        answer: missing_payment_method
+      - when: h_event == 'payment_intent.payment_failed'
+        answer: card_declined
+      - answer: payment_intent
+    send:
+      - url: "{{ answer in ['payment_intent', 'card_declined'] ? data.settings[0].webhook_url : '' }}"
+        event: payment_intent.created
+        body: &pi_created_event |-
+          {"id": "evt_{{ random_id() }}{{ random_id() }}{{ random_id() }}", "object": "event", "api_version": "2024-06-20", "created": {{ int(now_ms() / 1000) }}, "data": {"object": {{ view | json }}}, "livemode": false, "pending_webhooks": 1, "request": {"id": "req_{{ random_id() }}", "idempotency_key": {{ headers['idempotency-key'] | json }}}, "type": "payment_intent.created"}
+      - url: &pi_outcome_url "{{ h_event != '' && answer in ['payment_intent', 'card_declined'] ? data.settings[0].webhook_url : '' }}"
+        event: payment_intent.outcome
+        body: &pi_outcome_event |-
+          {"id": "evt_{{ random_id() }}{{ random_id() }}{{ random_id() }}", "object": "event", "api_version": "2024-06-20", "created": {{ int(now_ms() / 1000) }}, "data": {"object": {{ view | json }}}, "livemode": false, "pending_webhooks": 1, "request": {"id": "req_{{ random_id() }}", "idempotency_key": {{ headers['idempotency-key'] | json }}}, "type": "{{ h_event }}"}
+  - route: GET /v1/payment_intents/{id}
+    let: *pi_lets
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: no_api_key
+      - when: "!(path.id in state.payment_intents)"
+        answer: no_such_payment_intent
+      - answer: payment_intent
+  - route: POST /v1/payment_intents/{id}/confirm
+    let: *pi_lets
+    keep:
+      state: pi_confirms
+      key: path.id
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: no_api_key
+      - when: "!(path.id in state.payment_intents)"
+        answer: no_such_payment_intent
+      - when: "!has(c_pm)"
+        answer: missing_payment_method
+      - when: h_event == 'payment_intent.payment_failed'
+        answer: card_declined
+      - answer: payment_intent
+    send:
+      - url: *pi_outcome_url
+        event: payment_intent.outcome
+        body: *pi_outcome_event
+  - route: POST /v1/payment_intents/{id}/capture
+    let: *pi_lets
+    keep:
+      state: pi_captures
+      key: path.id
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: no_api_key
+      - when: "!(path.id in state.payment_intents)"
+        answer: no_such_payment_intent
+      - answer: payment_intent
+    send:
+      - url: *pi_outcome_url
+        event: payment_intent.succeeded
+        body: *pi_outcome_event
+
+  # ---------------------------------------------------------------- refunds
+  - route: POST /v1/refunds
+    let:
+      a_id: "'re_3' + random_id() + random_id()"
+      b_pi: "state.payment_intents[body.payment_intent]"
+      view: >-
+        {"id": a_id, "object": "refund", "amount": default(int(body.amount), int(b_pi.body.amount)),
+        "balance_transaction": 'txn_' + a_id.sha256(), "charge": default(body.charge, has(b_pi) ? 'ch_' + body.payment_intent.sha256() : null),
+        "created": int(now_ms() / 1000), "currency": default(b_pi.body.currency, 'usd'), "metadata": {},
+        "payment_intent": body.payment_intent, "reason": body.reason, "receipt_number": null,
+        "source_transfer_reversal": null, "status": "succeeded", "transfer_reversal": null}
+    keep:
+      state: refunds
+      key: a_id
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: no_api_key
+      - when: "!has(body.payment_intent) && !has(body.charge)"
+        answer: refund_needs_target
+      - when: has(body.payment_intent) && !(body.payment_intent in state.payment_intents)
+        answer: no_such_payment_intent
+      - when: has(body.amount) && has(b_pi) && int(body.amount) > int(b_pi.body.amount)
+        answer: refund_too_large
+      - answer: refund
+
+  # ---------------------------------------------------------------- checkout and billing portal
+  # The session's url is Stripe's hosted page address (nothing is drawn); checkout.session.completed
+  # follows 5 s later, as if the customer paid.
+  - route: POST /v1/checkout/sessions
+    let:
+      a_id: "'cs_test_a1' + random_id() + random_id() + random_id()"
+      b_amount: "int(default(lookup('prices', 'id', body['line_items[0][price]']).unit_amount, 2000)) * int(default(body['line_items[0][quantity]'], 1))"
+      view: >-
+        {"id": a_id, "object": "checkout.session", "amount_subtotal": int(b_amount), "amount_total": int(b_amount),
+        "cancel_url": body.cancel_url, "client_reference_id": body.client_reference_id, "created": int(now_ms() / 1000),
+        "currency": default(lookup('prices', 'id', body['line_items[0][price]']).currency, 'usd'),
+        "customer": body.customer, "customer_email": body.customer_email,
+        "expires_at": int(now_ms() / 1000 + 86400), "livemode": false, "metadata": {}, "mode": body.mode,
+        "payment_intent": null, "payment_status": "unpaid", "status": "open", "subscription": null,
+        "success_url": body.success_url, "ui_mode": "hosted", "url": 'https://checkout.stripe.com/c/pay/' + a_id}
+      view_completed: >-
+        {"id": a_id, "object": "checkout.session", "amount_subtotal": int(b_amount), "amount_total": int(b_amount),
+        "client_reference_id": body.client_reference_id, "created": int(now_ms() / 1000),
+        "currency": default(lookup('prices', 'id', body['line_items[0][price]']).currency, 'usd'),
+        "customer": default(body.customer, 'cus_' + a_id.sha256()), "customer_details": {"email": default(body.customer_email, 'emma.carter@example.com'), "name": "Emma Carter"},
+        "livemode": false, "metadata": {}, "mode": body.mode,
+        "payment_intent": body.mode == 'payment' ? 'pi_3' + a_id.sha256() : null, "payment_status": "paid", "status": "complete",
+        "subscription": body.mode == 'subscription' ? 'sub_' + default(body.customer, 'cus_' + a_id.sha256()) : null,
+        "success_url": body.success_url, "url": null}
+    keep:
+      state: checkout_sessions
+      key: a_id
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: no_api_key
+      - when: "!has(body.mode)"
+        answer: missing_mode
+      - when: "body.mode != 'setup' && !has(body['line_items[0][price]'])"
+        answer: missing_line_items
+      - answer: checkout_session
+    send:
+      - url: "{{ answer == 'checkout_session' ? data.settings[0].webhook_url : '' }}"
+        delay: 5s
+        event: checkout.session.completed
+        body: |-
+          {"id": "evt_{{ random_id() }}{{ random_id() }}{{ random_id() }}", "object": "event", "api_version": "2024-06-20", "created": {{ int(now_ms() / 1000) }}, "data": {"object": {{ view_completed | json }}}, "livemode": false, "pending_webhooks": 1, "request": {"id": null, "idempotency_key": null}, "type": "checkout.session.completed"}
+  - route: POST /v1/billing_portal/sessions
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: no_api_key
+      - when: "!has(body.customer)"
+        answer: missing_customer
+      - answer: portal_session
+
+  # ---------------------------------------------------------------- subscriptions and invoices
+  # A subscription answers customer.subscription.created and invoice.paid at once, and
+  # invoice.upcoming 30 days later on the environment's clock (advance it to see it).
+  - route: POST /v1/subscriptions
+    let: &sub_lets
+      a_cus: "default(path.customer, default(query.customer, body.customer))"
+      b_creating: "__method == 'POST' && !has(path.customer)"
+      c_src: "b_creating ? body : state.subscriptions[a_cus].body"
+      d_created: "b_creating ? int(now_ms() / 1000) : int(state.subscriptions[a_cus].at / 1000)"
+      d_update: "!b_creating && state.subscription_updates[a_cus].at >= state.subscriptions[a_cus].at ? state.subscription_updates[a_cus].body : null"
+      e_price: "default(body['items[0][price]'], default(d_update['items[0][price]'], c_src['items[0][price]']))"
+      f_row: "lookup('prices', 'id', e_price)"
+      g_canceled: "__method == 'DELETE' || (!b_creating && state.subscription_cancels[a_cus].at >= state.subscriptions[a_cus].at)"
+      h_trial: "int(default(c_src.trial_period_days, 0))"
+      i_status: "g_canceled ? 'canceled' : h_trial > 0 ? 'trialing' : 'active'"
+      j_qty: "int(default(body['items[0][quantity]'], default(d_update['items[0][quantity]'], default(c_src['items[0][quantity]'], 1))))"
+      k_amount: "i_status == 'trialing' ? int(0) : int(default(f_row.unit_amount, 2000) * j_qty)"
+      l_end: "int(d_created + (h_trial > 0 ? h_trial * 86400 : 2592000))"
+      view: >-
+        {"id": 'sub_' + a_cus, "object": "subscription", "billing_cycle_anchor": d_created, "cancel_at": null,
+        "cancel_at_period_end": default(body.cancel_at_period_end, d_update.cancel_at_period_end) == 'true',
+        "canceled_at": g_canceled ? int(now_ms() / 1000) : null, "collection_method": "charge_automatically",
+        "created": d_created, "currency": default(f_row.currency, 'usd'),
+        "current_period_end": l_end, "current_period_start": d_created, "customer": a_cus,
+        "default_payment_method": c_src.default_payment_method, "ended_at": g_canceled ? int(now_ms() / 1000) : null,
+        "items": {"object": "list", "data": [{"id": 'si_' + a_cus, "object": "subscription_item", "created": d_created,
+          "current_period_end": l_end, "current_period_start": d_created,
+          "price": {"id": e_price, "object": "price", "active": true, "currency": default(f_row.currency, 'usd'),
+            "product": default(f_row.product, 'prod_acme'), "recurring": {"interval": "month", "interval_count": int(1)},
+            "type": "recurring", "unit_amount": int(default(f_row.unit_amount, 2000))},
+          "quantity": j_qty, "subscription": 'sub_' + a_cus}], "has_more": false, "url": '/v1/subscription_items?subscription=sub_' + a_cus},
+        "latest_invoice": 'in_' + a_cus, "livemode": false, "metadata": {}, "start_date": d_created, "status": i_status,
+        "trial_end": h_trial > 0 ? l_end : null, "trial_start": h_trial > 0 ? d_created : null}
+      vinvoice: >-
+        {"id": 'in_' + a_cus, "object": "invoice", "amount_due": k_amount, "amount_paid": k_amount, "amount_remaining": int(0),
+        "attempt_count": int(1), "attempted": true, "billing_reason": "subscription_create", "collection_method": "charge_automatically",
+        "created": d_created, "currency": default(f_row.currency, 'usd'), "customer": a_cus,
+        "hosted_invoice_url": 'https://invoice.stripe.com/i/acct_1Acme/test_' + a_cus.sha256(),
+        "invoice_pdf": 'https://pay.stripe.com/invoice/acct_1Acme/test_' + a_cus.sha256() + '/pdf',
+        "lines": {"object": "list", "data": [{"id": 'il_' + a_cus, "object": "line_item", "amount": k_amount, "currency": default(f_row.currency, 'usd'),
+          "description": j_qty + ' × ' + default(f_row.product, 'prod_acme') + ' (at $' + int(default(f_row.unit_amount, 2000)) / 100 + ' / month)',
+          "period": {"end": l_end, "start": d_created}, "price": {"id": e_price, "object": "price"}, "quantity": j_qty}], "has_more": false},
+        "livemode": false, "number": 'ACME-' + a_cus.digits() + '-0001', "paid": true, "period_end": d_created, "period_start": d_created,
+        "status": "paid", "subscription": 'sub_' + a_cus, "subtotal": k_amount, "total": k_amount}
+    keep:
+      state: subscriptions
+      key: a_cus
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: no_api_key
+      - when: "!has(body.customer)"
+        answer: missing_customer
+      - when: "!has(body['items[0][price]'])"
+        answer: missing_items
+      - answer: subscription
+    send:
+      - url: "{{ answer == 'subscription' ? data.settings[0].webhook_url : '' }}"
+        event: customer.subscription.created
+        body: |-
+          {"id": "evt_{{ random_id() }}{{ random_id() }}{{ random_id() }}", "object": "event", "api_version": "2024-06-20", "created": {{ int(now_ms() / 1000) }}, "data": {"object": {{ view | json }}}, "livemode": false, "pending_webhooks": 1, "request": {"id": "req_{{ random_id() }}", "idempotency_key": {{ headers['idempotency-key'] | json }}}, "type": "customer.subscription.created"}
+      - url: "{{ answer == 'subscription' ? data.settings[0].webhook_url : '' }}"
+        event: invoice.paid
+        body: |-
+          {"id": "evt_{{ random_id() }}{{ random_id() }}{{ random_id() }}", "object": "event", "api_version": "2024-06-20", "created": {{ int(now_ms() / 1000) }}, "data": {"object": {{ vinvoice | json }}}, "livemode": false, "pending_webhooks": 1, "request": {"id": null, "idempotency_key": null}, "type": "invoice.paid"}
+      - url: "{{ answer == 'subscription' ? data.settings[0].webhook_url : '' }}"
+        delay: 30d
+        event: invoice.upcoming
+        body: |-
+          {"id": "evt_{{ random_id() }}{{ random_id() }}{{ random_id() }}", "object": "event", "api_version": "2024-06-20", "created": {{ int(now_ms() / 1000) + 2592000 }}, "data": {"object": {{ vinvoice | json }}}, "livemode": false, "pending_webhooks": 1, "request": {"id": null, "idempotency_key": null}, "type": "invoice.upcoming"}
+  - route: GET /v1/subscriptions
+    let: *sub_lets
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: no_api_key
+      - answer: subscription_list
+  - route: GET ~/v1/subscriptions/sub_(?P<customer>[^/]+)
+    let: *sub_lets
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: no_api_key
+      - when: "!(a_cus in state.subscriptions)"
+        answer: no_such_subscription
+      - answer: subscription
+  - route: POST ~/v1/subscriptions/sub_(?P<customer>[^/]+)
+    let: *sub_lets
+    keep:
+      state: subscription_updates
+      key: a_cus
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: no_api_key
+      - when: "!(a_cus in state.subscriptions)"
+        answer: no_such_subscription
+      - answer: subscription
+    send:
+      - url: "{{ answer == 'subscription' ? data.settings[0].webhook_url : '' }}"
+        event: customer.subscription.updated
+        body: |-
+          {"id": "evt_{{ random_id() }}{{ random_id() }}{{ random_id() }}", "object": "event", "api_version": "2024-06-20", "created": {{ int(now_ms() / 1000) }}, "data": {"object": {{ view | json }}}, "livemode": false, "pending_webhooks": 1, "request": {"id": "req_{{ random_id() }}", "idempotency_key": {{ headers['idempotency-key'] | json }}}, "type": "customer.subscription.updated"}
+  - route: DELETE ~/v1/subscriptions/sub_(?P<customer>[^/]+)
+    let: *sub_lets
+    keep:
+      state: subscription_cancels
+      key: a_cus
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: no_api_key
+      - when: "!(a_cus in state.subscriptions)"
+        answer: no_such_subscription
+      - answer: subscription
+    send:
+      - url: "{{ answer == 'subscription' ? data.settings[0].webhook_url : '' }}"
+        event: customer.subscription.deleted
+        body: |-
+          {"id": "evt_{{ random_id() }}{{ random_id() }}{{ random_id() }}", "object": "event", "api_version": "2024-06-20", "created": {{ int(now_ms() / 1000) }}, "data": {"object": {{ view | json }}}, "livemode": false, "pending_webhooks": 1, "request": {"id": "req_{{ random_id() }}", "idempotency_key": null}, "type": "customer.subscription.deleted"}
+  # Only ?customer= filters (the customer's latest invoice); without it the list is empty.
+  - route: GET /v1/invoices
+    let: *sub_lets
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: no_api_key
+      - answer: invoice_list
+  - route: GET ~/v1/invoices/in_(?P<customer>[^/]+)
+    let: *sub_lets
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: no_api_key
+      - when: "!(a_cus in state.subscriptions)"
+        answer: no_such_invoice
+      - answer: invoice
+answers:
+  - name: customer
+    sentence: "Customer {{ a_id }}{{ has(b_src.email) ? ' (' + b_src.email + ')' : '' }}"
+    body: '{{ view | json }}'
+  - name: payment_intent
+    note: the PaymentIntent; its status follows the payment method (cards table) and the step
+    sentence: "PaymentIntent {{ a_id }} of {{ b_src.amount }} {{ b_src.currency }}: {{ g_status }}"
+    body: '{{ view | json }}'
+  - name: card_declined
+    status: 402
+    note: the card was declined (pm_card_chargeDeclined and friends); the decline code comes from the cards table
+    sentence: "Card declined for {{ a_id }}: {{ d_card.decline_code }}"
+    body: |-
+      {"error": {"charge": "ch_{{ a_id.sha256() }}", "code": "{{ d_card.code }}", "decline_code": "{{ d_card.decline_code }}", "message": "{{ d_card.message }}", "param": "", "payment_intent": {{ view | json }}, "payment_method": {"id": "{{ c_pm }}", "object": "payment_method", "type": "card"}, "request_log_url": "https://dashboard.stripe.com/test/logs/req_{{ random_id() }}", "type": "card_error"}}
+  - name: refund
+    sentence: "Refund {{ a_id }} of {{ default(body.amount, b_pi.body.amount) }} for {{ default(body.payment_intent, body.charge) }}"
+    body: '{{ view | json }}'
+  - name: checkout_session
+    sentence: "Checkout session {{ a_id }} ({{ body.mode }}): open"
+    body: '{{ view | json }}'
+  - name: portal_session
+    sentence: "Billing portal for {{ body.customer }}"
+    body: |-
+      {"id": "bps_1{{ random_id() }}{{ random_id() }}", "object": "billing_portal.session", "configuration": "bpc_1Acme{{ random_id() }}", "created": {{ int(now_ms() / 1000) }}, "customer": {{ body.customer | json }}, "flow": null, "livemode": false, "locale": {{ body.locale | json }}, "on_behalf_of": null, "return_url": {{ body.return_url | json }}, "url": "https://billing.stripe.com/p/session/test_{{ random_id() }}{{ random_id() }}{{ random_id() }}"}
+  - name: subscription
+    note: the subscription (one per customer; sub_<customer>)
+    sentence: "Subscription sub_{{ a_cus }} for {{ a_cus }} on {{ e_price }}: {{ i_status }}"
+    body: '{{ view | json }}'
+  - name: subscription_list
+    sentence: "Subscriptions of {{ default(a_cus, 'everyone') }}"
+    body: |-
+      {"object": "list", "data": [{{ has(state.subscriptions[a_cus]) && (i_status != 'canceled' || query.status == 'all' || query.status == 'canceled') ? json(view) : '' }}], "has_more": false, "url": "/v1/subscriptions"}
+  - name: invoice
+    sentence: "Invoice in_{{ a_cus }}: paid"
+    body: '{{ vinvoice | json }}'
+  - name: invoice_list
+    sentence: "Invoices of {{ default(a_cus, 'everyone') }}"
+    body: |-
+      {"object": "list", "data": [{{ has(state.subscriptions[a_cus]) ? json(vinvoice) : '' }}], "has_more": false, "url": "/v1/invoices"}
+  # ---- errors, in Stripe's shape
+  - name: no_api_key
+    status: 401
+    note: no Authorization header (any secret key is accepted)
+    sentence: "Refused: no API key"
+    body: '{"error": {"message": "You did not provide an API key. You need to provide your API key in the Authorization header, using Bearer auth (e.g. ''Authorization: Bearer YOUR_SECRET_KEY''). See https://stripe.com/docs/api#authentication for details, or we can help at https://support.stripe.com/.", "type": "invalid_request_error"}}'
+  - name: email_invalid
+    status: 400
+    sentence: "Refused: invalid email {{ body.email }}"
+    body: '{"error": {"code": "email_invalid", "doc_url": "https://stripe.com/docs/error-codes/email-invalid", "message": "Invalid email address: {{ body.email }}", "param": "email", "type": "invalid_request_error"}}'
+  - name: missing_amount
+    status: 400
+    sentence: "Refused: amount missing"
+    body: '{"error": {"code": "parameter_missing", "doc_url": "https://stripe.com/docs/error-codes/parameter-missing", "message": "Missing required param: amount.", "param": "amount", "type": "invalid_request_error"}}'
+  - name: missing_currency
+    status: 400
+    sentence: "Refused: currency missing"
+    body: '{"error": {"code": "parameter_missing", "doc_url": "https://stripe.com/docs/error-codes/parameter-missing", "message": "Missing required param: currency.", "param": "currency", "type": "invalid_request_error"}}'
+  - name: missing_customer
+    status: 400
+    sentence: "Refused: customer missing"
+    body: '{"error": {"code": "parameter_missing", "doc_url": "https://stripe.com/docs/error-codes/parameter-missing", "message": "Missing required param: customer.", "param": "customer", "type": "invalid_request_error"}}'
+  - name: missing_items
+    status: 400
+    sentence: "Refused: items missing"
+    body: '{"error": {"code": "parameter_missing", "doc_url": "https://stripe.com/docs/error-codes/parameter-missing", "message": "Missing required param: items.", "param": "items", "type": "invalid_request_error"}}'
+  - name: missing_mode
+    status: 400
+    sentence: "Refused: mode missing"
+    body: '{"error": {"code": "parameter_missing", "doc_url": "https://stripe.com/docs/error-codes/parameter-missing", "message": "Missing required param: mode.", "param": "mode", "type": "invalid_request_error"}}'
+  - name: missing_line_items
+    status: 400
+    sentence: "Refused: line_items missing"
+    body: '{"error": {"message": "You must specify either `line_items` or `subscription_data` when creating a Checkout Session in `{{ body.mode }}` mode.", "param": "line_items", "type": "invalid_request_error"}}'
+  - name: amount_too_small
+    status: 400
+    sentence: "Refused: amount {{ body.amount }} below the minimum"
+    body: '{"error": {"code": "amount_too_small", "doc_url": "https://stripe.com/docs/error-codes/amount-too-small", "message": "Amount must be at least $0.50 usd", "param": "amount", "type": "invalid_request_error"}}'
+  - name: missing_payment_method
+    status: 400
+    sentence: "Refused: no payment method to confirm with"
+    body: '{"error": {"code": "payment_intent_unexpected_state", "doc_url": "https://stripe.com/docs/error-codes/payment-intent-unexpected-state", "message": "You cannot confirm this PaymentIntent because it''s missing a payment method. You can either update the PaymentIntent with a payment method and then confirm it again, or confirm it again directly with a payment method.", "type": "invalid_request_error"}}'
+  - name: refund_needs_target
+    status: 400
+    sentence: "Refused: refund without payment_intent or charge"
+    body: '{"error": {"message": "One of the following params should be provided for this request: payment_intent or charge.", "type": "invalid_request_error"}}'
+  - name: refund_too_large
+    status: 400
+    sentence: "Refused: refund of {{ body.amount }} is more than {{ b_pi.body.amount }}"
+    body: '{"error": {"code": "amount_too_large", "message": "Refund amount ({{ body.amount }}) is greater than charge amount ({{ b_pi.body.amount }})", "param": "amount", "type": "invalid_request_error"}}'
+  - name: no_such_customer
+    status: 404
+    sentence: "No such customer {{ path.id }}"
+    body: '{"error": {"code": "resource_missing", "doc_url": "https://stripe.com/docs/error-codes/resource-missing", "message": "No such customer: ''{{ path.id }}''", "param": "id", "type": "invalid_request_error"}}'
+  - name: no_such_payment_intent
+    status: 404
+    sentence: "No such PaymentIntent {{ default(path.id, body.payment_intent) }}"
+    body: '{"error": {"code": "resource_missing", "doc_url": "https://stripe.com/docs/error-codes/resource-missing", "message": "No such payment_intent: ''{{ default(path.id, body.payment_intent) }}''", "param": "{{ has(path.id) ? ''intent'' : ''payment_intent'' }}", "type": "invalid_request_error"}}'
+  - name: no_such_subscription
+    status: 404
+    sentence: "No such subscription sub_{{ a_cus }}"
+    body: '{"error": {"code": "resource_missing", "doc_url": "https://stripe.com/docs/error-codes/resource-missing", "message": "No such subscription: ''sub_{{ a_cus }}''", "param": "id", "type": "invalid_request_error"}}'
+  - name: no_such_invoice
+    status: 404
+    sentence: "No such invoice in_{{ a_cus }}"
+    body: '{"error": {"code": "resource_missing", "doc_url": "https://stripe.com/docs/error-codes/resource-missing", "message": "No such invoice: ''in_{{ a_cus }}''", "param": "id", "type": "invalid_request_error"}}'
+  - name: rate_limited
+    status: 429
+    note: exists only to be forced
+    sentence: "Rate limited (429)"
+    body: '{"error": {"code": "rate_limit", "doc_url": "https://stripe.com/docs/error-codes/rate-limit", "message": "Too many requests hit the API too quickly. We recommend an exponential backoff of your requests.", "type": "invalid_request_error"}}'
+  - name: api_error
+    status: 500
+    note: exists only to be forced
+    sentence: "Stripe API error (500)"
+    body: '{"error": {"message": "An unknown error occurred", "type": "api_error"}}'
+data:
+  # Where the webhooks go: the app's endpoint (set_data stripe settings to change it).
+  settings:
+    - {webhook_url: 'http://localhost:3000/api/webhooks/stripe'}
+  # Stripe's test payment methods and what each one does.
+  cards:
+    - {payment_method: pm_card_visa, outcome: succeeded, brand: visa, last4: '4242'}
+    - {payment_method: pm_card_mastercard, outcome: succeeded, brand: mastercard, last4: '4444'}
+    - {payment_method: pm_card_amex, outcome: succeeded, brand: amex, last4: '8431'}
+    - {payment_method: pm_card_chargeDeclined, outcome: declined, brand: visa, last4: '0002', code: card_declined, decline_code: generic_decline, message: Your card was declined.}
+    - {payment_method: pm_card_chargeDeclinedInsufficientFunds, outcome: declined, brand: visa, last4: '9995', code: card_declined, decline_code: insufficient_funds, message: Your card has insufficient funds.}
+    - {payment_method: pm_card_chargeDeclinedExpiredCard, outcome: declined, brand: visa, last4: '0069', code: expired_card, decline_code: expired_card, message: Your card has expired.}
+    - {payment_method: pm_card_chargeDeclinedIncorrectCvc, outcome: declined, brand: visa, last4: '0127', code: incorrect_cvc, decline_code: incorrect_cvc, message: Your card's security code is incorrect.}
+    - {payment_method: pm_card_authenticationRequired, outcome: requires_action, brand: visa, last4: '3184'}
+  # Prices the subscriptions and checkout sessions charge; any other price id is 2000 usd.
+  prices:
+    - {id: price_acme_basic_monthly, unit_amount: 900, currency: usd, product: prod_acme_basic}
+    - {id: price_acme_pro_monthly, unit_amount: 2900, currency: usd, product: prod_acme_pro}
+    - {id: price_acme_team_monthly, unit_amount: 9900, currency: usd, product: prod_acme_team}

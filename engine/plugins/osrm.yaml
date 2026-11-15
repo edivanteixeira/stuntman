@@ -1,0 +1,216 @@
+# OSRM HTTP API v1 (the public demo server): route, table, nearest and trip.
+# Two-point calls are computed from the coordinates (straight line x 1.3 for roads; speed by
+# profile); more points get a fixed plausible answer. Over 5,000 km is NoRoute; a malformed
+# coordinate list is InvalidQuery. Lets run in alphabetical order, hence the a_, b_… names.
+service:
+  name: osrm
+  title: OSRM
+  origin: community
+  description: Open Source Routing Machine - routes, distance tables, nearest road, trips
+  base_url: http://router.project-osrm.org
+  real_host: router.project-osrm.org
+  limits:
+    latency: 40ms..120ms
+routes:
+  - route: GET ~/route/v1/(?P<profile>[^/]+)/(?P<lon1>-?[0-9]+(?:\.[0-9]+)?),(?P<lat1>-?[0-9]+(?:\.[0-9]+)?);(?P<lon2>-?[0-9]+(?:\.[0-9]+)?),(?P<lat2>-?[0-9]+(?:\.[0-9]+)?)
+    let: &two_points
+      a_dy: (double(path.lat2) - double(path.lat1)) * 110574
+      b_lat: (double(path.lat1) + double(path.lat2)) / 2 * 0.0174533
+      c_cos: 1 - b_lat * b_lat / 2 + b_lat * b_lat * b_lat * b_lat / 24
+      d_dx: (double(path.lon2) - double(path.lon1)) * 111320 * c_cos
+      e_ax: "d_dx < 0 ? -d_dx : d_dx"
+      f_ay: "a_dy < 0 ? -a_dy : a_dy"
+      g_line: "e_ax > f_ay ? e_ax + 0.41 * f_ay : f_ay + 0.41 * e_ax"
+      h_dist: g_line * 1.3
+      i_speed: "path.profile == 'foot' || path.profile == 'walking' ? 1.4 : (path.profile == 'bike' || path.profile == 'bicycle' || path.profile == 'cycling' ? 4.2 : 11.1)"
+      j_dur: h_dist / i_speed
+    decide:
+      - when: double(path.lat1) > 90 || double(path.lat1) < -90 || double(path.lat2) > 90 || double(path.lat2) < -90 || double(path.lon1) > 180 || double(path.lon1) < -180 || double(path.lon2) > 180 || double(path.lon2) < -180
+        answer: invalid_value
+      - when: h_dist > 5000000
+        answer: no_route
+      - answer: route
+  - route: GET ~/table/v1/(?P<profile>[^/]+)/(?P<lon1>-?[0-9]+(?:\.[0-9]+)?),(?P<lat1>-?[0-9]+(?:\.[0-9]+)?);(?P<lon2>-?[0-9]+(?:\.[0-9]+)?),(?P<lat2>-?[0-9]+(?:\.[0-9]+)?)
+    let: *two_points
+    decide:
+      - when: double(path.lat1) > 90 || double(path.lat1) < -90 || double(path.lat2) > 90 || double(path.lat2) < -90
+        answer: invalid_value
+      - answer: table
+  - route: GET ~/trip/v1/(?P<profile>[^/]+)/(?P<lon1>-?[0-9]+(?:\.[0-9]+)?),(?P<lat1>-?[0-9]+(?:\.[0-9]+)?);(?P<lon2>-?[0-9]+(?:\.[0-9]+)?),(?P<lat2>-?[0-9]+(?:\.[0-9]+)?)
+    let: *two_points
+    decide:
+      - when: double(path.lat1) > 90 || double(path.lat1) < -90 || double(path.lat2) > 90 || double(path.lat2) < -90
+        answer: invalid_value
+      - when: h_dist > 5000000
+        answer: no_trips
+      - answer: trip
+  - route: GET ~/nearest/v1/(?P<profile>[^/]+)/(?P<lon1>-?[0-9]+(?:\.[0-9]+)?),(?P<lat1>-?[0-9]+(?:\.[0-9]+)?)
+    decide:
+      - when: double(path.lat1) > 90 || double(path.lat1) < -90 || double(path.lon1) > 180 || double(path.lon1) < -180
+        answer: invalid_value
+      - answer: nearest
+  # Anything else under a service: 3+ points (fixed answer), a malformed list, an unknown service.
+  - route: GET /{service}/v1/{profile}/{coordinates}
+    decide:
+      - when: "!(path.service in ['route', 'table', 'nearest', 'trip', 'match', 'tile'])"
+        answer: invalid_service
+      - when: "!path.coordinates.matches('^-?[0-9]+(\\.[0-9]+)?,-?[0-9]+(\\.[0-9]+)?(;-?[0-9]+(\\.[0-9]+)?,-?[0-9]+(\\.[0-9]+)?)+$')"
+        answer: invalid_query
+      - when: path.service == 'table'
+        answer: table_many
+      - when: path.service == 'trip'
+        answer: trip_many
+      - answer: route_many
+answers:
+  - name: route
+    note: two points; distance from the coordinates (straight line x 1.3), duration by profile
+    sentence: "Routed {{ path.profile }}: {{ h_dist / 1000 | round(1) }} km, {{ j_dur / 60 | round(0) }} min"
+    body: |
+      {
+        "code": "Ok",
+        "routes": [{
+          "geometry": {{ query.geometries == 'geojson' ? '{"type": "LineString", "coordinates": [[' + path.lon1 + ', ' + path.lat1 + '], [' + path.lon2 + ', ' + path.lat2 + ']]}' : '"nyxnCnqf{Gk@_BwAiEeAeDuBeG"' }},
+          "legs": [{"steps": [], "summary": "", "weight": {{ j_dur | round(1) }}, "duration": {{ j_dur | round(1) }}, "distance": {{ h_dist | round(1) }}}],
+          "weight_name": "routability",
+          "weight": {{ j_dur | round(1) }},
+          "duration": {{ j_dur | round(1) }},
+          "distance": {{ h_dist | round(1) }}
+        }],
+        "waypoints": [
+          {"hint": "kF0xgP___38AAAAAKwAAAAAAAAAAAAAAc2xhQQ", "distance": 3.217, "name": "Rua das Palmeiras", "location": [{{ path.lon1 }}, {{ path.lat1 }}]},
+          {"hint": "mH4xgP___38XAAAAAAAAAAkAAAAAAAAAy9tcQg", "distance": 5.904, "name": "Avenida dos Testes", "location": [{{ path.lon2 }}, {{ path.lat2 }}]}
+        ]
+      }
+  - name: route_many
+    note: three or more points; a fixed answer (the plugin computes only two-point calls)
+    sentence: "Routed {{ path.profile }} through several points (fixed answer)"
+    body: |
+      {
+        "code": "Ok",
+        "routes": [{
+          "geometry": "nyxnCnqf{Gk@_BwAiEeAeDuBeGsCqH",
+          "legs": [
+            {"steps": [], "summary": "", "weight": 312.4, "duration": 312.4, "distance": 3468.2},
+            {"steps": [], "summary": "", "weight": 255.9, "duration": 255.9, "distance": 2840.7}
+          ],
+          "weight_name": "routability", "weight": 568.3, "duration": 568.3, "distance": 6308.9
+        }],
+        "waypoints": [
+          {"hint": "kF0xgP___38AAAAAKwAAAAAAAAAAAAAAc2xhQQ", "distance": 3.217, "name": "Rua das Palmeiras", "location": [-46.6527, -23.5643]},
+          {"hint": "mH4xgP___38XAAAAAAAAAAkAAAAAAAAAy9tcQg", "distance": 5.904, "name": "Avenida dos Testes", "location": [-46.6553, -23.5534]},
+          {"hint": "pX9xgP___38MAAAAAAAAABIAAAAAAAAAa1tdQw", "distance": 2.118, "name": "Rua Alfa", "location": [-46.6869, -23.5781]}
+        ]
+      }
+  - name: table
+    note: two points; durations (and distances with annotations=distance,duration)
+    sentence: "Table {{ path.profile }} 2x2: {{ j_dur | round(0) }} s"
+    body: |
+      {
+        "code": "Ok",
+        "durations": [[0, {{ j_dur | round(1) }}], [{{ j_dur * 1.04 | round(1) }}, 0]],
+        {{ default(query.annotations, '').contains('distance') ? '"distances": [[0, ' + string(int(h_dist * 10) / 10) + '], [' + string(int(h_dist * 10.3) / 10) + ', 0]],' : '' }}
+        "sources": [
+          {"hint": "kF0xgP___38AAAAAKwAAAAAAAAAAAAAAc2xhQQ", "distance": 3.217, "name": "Rua das Palmeiras", "location": [{{ path.lon1 }}, {{ path.lat1 }}]},
+          {"hint": "mH4xgP___38XAAAAAAAAAAkAAAAAAAAAy9tcQg", "distance": 5.904, "name": "Avenida dos Testes", "location": [{{ path.lon2 }}, {{ path.lat2 }}]}
+        ],
+        "destinations": [
+          {"hint": "kF0xgP___38AAAAAKwAAAAAAAAAAAAAAc2xhQQ", "distance": 3.217, "name": "Rua das Palmeiras", "location": [{{ path.lon1 }}, {{ path.lat1 }}]},
+          {"hint": "mH4xgP___38XAAAAAAAAAAkAAAAAAAAAy9tcQg", "distance": 5.904, "name": "Avenida dos Testes", "location": [{{ path.lon2 }}, {{ path.lat2 }}]}
+        ]
+      }
+  - name: table_many
+    note: three or more points; a fixed 3x3 table
+    sentence: "Table {{ path.profile }} for several points (fixed answer)"
+    body: |
+      {
+        "code": "Ok",
+        "durations": [[0, 312.4, 501.7], [320.1, 0, 255.9], [498.3, 262.0, 0]],
+        "sources": [
+          {"hint": "kF0xgP___38AAAAAKwAAAAAAAAAAAAAAc2xhQQ", "distance": 3.217, "name": "Rua das Palmeiras", "location": [-46.6527, -23.5643]},
+          {"hint": "mH4xgP___38XAAAAAAAAAAkAAAAAAAAAy9tcQg", "distance": 5.904, "name": "Avenida dos Testes", "location": [-46.6553, -23.5534]},
+          {"hint": "pX9xgP___38MAAAAAAAAABIAAAAAAAAAa1tdQw", "distance": 2.118, "name": "Rua Alfa", "location": [-46.6869, -23.5781]}
+        ],
+        "destinations": [
+          {"hint": "kF0xgP___38AAAAAKwAAAAAAAAAAAAAAc2xhQQ", "distance": 3.217, "name": "Rua das Palmeiras", "location": [-46.6527, -23.5643]},
+          {"hint": "mH4xgP___38XAAAAAAAAAAkAAAAAAAAAy9tcQg", "distance": 5.904, "name": "Avenida dos Testes", "location": [-46.6553, -23.5534]},
+          {"hint": "pX9xgP___38MAAAAAAAAABIAAAAAAAAAa1tdQw", "distance": 2.118, "name": "Rua Alfa", "location": [-46.6869, -23.5781]}
+        ]
+      }
+  - name: trip
+    note: two points, round trip (there and back)
+    sentence: "Trip {{ path.profile }}: {{ h_dist * 2 / 1000 | round(1) }} km round trip"
+    body: |
+      {
+        "code": "Ok",
+        "trips": [{
+          "geometry": "nyxnCnqf{Gk@_BwAiEeAeDuBeGtBdGdAdDvAhEj@~A",
+          "legs": [
+            {"steps": [], "summary": "", "weight": {{ j_dur | round(1) }}, "duration": {{ j_dur | round(1) }}, "distance": {{ h_dist | round(1) }}},
+            {"steps": [], "summary": "", "weight": {{ j_dur * 1.04 | round(1) }}, "duration": {{ j_dur * 1.04 | round(1) }}, "distance": {{ h_dist * 1.03 | round(1) }}}
+          ],
+          "weight_name": "routability",
+          "weight": {{ j_dur * 2.04 | round(1) }},
+          "duration": {{ j_dur * 2.04 | round(1) }},
+          "distance": {{ h_dist * 2.03 | round(1) }}
+        }],
+        "waypoints": [
+          {"waypoint_index": 0, "trips_index": 0, "hint": "kF0xgP___38AAAAAKwAAAAAAAAAAAAAAc2xhQQ", "distance": 3.217, "name": "Rua das Palmeiras", "location": [{{ path.lon1 }}, {{ path.lat1 }}]},
+          {"waypoint_index": 1, "trips_index": 0, "hint": "mH4xgP___38XAAAAAAAAAAkAAAAAAAAAy9tcQg", "distance": 5.904, "name": "Avenida dos Testes", "location": [{{ path.lon2 }}, {{ path.lat2 }}]}
+        ]
+      }
+  - name: trip_many
+    note: three or more points; a fixed round trip
+    sentence: "Trip {{ path.profile }} through several points (fixed answer)"
+    body: |
+      {
+        "code": "Ok",
+        "trips": [{
+          "geometry": "nyxnCnqf{Gk@_BwAiEeAeDuBeGsCqH",
+          "legs": [
+            {"steps": [], "summary": "", "weight": 312.4, "duration": 312.4, "distance": 3468.2},
+            {"steps": [], "summary": "", "weight": 255.9, "duration": 255.9, "distance": 2840.7},
+            {"steps": [], "summary": "", "weight": 498.3, "duration": 498.3, "distance": 5512.0}
+          ],
+          "weight_name": "routability", "weight": 1066.6, "duration": 1066.6, "distance": 11820.9
+        }],
+        "waypoints": [
+          {"waypoint_index": 0, "trips_index": 0, "hint": "kF0xgP___38AAAAAKwAAAAAAAAAAAAAAc2xhQQ", "distance": 3.217, "name": "Rua das Palmeiras", "location": [-46.6527, -23.5643]},
+          {"waypoint_index": 1, "trips_index": 0, "hint": "mH4xgP___38XAAAAAAAAAAkAAAAAAAAAy9tcQg", "distance": 5.904, "name": "Avenida dos Testes", "location": [-46.6553, -23.5534]},
+          {"waypoint_index": 2, "trips_index": 0, "hint": "pX9xgP___38MAAAAAAAAABIAAAAAAAAAa1tdQw", "distance": 2.118, "name": "Rua Alfa", "location": [-46.6869, -23.5781]}
+        ]
+      }
+  - name: nearest
+    note: the nearest road segment, 4.1 m from the coordinate
+    sentence: "Nearest road to {{ path.lat1 }},{{ path.lon1 }}: Rua das Palmeiras"
+    body: |
+      {
+        "code": "Ok",
+        "waypoints": [
+          {"nodes": [2147483601, 2147483602], "hint": "kF0xgP___38AAAAAKwAAAAAAAAAAAAAAc2xhQQ", "distance": 4.102, "name": "Rua das Palmeiras", "location": [{{ path.lon1 }}, {{ path.lat1 }}]}
+        ]
+      }
+  - name: no_route
+    status: 400
+    note: the points are too far apart to be joined by road (over 5,000 km here)
+    sentence: "No route between the points ({{ h_dist / 1000 | round(0) }} km apart)"
+    body: '{"code": "NoRoute", "message": "Impossible route between points", "routes": []}'
+  - name: no_trips
+    status: 400
+    note: the trip cannot visit every point
+    sentence: "No trip through the points"
+    body: '{"code": "NoTrips", "message": "No trip visiting all destinations possible."}'
+  - name: invalid_query
+    status: 400
+    note: the coordinate list is malformed (not lon,lat;lon,lat)
+    sentence: "Malformed coordinates: {{ path.coordinates }}"
+    body: '{"code": "InvalidQuery", "message": "Query string malformed close to position 0"}'
+  - name: invalid_value
+    status: 400
+    note: a latitude past 90 or a longitude past 180
+    sentence: "Coordinates out of range"
+    body: '{"code": "InvalidValue", "message": "Invalid coordinate value."}'
+  - name: invalid_service
+    status: 400
+    note: a service the server does not have
+    sentence: "No service /{{ path.service }}"
+    body: '{"code": "InvalidService", "message": "Service {{ path.service }} not found!"}'

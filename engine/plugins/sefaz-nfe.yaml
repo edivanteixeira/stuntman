@@ -1,0 +1,69 @@
+# SEFAZ SP NF-e 4.00, homologação: NFeRecepcaoEvento4 (cancelamento, carta de correção, manifestação).
+# mTLS with an ICP-Brasil e-CNPJ, the event's XML signature checked (297 when it breaks), the
+# CNPJ of the event against the certificate's, and retEvento/infEvento signed back.
+# Not here: NFeStatusServico4 (/ws/nfestatusservico4.asmx) and NFeDistribuicaoDFe (Ambiente
+# Nacional, hom1.nfe.fazenda.gov.br) live on other endpoints and take unsigned requests; a plugin
+# has one SOAP endpoint and soap.signature.check covers all of it, so each needs its own plugin.
+service:
+  name: sefaz-nfe
+  title: SEFAZ NF-e (SP, homologação)
+  origin: community
+  region: BR
+  description: NF-e 4.00 events (RecepcaoEvento) - mTLS e-CNPJ, XML signatures
+  base_url: https://homologacao.nfe.fazenda.sp.gov.br
+  real_host: homologacao.nfe.fazenda.sp.gov.br
+  auth:
+    client_certificate:
+      required: true
+      icp: true
+  limits:
+    latency: 300ms..1200ms
+soap:
+  version: '1.2'
+  endpoint: /ws/nferecepcaoevento4.asmx
+  validate: false
+  namespace: http://www.portalfiscal.inf.br/nfe/wsdl/NFeRecepcaoEvento4
+  signature:
+    check: true
+    invalid: signature_invalid
+    sign: infEvento
+operations:
+  - operation: nfeRecepcaoEvento
+    action: http://www.portalfiscal.inf.br/nfe/wsdl/NFeRecepcaoEvento4/nfeRecepcaoEvento
+    let:
+      ev: body.envEvento.evento.infEvento
+      prot: "'1352' + string(now_ms() % 100000000000)"
+      xev: "ev.tpEvento == '110111' ? 'Cancelamento registrado' : (ev.tpEvento == '110110' ? 'Carta de Correcao registrada' : (ev.tpEvento == '210200' ? 'Confirmacao da Operacao registrada' : (ev.tpEvento == '210210' ? 'Ciencia da Operacao registrada' : (ev.tpEvento == '210220' ? 'Desconhecimento da Operacao registrado' : (ev.tpEvento == '210240' ? 'Operacao nao Realizada registrada' : 'Evento registrado')))))"
+    decide:
+      - when: ev.tpAmb != '2'
+        answer: wrong_environment
+      - when: digits(default(ev.CNPJ, '')) != default(client_cnpj, '')
+        answer: cnpj_differs
+      - answer: registered
+answers:
+  - name: registered
+    note: cStat 135, the event is registered; retEvento/infEvento is signed with the service's certificate
+    sentence: "{{ caller }} registered event {{ ev.tpEvento }} on NF-e {{ ev.chNFe }}: protocol {{ prot }}"
+    body: |
+      <nfeResultMsg xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeRecepcaoEvento4"><retEnvEvento xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.00"><idLote>{{ body.envEvento.idLote }}</idLote><tpAmb>2</tpAmb><verAplic>SP_EVENTOS_PL_100</verAplic><cOrgao>35</cOrgao><cStat>128</cStat><xMotivo>Lote de Evento Processado</xMotivo><retEvento versao="1.00"><infEvento Id="ID{{ prot }}"><tpAmb>2</tpAmb><verAplic>SP_EVENTOS_PL_100</verAplic><cOrgao>{{ ev.cOrgao }}</cOrgao><cStat>135</cStat><xMotivo>Evento registrado e vinculado a NF-e</xMotivo><chNFe>{{ ev.chNFe }}</chNFe><tpEvento>{{ ev.tpEvento }}</tpEvento><xEvento>{{ xev }}</xEvento><nSeqEvento>{{ ev.nSeqEvento }}</nSeqEvento><dhRegEvento>{{ __now | tz('America/Sao_Paulo') }}-03:00</dhRegEvento><nProt>{{ prot }}</nProt></infEvento></retEvento></retEnvEvento></nfeResultMsg>
+  - name: cnpj_differs
+    note: cStat 489, the CNPJ in the event is not the CNPJ of the client certificate
+    sentence: "Rejected event on NF-e {{ ev.chNFe }}: CNPJ {{ ev.CNPJ }} is not the certificate's ({{ default(client_cnpj, 'none') }})"
+    body: |
+      <nfeResultMsg xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeRecepcaoEvento4"><retEnvEvento xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.00"><idLote>{{ body.envEvento.idLote }}</idLote><tpAmb>2</tpAmb><verAplic>SP_EVENTOS_PL_100</verAplic><cOrgao>35</cOrgao><cStat>128</cStat><xMotivo>Lote de Evento Processado</xMotivo><retEvento versao="1.00"><infEvento><tpAmb>2</tpAmb><verAplic>SP_EVENTOS_PL_100</verAplic><cOrgao>{{ ev.cOrgao }}</cOrgao><cStat>489</cStat><xMotivo>Rejeicao: CNPJ do autor do evento difere do CNPJ do certificado digital</xMotivo><chNFe>{{ ev.chNFe }}</chNFe><tpEvento>{{ ev.tpEvento }}</tpEvento><nSeqEvento>{{ ev.nSeqEvento }}</nSeqEvento><dhRegEvento>{{ __now | tz('America/Sao_Paulo') }}-03:00</dhRegEvento></infEvento></retEvento></retEnvEvento></nfeResultMsg>
+  - name: wrong_environment
+    note: cStat 252, tpAmb 1 (produção) sent to homologação
+    sentence: "Rejected event on NF-e {{ ev.chNFe }}: tpAmb {{ ev.tpAmb }} sent to homologação"
+    body: |
+      <nfeResultMsg xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeRecepcaoEvento4"><retEnvEvento xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.00"><idLote>{{ body.envEvento.idLote }}</idLote><tpAmb>2</tpAmb><verAplic>SP_EVENTOS_PL_100</verAplic><cOrgao>35</cOrgao><cStat>128</cStat><xMotivo>Lote de Evento Processado</xMotivo><retEvento versao="1.00"><infEvento><tpAmb>2</tpAmb><verAplic>SP_EVENTOS_PL_100</verAplic><cOrgao>{{ ev.cOrgao }}</cOrgao><cStat>252</cStat><xMotivo>Rejeicao: Ambiente informado diverge do Ambiente de recebimento</xMotivo><chNFe>{{ ev.chNFe }}</chNFe><tpEvento>{{ ev.tpEvento }}</tpEvento><nSeqEvento>{{ ev.nSeqEvento }}</nSeqEvento><dhRegEvento>{{ __now | tz('America/Sao_Paulo') }}-03:00</dhRegEvento></infEvento></retEvento></retEnvEvento></nfeResultMsg>
+  - name: signature_invalid
+    note: cStat 297, the event's ds:Signature is missing or does not match the signed content
+    sentence: "Rejected event on NF-e {{ ev.chNFe }}: the signature is invalid ({{ signature_error }})"
+    body: |
+      <nfeResultMsg xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeRecepcaoEvento4"><retEnvEvento xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.00"><idLote>{{ body.envEvento.idLote }}</idLote><tpAmb>2</tpAmb><verAplic>SP_EVENTOS_PL_100</verAplic><cOrgao>35</cOrgao><cStat>128</cStat><xMotivo>Lote de Evento Processado</xMotivo><retEvento versao="1.00"><infEvento><tpAmb>2</tpAmb><verAplic>SP_EVENTOS_PL_100</verAplic><cOrgao>{{ ev.cOrgao }}</cOrgao><cStat>297</cStat><xMotivo>Rejeicao: Assinatura difere do calculado</xMotivo><chNFe>{{ ev.chNFe }}</chNFe><tpEvento>{{ ev.tpEvento }}</tpEvento><nSeqEvento>{{ ev.nSeqEvento }}</nSeqEvento><dhRegEvento>{{ __now | tz('America/Sao_Paulo') }}-03:00</dhRegEvento></infEvento></retEvento></retEnvEvento></nfeResultMsg>
+  - name: sefaz_down
+    status: 500
+    note: exists only to be forced; the SOAP stack's server fault
+    fault:
+      code: Receiver
+      reason: Server was unable to process request.

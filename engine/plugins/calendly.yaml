@@ -1,0 +1,283 @@
+# Calendly API v2 for the Acme organization: users, memberships, event types, scheduled events and
+# invitees, cancellations, no-shows, the Scheduling API (POST /invitees) and webhook subscriptions,
+# plus OAuth (auth.calendly.com/oauth/authorize and /oauth/token). Webhooks are signed as Calendly
+# does (Calendly-Webhook-Signature: t=…,v1=…) with the key below. Point the app at
+# http://localhost:8028/calendly (both hosts). Any Bearer (personal access token or OAuth) works.
+service:
+  name: calendly
+  title: Calendly
+  origin: community
+  description: Scheduling, invitees and signed webhooks (API v2)
+  base_url: https://api.calendly.com
+  real_host: api.calendly.com
+  limits:
+    latency: 120ms..350ms
+  # ponytail: one signing key for every subscription (Calendly uses the subscription's
+  # signing_key); register this one, or verify with it.
+  webhooks:
+    sign: stripe
+    header: Calendly-Webhook-Signature
+    secret: calendly-acme-signing-key
+pages:
+  - route: GET /oauth/authorize
+    title: Calendly
+    ask: "{{ query.client_id | default('The app') }} wants to access your Calendly account"
+    fields:
+      - person: {from: users, label: Sign in as}
+    buttons: [Allow, Cancel]
+    checks: [redirect_uri]
+routes:
+  - route: POST /oauth/token
+    grant: authorization_code
+  - route: GET /users/me
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - answer: me
+  - route: GET /organization_memberships
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - when: "!has(query.user) && !has(query.organization)"
+        answer: user_or_organization_required
+      - answer: memberships
+  - route: GET /event_types
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - when: "!has(query.user) && !has(query.organization)"
+        answer: user_or_organization_required
+      - answer: event_types
+  - route: GET /scheduled_events
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - when: "!has(query.user) && !has(query.organization) && !has(query.group)"
+        answer: user_or_organization_required
+      - answer: scheduled_events
+  - route: GET /scheduled_events/{uuid}/invitees
+    let:
+      event: "lookup('scheduled_events', 'uri', 'https://api.calendly.com/scheduled_events/' + path.uuid)"
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - when: "!has(event)"
+        answer: not_found
+      - answer: invitees
+  # Cancels the event and sends invitee.canceled (for its first invitee) to the organization's
+  # webhook subscription.
+  - route: POST /scheduled_events/{uuid}/cancellation
+    let:
+      event: "lookup('scheduled_events', 'uri', 'https://api.calendly.com/scheduled_events/' + path.uuid)"
+      hook: "state.webhook_subscriptions[data.users[0].current_organization]"
+      hook_id: "(hook.body.organization + '|' + hook.body.url).sha256().upper()"
+      hook_live: "has(hook) && !(has(state.deleted_webhooks[hook_id]) && state.deleted_webhooks[hook_id].at >= hook.at)"
+      hook_url: "hook_live && 'invitee.canceled' in hook.body.events ? hook.body.url : ''"
+      invitee: "data.invitees[path.uuid][0]"
+    keep:
+      state: canceled
+      key: "has(event) && headers.authorization.startsWith('Bearer ') ? path.uuid : '__refused'"
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - when: "!has(event)"
+        answer: not_found
+      - when: "event.status == 'canceled' || has(state.canceled[path.uuid])"
+        answer: already_canceled
+      - answer: canceled
+    send:
+      - url: "{{ hook_url }}"
+        event: invitee.canceled
+        body: |
+          {"created_at": "{{ now() }}", "created_by": "{{ data.users[0].uri }}", "event": "invitee.canceled",
+           "payload": {"uri": "{{ invitee.uri }}", "email": "{{ invitee.email }}", "name": {{ json(invitee.name) }}, "first_name": {{ json(invitee.first_name) }}, "last_name": {{ json(invitee.last_name) }},
+            "status": "canceled", "timezone": "{{ invitee.timezone }}", "event": "{{ event.uri }}", "created_at": "{{ invitee.created_at }}", "updated_at": "{{ now() }}",
+            "questions_and_answers": [], "rescheduled": false, "old_invitee": null, "new_invitee": null, "no_show": null, "reconfirmation": null, "routing_form_submission": null, "text_reminder_number": null,
+            "tracking": {"utm_campaign": null, "utm_source": null, "utm_medium": null, "utm_content": null, "utm_term": null, "salesforce_uuid": null},
+            "cancel_url": "https://calendly.com/cancellations/{{ path.uuid }}", "reschedule_url": "https://calendly.com/reschedulings/{{ path.uuid }}",
+            "cancellation": {"canceled_by": "{{ data.users[0].name }}", "reason": {{ json(default(body.reason, null)) }}, "canceler_type": "host", "created_at": "{{ now() }}"},
+            "scheduled_event": {"uri": "{{ event.uri }}", "name": {{ json(event.name) }}, "status": "canceled", "start_time": "{{ event.start_time }}", "end_time": "{{ event.end_time }}", "event_type": "{{ event.event_type }}"}}}
+  - route: POST /invitee_no_shows
+    receive:
+      body: [invitee]
+      missing: invalid_argument
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - answer: no_show_created
+  # The Scheduling API (2025): books an invitee directly and sends invitee.created.
+  - route: POST /invitees
+    receive:
+      body: [event_type, start_time, invitee.email]
+      missing: invalid_argument
+    let:
+      event_uuid: "uuid()"
+      invitee_uuid: "uuid()"
+      hook: "state.webhook_subscriptions[data.users[0].current_organization]"
+      hook_id: "(hook.body.organization + '|' + hook.body.url).sha256().upper()"
+      hook_live: "has(hook) && !(has(state.deleted_webhooks[hook_id]) && state.deleted_webhooks[hook_id].at >= hook.at)"
+      hook_url: "hook_live && 'invitee.created' in hook.body.events ? hook.body.url : ''"
+      event_type: "lookup('event_types', 'uri', body.event_type)"
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - when: "!has(event_type)"
+        answer: event_type_not_found
+      - answer: invitee_created
+    send:
+      - url: "{{ hook_url }}"
+        event: invitee.created
+        body: |
+          {"created_at": "{{ now() }}", "created_by": "{{ data.users[0].uri }}", "event": "invitee.created",
+           "payload": {"uri": "https://api.calendly.com/scheduled_events/{{ event_uuid }}/invitees/{{ invitee_uuid }}", "email": {{ json(body.invitee.email) }}, "name": {{ json(default(body.invitee.name, body.invitee.email)) }},
+            "first_name": {{ json(default(body.invitee.first_name, null)) }}, "last_name": {{ json(default(body.invitee.last_name, null)) }}, "status": "active", "timezone": {{ json(default(body.invitee.timezone, 'UTC')) }},
+            "event": "https://api.calendly.com/scheduled_events/{{ event_uuid }}", "created_at": "{{ now() }}", "updated_at": "{{ now() }}", "questions_and_answers": [], "rescheduled": false,
+            "old_invitee": null, "new_invitee": null, "no_show": null, "reconfirmation": null, "cancellation": null, "routing_form_submission": null, "text_reminder_number": null,
+            "tracking": {"utm_campaign": null, "utm_source": null, "utm_medium": null, "utm_content": null, "utm_term": null, "salesforce_uuid": null},
+            "cancel_url": "https://calendly.com/cancellations/{{ invitee_uuid }}", "reschedule_url": "https://calendly.com/reschedulings/{{ invitee_uuid }}",
+            "scheduled_event": {"uri": "https://api.calendly.com/scheduled_events/{{ event_uuid }}", "name": {{ json(event_type.name) }}, "status": "active", "start_time": {{ json(body.start_time) }}, "event_type": "{{ event_type.uri }}"}}}
+  # One subscription per organization (the last one created wins).
+  - route: POST /webhook_subscriptions
+    receive:
+      body: [url, events, organization, scope]
+      missing: invalid_argument
+    let:
+      hook: "state.webhook_subscriptions[body.organization]"
+      hook_id: "(body.organization + '|' + body.url).sha256().upper()"
+      hook_live: "has(hook) && !(has(state.deleted_webhooks[hook_id]) && state.deleted_webhooks[hook_id].at >= hook.at)"
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - when: "hook_live && hook.body.url == body.url"
+        answer: hook_exists
+      - when: "body.scope == 'user' && !has(body.user)"
+        answer: invalid_argument
+      - answer: hook_created
+    # A refused request must not replace the kept subscription (keep runs before decide).
+    keep:
+      state: webhook_subscriptions
+      key: "(hook_live && hook.body.url == body.url) || !headers.authorization.startsWith('Bearer ') ? '__refused' : body.organization"
+  - route: GET /webhook_subscriptions
+    let:
+      hook: "state.webhook_subscriptions[query.organization]"
+      hook_id: "(hook.body.organization + '|' + hook.body.url).sha256().upper()"
+      hook_live: "has(hook) && !(has(state.deleted_webhooks[hook_id]) && state.deleted_webhooks[hook_id].at >= hook.at)"
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - when: "!has(query.organization) || !has(query.scope)"
+        answer: invalid_argument
+      - answer: hooks
+  - route: DELETE /webhook_subscriptions/{uuid}
+    keep:
+      state: deleted_webhooks
+      key: path.uuid
+    decide:
+      - when: "!headers.authorization.startsWith('Bearer ')"
+        answer: unauthenticated
+      - answer: hook_deleted
+answers:
+  - name: unauthenticated
+    status: 401
+    sentence: "Refused: the access token is invalid (401)"
+    body: '{"title": "Unauthenticated", "message": "The access token is invalid"}'
+  - name: rate_limited
+    status: 429
+    note: Calendly's rate limit; x-ratelimit-reset is the seconds until it resets. Exists only to be forced
+    sentence: "Rate limited (429), resets in 30 s"
+    headers: {x-ratelimit-limit: '500', x-ratelimit-remaining: '0', x-ratelimit-reset: '30'}
+    body: '{"title": "Too Many Requests", "message": "You have exceeded the rate limit. Please try again later."}'
+  - name: not_found
+    status: 404
+    sentence: "No scheduled event {{ path.uuid }}"
+    body: '{"title": "Resource Not Found", "message": "The server could not find the requested resource."}'
+  - name: invalid_argument
+    status: 400
+    sentence: "Refused: invalid parameters (400)"
+    body: '{"title": "Invalid Argument", "message": "The supplied parameters are invalid."}'
+  - name: user_or_organization_required
+    status: 400
+    sentence: "Refused: user or organization is required"
+    body: '{"title": "Invalid Argument", "message": "The supplied parameters are invalid.", "details": [{"parameter": "user", "message": "One of user, organization, or group is required"}]}'
+  - name: me
+    sentence: "Current user: {{ data.users[0].name }}"
+    body: |
+      {"resource": {"uri": "{{ data.users[0].uri }}", "name": {{ json(data.users[0].name) }}, "slug": "{{ data.users[0].slug }}", "email": "{{ data.users[0].email }}",
+       "scheduling_url": "https://calendly.com/{{ data.users[0].slug }}", "timezone": "{{ data.users[0].timezone }}", "time_notation": "12h", "avatar_url": null, "locale": "en",
+       "created_at": "2024-02-01T12:00:00.000000Z", "updated_at": "2026-11-01T12:00:00.000000Z", "current_organization": "{{ data.users[0].current_organization }}", "resource_type": "User"}}
+  - name: memberships
+    sentence: "Listed {{ size(data.memberships) }} organization memberships"
+    body: '{"collection": {{ json(data.memberships) }}, "pagination": {"count": {{ size(data.memberships) }}, "next_page": null, "previous_page": null, "next_page_token": null, "previous_page_token": null}}'
+  - name: event_types
+    sentence: "Listed {{ size(data.event_types) }} event types"
+    body: '{"collection": {{ json(data.event_types) }}, "pagination": {"count": {{ size(data.event_types) }}, "next_page": null, "previous_page": null, "next_page_token": null, "previous_page_token": null}}'
+  - name: scheduled_events
+    sentence: "Listed {{ size(data.scheduled_events) }} scheduled events"
+    body: '{"collection": {{ json(data.scheduled_events) }}, "pagination": {"count": {{ size(data.scheduled_events) }}, "next_page": null, "previous_page": null, "next_page_token": null, "previous_page_token": null}}'
+  - name: invitees
+    sentence: "Invitees of {{ event.name }}"
+    body: '{"collection": {{ json(default(data.invitees[path.uuid], [])) }}, "pagination": {"count": {{ size(default(data.invitees[path.uuid], [])) }}, "next_page": null, "previous_page": null, "next_page_token": null, "previous_page_token": null}}'
+  - name: canceled
+    status: 201
+    sentence: "Canceled {{ event.name }}{{ hook_url == '' ? '' : '; invitee.canceled sent' }}"
+    body: '{"resource": {"canceled_by": {{ json(data.users[0].name) }}, "reason": {{ json(default(body.reason, null)) }}, "canceler_type": "host", "created_at": "{{ now() }}"}}'
+  - name: already_canceled
+    status: 403
+    note: the event is canceled already (the message is close to Calendly's, not verified word for word)
+    sentence: "Cancel refused: {{ event.name }} is already canceled"
+    body: '{"title": "Permission Denied", "message": "Event is already canceled"}'
+  - name: no_show_created
+    status: 201
+    sentence: "Marked {{ body.invitee }} as a no-show"
+    body: '{"resource": {"uri": "https://api.calendly.com/invitee_no_shows/{{ uuid() }}", "invitee": {{ json(body.invitee) }}, "created_at": "{{ now() }}"}}'
+  - name: event_type_not_found
+    status: 404
+    sentence: "Booking refused: no event type {{ body.event_type }}"
+    body: '{"title": "Resource Not Found", "message": "The server could not find the requested resource."}'
+  - name: invitee_created
+    status: 201
+    sentence: "Booked {{ body.invitee.email }} for {{ event_type.name }} at {{ body.start_time }}{{ hook_url == '' ? '' : '; invitee.created sent' }}"
+    body: |
+      {"resource": {"uri": "https://api.calendly.com/scheduled_events/{{ event_uuid }}/invitees/{{ invitee_uuid }}", "email": {{ json(body.invitee.email) }},
+       "name": {{ json(default(body.invitee.name, body.invitee.email)) }}, "status": "active", "timezone": {{ json(default(body.invitee.timezone, 'UTC')) }},
+       "event": "https://api.calendly.com/scheduled_events/{{ event_uuid }}", "created_at": "{{ now() }}", "updated_at": "{{ now() }}",
+       "cancel_url": "https://calendly.com/cancellations/{{ invitee_uuid }}", "reschedule_url": "https://calendly.com/reschedulings/{{ invitee_uuid }}"}}
+  - name: hook_created
+    status: 201
+    sentence: "Webhook subscription to {{ body.url }} for {{ json(body.events) }}"
+    body: |
+      {"resource": {"uri": "https://api.calendly.com/webhook_subscriptions/{{ hook_id }}", "callback_url": {{ json(body.url) }}, "created_at": "{{ now() }}", "updated_at": "{{ now() }}",
+       "retry_started_at": null, "state": "active", "events": {{ json(body.events) }}, "scope": {{ json(body.scope) }}, "organization": {{ json(body.organization) }},
+       "user": {{ json(default(body.user, null)) }}, "group": null, "creator": "{{ data.users[0].uri }}"}}
+  - name: hook_exists
+    status: 409
+    sentence: "Webhook refused: {{ body.url }} is already subscribed"
+    body: '{"title": "Already Exists", "message": "Hook with this url already exists"}'
+  - name: hooks
+    sentence: "Listed {{ hook_live ? 1 : 0 }} webhook subscription(s)"
+    body: |
+      {"collection": [{{ hook_live ? json({"uri": "https://api.calendly.com/webhook_subscriptions/" + hook_id, "callback_url": hook.body.url, "created_at": now(), "updated_at": now(), "retry_started_at": null, "state": "active", "events": hook.body.events, "scope": hook.body.scope, "organization": hook.body.organization, "user": default(hook.body.user, null), "group": null, "creator": data.users[0].uri}) : '' }}],
+       "pagination": {"count": {{ hook_live ? 1 : 0 }}, "next_page": null, "previous_page": null, "next_page_token": null, "previous_page_token": null}}
+  - name: hook_deleted
+    status: 204
+    sentence: "Deleted webhook subscription {{ path.uuid }}"
+data:
+  # cpf: the person key the OAuth page uses (synthetic digits, not a document).
+  users:
+    - {name: Emma Carter, email: emma.carter@acme.example.com, cpf: '700000000001', slug: emma-carter-acme, timezone: America/New_York, uri: 'https://api.calendly.com/users/AAAA1111BBBB2222', current_organization: 'https://api.calendly.com/organizations/ORG0ACME00000001'}
+    - {name: Noah Price, email: noah.price@acme.example.com, cpf: '700000000002', slug: noah-price-acme, timezone: America/Chicago, uri: 'https://api.calendly.com/users/CCCC3333DDDD4444', current_organization: 'https://api.calendly.com/organizations/ORG0ACME00000001'}
+  memberships:
+    - {uri: 'https://api.calendly.com/organization_memberships/MEMB0000000000A1', role: owner, organization: 'https://api.calendly.com/organizations/ORG0ACME00000001', created_at: '2024-02-01T12:00:00.000000Z', updated_at: '2024-02-01T12:00:00.000000Z', user: {uri: 'https://api.calendly.com/users/AAAA1111BBBB2222', name: Emma Carter, slug: emma-carter-acme, email: emma.carter@acme.example.com, scheduling_url: 'https://calendly.com/emma-carter-acme', timezone: America/New_York, avatar_url: null, created_at: '2024-02-01T12:00:00.000000Z', updated_at: '2026-11-01T12:00:00.000000Z'}}
+    - {uri: 'https://api.calendly.com/organization_memberships/MEMB0000000000A2', role: user, organization: 'https://api.calendly.com/organizations/ORG0ACME00000001', created_at: '2024-05-01T12:00:00.000000Z', updated_at: '2024-05-01T12:00:00.000000Z', user: {uri: 'https://api.calendly.com/users/CCCC3333DDDD4444', name: Noah Price, slug: noah-price-acme, email: noah.price@acme.example.com, scheduling_url: 'https://calendly.com/noah-price-acme', timezone: America/Chicago, avatar_url: null, created_at: '2024-05-01T12:00:00.000000Z', updated_at: '2026-11-01T12:00:00.000000Z'}}
+  event_types:
+    - {uri: 'https://api.calendly.com/event_types/ET00DEMO30MIN001', name: 30 Minute Demo, active: true, slug: 30min-demo, scheduling_url: 'https://calendly.com/emma-carter-acme/30min-demo', duration: 30, kind: solo, pooling_type: null, type: StandardEventType, color: '#0069ff', created_at: '2024-02-02T12:00:00.000000Z', updated_at: '2026-10-01T12:00:00.000000Z', internal_note: null, description_plain: A short product demo., description_html: '<p>A short product demo.</p>', profile: {type: User, name: Emma Carter, owner: 'https://api.calendly.com/users/AAAA1111BBBB2222'}, secret: false, booking_method: instant, custom_questions: [], deleted_at: null, admin_managed: false, locations: [{kind: google_conference}]}
+    - {uri: 'https://api.calendly.com/event_types/ET00ONBOARD60M01', name: Onboarding Call, active: true, slug: onboarding, scheduling_url: 'https://calendly.com/emma-carter-acme/onboarding', duration: 60, kind: solo, pooling_type: null, type: StandardEventType, color: '#8247f5', created_at: '2024-02-02T12:00:00.000000Z', updated_at: '2026-10-01T12:00:00.000000Z', internal_note: null, description_plain: Kick-off with a new customer., description_html: '<p>Kick-off with a new customer.</p>', profile: {type: User, name: Emma Carter, owner: 'https://api.calendly.com/users/AAAA1111BBBB2222'}, secret: false, booking_method: instant, custom_questions: [], deleted_at: null, admin_managed: false, locations: [{kind: zoom_conference}]}
+  scheduled_events:
+    - {uri: 'https://api.calendly.com/scheduled_events/EV0GLOBEX0000001', name: 30 Minute Demo, status: active, start_time: '2026-11-18T15:00:00.000000Z', end_time: '2026-11-18T15:30:00.000000Z', event_type: 'https://api.calendly.com/event_types/ET00DEMO30MIN001', location: {type: google_conference, status: pushed, join_url: 'https://meet.google.com/abc-defg-hij'}, invitees_counter: {total: 1, active: 1, limit: 1}, created_at: '2026-11-10T12:00:00.000000Z', updated_at: '2026-11-10T12:00:00.000000Z', event_memberships: [{user: 'https://api.calendly.com/users/AAAA1111BBBB2222', user_email: emma.carter@acme.example.com, user_name: Emma Carter}], event_guests: [], meeting_notes_plain: null, meeting_notes_html: null}
+    - {uri: 'https://api.calendly.com/scheduled_events/EV0INITECH000002', name: Onboarding Call, status: canceled, start_time: '2026-11-12T17:00:00.000000Z', end_time: '2026-11-12T18:00:00.000000Z', event_type: 'https://api.calendly.com/event_types/ET00ONBOARD60M01', location: {type: zoom_conference, status: pushed, join_url: 'https://zoom.us/j/5550100'}, invitees_counter: {total: 1, active: 0, limit: 1}, created_at: '2026-11-01T12:00:00.000000Z', updated_at: '2026-11-11T12:00:00.000000Z', event_memberships: [{user: 'https://api.calendly.com/users/AAAA1111BBBB2222', user_email: emma.carter@acme.example.com, user_name: Emma Carter}], event_guests: [], meeting_notes_plain: null, meeting_notes_html: null, cancellation: {canceled_by: Jack Morgan, reason: Rescheduling, canceler_type: invitee, created_at: '2026-11-11T12:00:00.000000Z'}}
+  # Invitees by scheduled event uuid.
+  invitees:
+    EV0GLOBEX0000001:
+      - {uri: 'https://api.calendly.com/scheduled_events/EV0GLOBEX0000001/invitees/INV0LILYPARKER01', email: lily.parker@globex.example.com, name: Lily Parker, first_name: Lily, last_name: Parker, status: active, timezone: America/Los_Angeles, event: 'https://api.calendly.com/scheduled_events/EV0GLOBEX0000001', created_at: '2026-11-10T12:00:00.000000Z', updated_at: '2026-11-10T12:00:00.000000Z', questions_and_answers: [{question: Company, answer: Globex, position: 0}], rescheduled: false, old_invitee: null, new_invitee: null, cancel_url: 'https://calendly.com/cancellations/INV0LILYPARKER01', reschedule_url: 'https://calendly.com/reschedulings/INV0LILYPARKER01', no_show: null, reconfirmation: null, routing_form_submission: null, text_reminder_number: null, tracking: {utm_campaign: null, utm_source: null, utm_medium: null, utm_content: null, utm_term: null, salesforce_uuid: null}}
+    EV0INITECH000002:
+      - {uri: 'https://api.calendly.com/scheduled_events/EV0INITECH000002/invitees/INV0JACKMORGAN02', email: jack.morgan@initech.example.com, name: Jack Morgan, first_name: Jack, last_name: Morgan, status: canceled, timezone: America/New_York, event: 'https://api.calendly.com/scheduled_events/EV0INITECH000002', created_at: '2026-11-01T12:00:00.000000Z', updated_at: '2026-11-11T12:00:00.000000Z', questions_and_answers: [], rescheduled: false, old_invitee: null, new_invitee: null, cancel_url: 'https://calendly.com/cancellations/INV0JACKMORGAN02', reschedule_url: 'https://calendly.com/reschedulings/INV0JACKMORGAN02', no_show: null, reconfirmation: null, routing_form_submission: null, text_reminder_number: null, tracking: {utm_campaign: null, utm_source: null, utm_medium: null, utm_content: null, utm_term: null, salesforce_uuid: null}}

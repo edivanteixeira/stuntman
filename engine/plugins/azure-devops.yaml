@@ -1,0 +1,191 @@
+# Azure DevOps Services REST (dev.azure.com/{organization}): projects, pull requests and service
+# hooks. Creating a pull request delivers git.pullrequest.created to the Web Hooks subscription's
+# consumerInputs.url. Auth is Basic with a PAT (any user, any PAT); every call needs api-version.
+# Point the app at http://localhost:8028/azure-devops/{org} (or resolve dev.azure.com to Stuntman).
+service:
+  name: azure-devops
+  title: Azure DevOps
+  origin: community
+  description: Projects, pull requests and service hooks (REST 7.1)
+  base_url: https://dev.azure.com
+  real_host: dev.azure.com
+  limits:
+    latency: 150ms..450ms
+routes:
+  - route: GET /{org}/_apis/projects
+    decide:
+      - when: "!headers.authorization.startsWith('Basic ') && !headers.authorization.startsWith('Bearer ')"
+        answer: sign_in_page
+      - when: "!has(query['api-version'])"
+        answer: api_version_missing
+      - answer: projects
+  # One Web Hooks subscription per organization and event type (the last one wins).
+  - route: POST /{org}/_apis/hooks/subscriptions
+    receive:
+      body: [eventType, consumerInputs.url]
+      missing: subscription_invalid
+    let:
+      sub_id: "default(lookup('subscription_ids', 'eventType', body.eventType).id, '9b1c2d3e-0000-4000-8000-00000000ffff')"
+    keep:
+      state: subscriptions
+      key: "(headers.authorization.startsWith('Basic ') || headers.authorization.startsWith('Bearer ')) && has(query['api-version']) ? path.org + '/' + body.eventType : '__refused'"
+    decide:
+      - when: "!headers.authorization.startsWith('Basic ') && !headers.authorization.startsWith('Bearer ')"
+        answer: sign_in_page
+      - when: "!has(query['api-version'])"
+        answer: api_version_missing
+      - answer: subscription_created
+  - route: DELETE /{org}/_apis/hooks/subscriptions/{id}
+    keep:
+      state: deleted_subscriptions
+      key: "(headers.authorization.startsWith('Basic ') || headers.authorization.startsWith('Bearer ')) && has(query['api-version']) ? path.id : '__refused'"
+    decide:
+      - when: "!headers.authorization.startsWith('Basic ') && !headers.authorization.startsWith('Bearer ')"
+        answer: sign_in_page
+      - when: "!has(query['api-version'])"
+        answer: api_version_missing
+      - answer: subscription_deleted
+  - route: GET /{org}/{project}/_apis/git/repositories/{repo}/pullrequests
+    let:
+      project: "default(lookup('projects', 'name', path.project), lookup('projects', 'id', path.project))"
+      repo: "default(lookup('repositories', 'name', path.repo), lookup('repositories', 'id', path.repo))"
+    decide:
+      - when: "!headers.authorization.startsWith('Basic ') && !headers.authorization.startsWith('Bearer ')"
+        answer: sign_in_page
+      - when: "!has(query['api-version'])"
+        answer: api_version_missing
+      - when: "!has(project)"
+        answer: project_not_found
+      - when: "!has(repo) || repo.project.id != project.id"
+        answer: repository_not_found
+      - when: "has(query['searchCriteria.status']) && query['searchCriteria.status'] != 'active' && query['searchCriteria.status'] != 'all'"
+        answer: pull_requests_none
+      - answer: pull_requests
+  # Creating a pull request fires git.pullrequest.created to the subscription (when the
+  # subscription's publisherInputs.repository is empty or this repository).
+  - route: POST /{org}/{project}/_apis/git/repositories/{repo}/pullrequests
+    receive:
+      body: [sourceRefName, targetRefName, title]
+      missing: pull_request_invalid
+    let:
+      project: "default(lookup('projects', 'name', path.project), lookup('projects', 'id', path.project))"
+      repo: "default(lookup('repositories', 'name', path.repo), lookup('repositories', 'id', path.repo))"
+      pr_id: "int(now_ms() % 90000) + 10000"
+      sub: "state.subscriptions[path.org + '/git.pullrequest.created']"
+      sub_id: "lookup('subscription_ids', 'eventType', 'git.pullrequest.created').id"
+      sub_url: "has(sub) && !(has(state.deleted_subscriptions[sub_id]) && state.deleted_subscriptions[sub_id].at >= sub.at) && (!has(sub.body.publisherInputs.repository) || sub.body.publisherInputs.repository == '' || sub.body.publisherInputs.repository == repo.id) ? sub.body.consumerInputs.url : ''"
+    decide:
+      - when: "!headers.authorization.startsWith('Basic ') && !headers.authorization.startsWith('Bearer ')"
+        answer: sign_in_page
+      - when: "!has(query['api-version'])"
+        answer: api_version_missing
+      - when: "!has(project)"
+        answer: project_not_found
+      - when: "!has(repo) || repo.project.id != project.id"
+        answer: repository_not_found
+      - answer: pull_request_created
+    # ponytail: consumerInputs.httpHeaders ("Key:Value" lines) cannot be split by the expression
+    # language, so they are not sent as headers; the delivery carries only its own headers.
+    send:
+      - url: "{{ sub_url }}"
+        event: git.pullrequest.created
+        body: |
+          {"subscriptionId": "{{ sub_id }}", "notificationId": {{ int(now_ms() % 1000) + 1 }}, "id": "{{ uuid() }}", "eventType": "git.pullrequest.created", "publisherId": "tfs",
+           "message": {"text": "{{ data.identity.displayName }} created a new pull request", "html": "{{ data.identity.displayName }} created a new pull request", "markdown": "{{ data.identity.displayName }} created a new pull request"},
+           "detailedMessage": {"text": {{ json(data.identity.displayName + ' created pull request ' + string(pr_id) + ' (' + body.title + ') in ' + repo.name) }}},
+           "resource": {"repository": {"id": "{{ repo.id }}", "name": "{{ repo.name }}", "url": "{{ repo.url }}", "project": {{ json(repo.project) }}, "defaultBranch": "{{ repo.defaultBranch }}", "remoteUrl": "{{ repo.remoteUrl }}"},
+            "pullRequestId": {{ pr_id }}, "codeReviewId": {{ pr_id }}, "status": "active", "createdBy": {{ json(data.identity) }}, "creationDate": "{{ now() }}", "title": {{ json(body.title) }},
+            "description": {{ json(default(body.description, '')) }}, "sourceRefName": {{ json(body.sourceRefName) }}, "targetRefName": {{ json(body.targetRefName) }}, "mergeStatus": "queued", "isDraft": {{ json(default(body.isDraft, false)) }},
+            "mergeId": "{{ uuid() }}", "reviewers": [], "url": "https://dev.azure.com/{{ path.org }}/{{ project.id }}/_apis/git/repositories/{{ repo.id }}/pullRequests/{{ pr_id }}", "supportsIterations": true},
+           "resourceVersion": "1.0", "resourceContainers": {"collection": {"id": "c2a1b3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d", "baseUrl": "https://dev.azure.com/{{ path.org }}/"}, "account": {"id": "d3b2c4e5-6f7a-4b8c-9d0e-1f2a3b4c5d6e", "baseUrl": "https://dev.azure.com/{{ path.org }}/"}, "project": {"id": "{{ project.id }}", "baseUrl": "https://dev.azure.com/{{ path.org }}/"}},
+           "createdDate": "{{ now() }}"}
+answers:
+  # A call without credentials gets the sign-in page with 203, not a 401: the classic surprise.
+  - name: sign_in_page
+    status: 203
+    note: no Authorization header; Azure DevOps answers 203 with its HTML sign-in page
+    sentence: "No credentials: 203 with the sign-in page"
+    headers: {content-type: text/html; charset=utf-8}
+    raw: true
+    body: '<!DOCTYPE html><html><head><title>Azure DevOps Services | Sign In</title></head><body><p>Sign in to Azure DevOps.</p></body></html>'
+  - name: pat_invalid
+    status: 401
+    note: an expired or revoked PAT; exists only to be forced
+    sentence: "PAT refused (401)"
+    headers: {www-authenticate: 'Bearer authorization_uri=https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000, Basic realm="https://tfsprodcus1.visualstudio.com/"'}
+    body: ''
+  - name: rate_limited
+    status: 429
+    note: Azure DevOps throttling (TSTUs); exists only to be forced
+    sentence: "Throttled (429), retry after 30 s"
+    headers: {Retry-After: '30', X-RateLimit-Resource: Core, X-RateLimit-Delay: '30', X-RateLimit-Remaining: '0'}
+    body: '{"$id": "1", "innerException": null, "message": "Request was blocked due to exceeding usage of resource ''Core'' in namespace ''User''.", "typeName": "Microsoft.TeamFoundation.Framework.Server.RequestBlockedException, Microsoft.TeamFoundation.Framework.Server", "typeKey": "RequestBlockedException", "errorCode": 0, "eventId": 3000}'
+  - name: api_version_missing
+    status: 400
+    sentence: "Refused: no api-version"
+    body: '{"$id": "1", "innerException": null, "message": "No api-version was supplied for the \"{{ __method }}\" request. The version must be supplied either as part of the Accept header (e.g. \"application/json; api-version=1.0\") or as a query parameter (e.g. \"?api-version=1.0\").", "typeName": "Microsoft.VisualStudio.Services.WebApi.VssVersionNotSpecifiedException, Microsoft.VisualStudio.Services.WebApi", "typeKey": "VssVersionNotSpecifiedException", "errorCode": 0, "eventId": 3000}'
+  - name: projects
+    sentence: "Listed {{ size(data.projects) }} projects of {{ path.org }}"
+    body: '{"count": {{ size(data.projects) }}, "value": {{ json(data.projects) }}}'
+  - name: project_not_found
+    status: 404
+    sentence: "No project {{ path.project }} (TF200016)"
+    body: '{"$id": "1", "innerException": null, "message": "TF200016: The following project does not exist: {{ path.project }}. Verify that the name of the project is correct and that the project exists on the specified Azure DevOps Server.", "typeName": "Microsoft.TeamFoundation.Core.WebApi.ProjectDoesNotExistException, Microsoft.TeamFoundation.Core.WebApi", "typeKey": "ProjectDoesNotExistException", "errorCode": 0, "eventId": 3000}'
+  - name: repository_not_found
+    status: 404
+    sentence: "No repository {{ path.repo }} (TF401019)"
+    body: '{"$id": "1", "innerException": null, "message": "TF401019: The Git repository with name or identifier {{ path.repo }} does not exist or you do not have permissions for the operation you are attempting.", "typeName": "Microsoft.TeamFoundation.Git.Server.GitRepositoryNotFoundException, Microsoft.TeamFoundation.Git.Server", "typeKey": "GitRepositoryNotFoundException", "errorCode": 0, "eventId": 3000}'
+  - name: pull_requests
+    sentence: "Listed {{ size(default(data.pull_requests[repo.id], [])) }} pull requests of {{ repo.name }}"
+    body: '{"value": {{ json(default(data.pull_requests[repo.id], [])) }}, "count": {{ size(default(data.pull_requests[repo.id], [])) }}}'
+  - name: pull_requests_none
+    sentence: "No {{ query['searchCriteria.status'] }} pull requests in {{ repo.name }}"
+    body: '{"value": [], "count": 0}'
+  - name: pull_request_invalid
+    status: 400
+    sentence: "Pull request refused: sourceRefName, targetRefName and title are required"
+    body: '{"$id": "1", "innerException": null, "message": "Value cannot be null.\r\nParameter name: sourceRefName", "typeName": "System.ArgumentNullException, mscorlib", "typeKey": "ArgumentNullException", "errorCode": 0, "eventId": 0}'
+  - name: pull_request_created
+    status: 201
+    sentence: "Pull request {{ pr_id }} “{{ body.title }}” in {{ repo.name }}{{ sub_url == '' ? '' : '; git.pullrequest.created sent' }}"
+    body: |
+      {"repository": {"id": "{{ repo.id }}", "name": "{{ repo.name }}", "url": "{{ repo.url }}", "project": {{ json(repo.project) }}}, "pullRequestId": {{ pr_id }}, "codeReviewId": {{ pr_id }},
+       "status": "active", "createdBy": {{ json(data.identity) }}, "creationDate": "{{ now() }}", "title": {{ json(body.title) }}, "description": {{ json(default(body.description, '')) }},
+       "sourceRefName": {{ json(body.sourceRefName) }}, "targetRefName": {{ json(body.targetRefName) }}, "mergeStatus": "queued", "isDraft": {{ json(default(body.isDraft, false)) }},
+       "mergeId": "{{ uuid() }}", "reviewers": [], "labels": [], "url": "https://dev.azure.com/{{ path.org }}/{{ project.id }}/_apis/git/repositories/{{ repo.id }}/pullRequests/{{ pr_id }}", "supportsIterations": true, "artifactId": "vstfs:///Git/PullRequestId/{{ project.id }}%2F{{ repo.id }}%2F{{ pr_id }}"}
+  - name: subscription_invalid
+    status: 400
+    sentence: "Subscription refused: eventType and consumerInputs.url are required"
+    body: '{"$id": "1", "innerException": null, "message": "The consumer input url is required.", "typeName": "Microsoft.VisualStudio.Services.ServiceHooks.WebApi.SubscriptionInputException, Microsoft.VisualStudio.Services.ServiceHooks.WebApi", "typeKey": "SubscriptionInputException", "errorCode": 0, "eventId": 3000}'
+  - name: subscription_created
+    sentence: "Service hook {{ body.eventType }} → {{ body.consumerInputs.url }}"
+    body: |
+      {"id": "{{ sub_id }}", "url": "https://dev.azure.com/{{ path.org }}/_apis/hooks/subscriptions/{{ sub_id }}", "status": "enabled", "publisherId": {{ json(default(body.publisherId, 'tfs')) }},
+       "eventType": {{ json(body.eventType) }}, "subscriber": null, "resourceVersion": {{ json(default(body.resourceVersion, '1.0')) }}, "eventDescription": "Any repository",
+       "consumerId": {{ json(default(body.consumerId, 'webHooks')) }}, "consumerActionId": {{ json(default(body.consumerActionId, 'httpRequest')) }}, "actionDescription": "To host {{ body.consumerInputs.url }}",
+       "createdBy": {{ json(data.identity) }}, "createdDate": "{{ now() }}", "modifiedBy": {{ json(data.identity) }}, "modifiedDate": "{{ now() }}",
+       "publisherInputs": {{ json(default(body.publisherInputs, {})) }}, "consumerInputs": {{ json(body.consumerInputs) }}}
+  - name: subscription_deleted
+    status: 204
+    sentence: "Deleted service hook {{ path.id }}"
+data:
+  identity: {displayName: Emma Carter, id: 4b2f7e8a-1c3d-4e5f-9a0b-1c2d3e4f5a6b, uniqueName: emma.carter@acme.example.com, url: 'https://spsprodcus1.vssps.visualstudio.com/_apis/Identities/4b2f7e8a-1c3d-4e5f-9a0b-1c2d3e4f5a6b', imageUrl: 'https://dev.azure.com/acme/_api/_common/identityImage?id=4b2f7e8a-1c3d-4e5f-9a0b-1c2d3e4f5a6b'}
+  projects:
+    - {id: 6ce954b1-ce1f-45d1-b94d-e6bf2464ba2c, name: Storefront, description: Acme web storefront, url: 'https://dev.azure.com/acme/_apis/projects/6ce954b1-ce1f-45d1-b94d-e6bf2464ba2c', state: wellFormed, revision: 411, visibility: private, lastUpdateTime: '2026-10-02T14:20:00.000Z'}
+    - {id: 3b0c1e2d-7f8a-4c9b-a1d2-e3f4a5b6c7d8, name: Billing, description: Globex billing integration, url: 'https://dev.azure.com/acme/_apis/projects/3b0c1e2d-7f8a-4c9b-a1d2-e3f4a5b6c7d8', state: wellFormed, revision: 87, visibility: private, lastUpdateTime: '2026-09-15T09:00:00.000Z'}
+  repositories:
+    - {id: 5febef5a-833d-4e14-b9c0-14cb638f91e6, name: storefront-web, url: 'https://dev.azure.com/acme/6ce954b1-ce1f-45d1-b94d-e6bf2464ba2c/_apis/git/repositories/5febef5a-833d-4e14-b9c0-14cb638f91e6', defaultBranch: refs/heads/main, remoteUrl: 'https://acme@dev.azure.com/acme/Storefront/_git/storefront-web', project: {id: 6ce954b1-ce1f-45d1-b94d-e6bf2464ba2c, name: Storefront, state: wellFormed, visibility: private}}
+  # Pull requests by repository id.
+  pull_requests:
+    5febef5a-833d-4e14-b9c0-14cb638f91e6:
+      - {pullRequestId: 2201, codeReviewId: 2201, status: active, title: Add checkout retry, description: Retries the payment call once., sourceRefName: refs/heads/feature/checkout-retry, targetRefName: refs/heads/main, mergeStatus: succeeded, isDraft: false, creationDate: '2026-11-13T16:00:00.000Z', createdBy: {displayName: Liam Foster, id: 7c8d9e0f-1a2b-4c3d-8e4f-5a6b7c8d9e0f, uniqueName: liam.foster@acme.example.com}, reviewers: [{displayName: Emma Carter, id: 4b2f7e8a-1c3d-4e5f-9a0b-1c2d3e4f5a6b, vote: 0, isRequired: true}], url: 'https://dev.azure.com/acme/6ce954b1-ce1f-45d1-b94d-e6bf2464ba2c/_apis/git/repositories/5febef5a-833d-4e14-b9c0-14cb638f91e6/pullRequests/2201', repository: {id: 5febef5a-833d-4e14-b9c0-14cb638f91e6, name: storefront-web, project: {id: 6ce954b1-ce1f-45d1-b94d-e6bf2464ba2c, name: Storefront}}, supportsIterations: true}
+  # A fixed subscription id per event type (so DELETE can find it again).
+  subscription_ids:
+    - {eventType: git.pullrequest.created, id: 9b1c2d3e-0001-4000-8000-000000000001}
+    - {eventType: git.pullrequest.updated, id: 9b1c2d3e-0002-4000-8000-000000000002}
+    - {eventType: git.pullrequest.merged, id: 9b1c2d3e-0003-4000-8000-000000000003}
+    - {eventType: git.push, id: 9b1c2d3e-0004-4000-8000-000000000004}
+    - {eventType: ms.vss-code.git-pullrequest-comment-event, id: 9b1c2d3e-0005-4000-8000-000000000005}
+    - {eventType: workitem.created, id: 9b1c2d3e-0006-4000-8000-000000000006}
+    - {eventType: workitem.updated, id: 9b1c2d3e-0007-4000-8000-000000000007}
+    - {eventType: build.complete, id: 9b1c2d3e-0008-4000-8000-000000000008}

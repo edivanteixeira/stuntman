@@ -1,0 +1,98 @@
+# New Relic NerdGraph (GraphQL, POST /graphql): the actor's user and accounts, and NRQL queries
+# with synthetic results (count, average, FACET and TIMESERIES shapes). Send any User key in the
+# API-Key header. Point the app at http://localhost:8028/newrelic/graphql (or resolve
+# api.newrelic.com to Stuntman). Synthetic accounts and numbers.
+service:
+  name: newrelic
+  title: New Relic NerdGraph
+  origin: community
+  description: NerdGraph GraphQL - actor, accounts and NRQL
+  base_url: https://api.newrelic.com
+  real_host: api.newrelic.com
+  limits:
+    latency: 200ms..600ms
+routes:
+  # Every query whose first field is actor: { actor { user … accounts … } } and
+  # { actor { account(id: N) { nrql(query: "…") { results } } } }. The account id is read from
+  # variables (accountId or id); one written inline in the query is taken as the first account.
+  - route: POST /graphql
+    graphql: actor
+    let:
+      text: "(body.query + ' ' + json(variables)).upper()"
+      account_id: "default(variables.accountId, default(variables.id, data.accounts[0].id))"
+      account: "lookup('accounts', 'id', default(variables.accountId, default(variables.id, data.accounts[0].id)))"
+    decide:
+      - when: "!has(headers['api-key'])"
+        answer: unauthorized
+      - when: "body.query.contains('nrql') && !has(account)"
+        answer: account_denied
+      - when: "body.query.contains('nrql') && !text.contains('SELECT') && !text.contains('FROM')"
+        answer: nrql_syntax_error
+      - when: "body.query.contains('nrql') && text.contains('FACET')"
+        answer: nrql_facet
+      - when: "body.query.contains('nrql') && text.contains('TIMESERIES')"
+        answer: nrql_timeseries
+      - when: "body.query.contains('nrql') && text.contains('AVERAGE(')"
+        answer: nrql_average
+      - when: "body.query.contains('nrql')"
+        answer: nrql_count
+      - when: "body.query.contains('account(') || body.query.contains('account (')"
+        answer: account
+      - answer: actor
+  # Any other operation: GraphQL's own validation error.
+  - route: POST /graphql
+    decide:
+      - when: "!has(headers['api-key'])"
+        answer: unauthorized
+      - when: "!has(body.query)"
+        answer: no_query
+      - answer: unknown_field
+answers:
+  # The wording of NerdGraph's auth error is not documented; the status (401) and shape are.
+  - name: unauthorized
+    status: 401
+    note: no API-Key header (or a License key instead of a User key)
+    sentence: "Refused: no API-Key (401)"
+    body: '{"errors": [{"message": "Unauthorized: invalid or missing API key", "extensions": {"errorClass": "UNAUTHORIZED"}}], "data": null}'
+  - name: rate_limited
+    status: 429
+    note: NerdGraph concurrency/rate limit; exists only to be forced
+    sentence: "Rate limited (429)"
+    headers: {Retry-After: '5'}
+    body: '{"errors": [{"message": "Too many requests", "extensions": {"errorClass": "TOO_MANY_REQUESTS"}}], "data": null}'
+  - name: actor
+    sentence: "Actor {{ data.user.email }} with {{ size(data.accounts) }} accounts"
+    body: '{"data": {"actor": {"user": {{ json(data.user) }}, "accounts": {{ json(data.accounts) }}}}}'
+  - name: account
+    sentence: "Account {{ account.name }}"
+    body: '{"data": {"actor": {"account": {{ json(account) }}}}}'
+  - name: account_denied
+    sentence: "NRQL refused: no access to account {{ account_id }}"
+    body: '{"data": {"actor": {"account": null}}, "errors": [{"message": "Access denied.", "path": ["actor", "account"], "extensions": {"errorClass": "FORBIDDEN"}}]}'
+  - name: nrql_syntax_error
+    sentence: "NRQL syntax error"
+    body: '{"data": {"actor": {"account": {"nrql": null}}}, "errors": [{"message": "NRQL Syntax Error: Error at line 1 position 1, unexpected end of query", "path": ["actor", "account", "nrql"], "extensions": {"errorClass": "INVALID_INPUT"}}]}'
+  - name: nrql_count
+    sentence: "NRQL on {{ account.name }}: count"
+    body: '{"data": {"actor": {"account": {"nrql": {"results": [{"count": 15873}], "metadata": {"timeWindow": {"begin": {{ now_ms() - 3600000 }}, "end": {{ now_ms() }}}}}}}}}'
+  - name: nrql_average
+    sentence: "NRQL on {{ account.name }}: average"
+    body: '{"data": {"actor": {"account": {"nrql": {"results": [{"average.duration": 0.2317}], "metadata": {"timeWindow": {"begin": {{ now_ms() - 3600000 }}, "end": {{ now_ms() }}}}}}}}}'
+  - name: nrql_facet
+    sentence: "NRQL on {{ account.name }}: FACET"
+    body: '{"data": {"actor": {"account": {"nrql": {"results": [{"facet": "storefront-web", "appName": "storefront-web", "count": 10422}, {"facet": "billing-api", "appName": "billing-api", "count": 4317}, {"facet": "checkout-worker", "appName": "checkout-worker", "count": 1134}], "metadata": {"facets": ["appName"]}}}}}}'
+  - name: nrql_timeseries
+    sentence: "NRQL on {{ account.name }}: TIMESERIES"
+    body: '{"data": {"actor": {"account": {"nrql": {"results": [{"beginTimeSeconds": {{ int(now_ms() / 1000) - 1800 }}, "endTimeSeconds": {{ int(now_ms() / 1000) - 1200 }}, "count": 512}, {"beginTimeSeconds": {{ int(now_ms() / 1000) - 1200 }}, "endTimeSeconds": {{ int(now_ms() / 1000) - 600 }}, "count": 498}, {"beginTimeSeconds": {{ int(now_ms() / 1000) - 600 }}, "endTimeSeconds": {{ int(now_ms() / 1000) }}, "count": 531}]}}}}}'
+  - name: unknown_field
+    sentence: "GraphQL refused: unknown field"
+    body: '{"errors": [{"message": "Cannot query field on type \"RootQueryType\".", "locations": [{"line": 1, "column": 3}], "extensions": {"errorClass": "GRAPHQL_VALIDATION_FAILED"}}]}'
+  - name: no_query
+    status: 400
+    sentence: "GraphQL refused: no query"
+    body: '{"errors": [{"message": "No query document supplied"}]}'
+data:
+  user: {id: 3141592, name: Emma Carter, email: emma.carter@acme.example.com}
+  accounts:
+    - {id: 1234567, name: Acme Production}
+    - {id: 7654321, name: Acme Staging}

@@ -8,6 +8,7 @@ pub mod query;
 pub mod receiver;
 pub mod store;
 pub mod tools;
+pub mod udp;
 
 use std::{
     collections::HashMap,
@@ -45,6 +46,8 @@ pub fn ports() -> (u16, u16) {
 pub struct Telemetry {
     pub http_port: u16,
     pub grpc_port: u16,
+    pub gelf_port: u16,
+    pub statsd_port: u16,
 }
 
 impl Module for Telemetry {
@@ -61,7 +64,9 @@ impl Module for Telemetry {
     }
 
     fn extra_routes(&self) -> Router<Ctx> {
-        Router::new().route("/api/telemetry/settings.yaml", get(|State(ctx): State<Ctx>| async move {
+        Router::new().route("/gelf", axum::routing::post(|State(ctx): State<Ctx>, body: axum::body::Bytes| async move {
+            match udp::gelf_in(&ctx, &body).await { Ok(_) => axum::http::StatusCode::ACCEPTED.into_response(), Err(e) => (axum::http::StatusCode::BAD_REQUEST, e).into_response() }
+        })).route("/api/telemetry/settings.yaml", get(|State(ctx): State<Ctx>| async move {
             ([(header::CONTENT_TYPE, "application/yaml")], std::fs::read_to_string(config::file(&ctx)).unwrap_or_default()).into_response()
         }))
     }
@@ -86,6 +91,7 @@ impl Module for Telemetry {
     /// there takes them down); each batch goes to the environment of its host or /e/<name> prefix.
     fn listen(&self, envs: stuntman_core::env::Envs) {
         let _ = PORTS.set((self.http_port, self.grpc_port));
+        udp::serve(envs.clone(), self.gelf_port, self.statsd_port);
         tokio::spawn(async move {
             loop {
                 // Also picks up provoke expiry and edits made to the YAML file by hand.

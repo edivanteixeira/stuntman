@@ -84,11 +84,13 @@ routes:
       - when: "!has(repo) || repo.project.id != project.id"
         answer: repository_not_found
       - answer: pull_request_created
-    # ponytail: consumerInputs.httpHeaders ("Key:Value" lines) cannot be split by the expression
-    # language, so they are not sent as headers; the delivery carries only its own headers.
+    # The subscription's consumerInputs: httpHeaders ("Key:Value" lines) and basic auth go on the delivery.
     send:
       - url: "{{ sub_url }}"
         event: git.pullrequest.created
+        headers:
+          "*": "{{ has(sub) ? default(sub.body.consumerInputs.httpHeaders, '') : '' }}"
+          "{{ has(sub) && has(sub.body.consumerInputs.basicAuthUsername) ? 'Authorization' : '' }}": "Basic {{ has(sub) ? base64(default(sub.body.consumerInputs.basicAuthUsername, '') + ':' + default(sub.body.consumerInputs.basicAuthPassword, '')) : '' }}"
         body: |
           {"subscriptionId": "{{ sub_id }}", "notificationId": {{ int(now_ms() % 1000) + 1 }}, "id": "{{ uuid() }}", "eventType": "git.pullrequest.created", "publisherId": "tfs",
            "message": {"text": "{{ data.identity.displayName }} created a new pull request", "html": "{{ data.identity.displayName }} created a new pull request", "markdown": "{{ data.identity.displayName }} created a new pull request"},

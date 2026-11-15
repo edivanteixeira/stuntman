@@ -169,6 +169,7 @@ fn parse_multipart(ct: &str, body: &[u8]) -> (Map<String, Value>, Vec<Value>) {
     let delim = format!("--{b}");
     let text = body;
     let mut start = 0;
+    let mut part_no = 0;
     let find = |hay: &[u8], needle: &[u8], from: usize| hay[from..].windows(needle.len()).position(|w| w == needle).map(|p| p + from);
     while let Some(i) = find(text, delim.as_bytes(), start) {
         let part_start = i + delim.len() + 2;
@@ -181,9 +182,22 @@ fn parse_multipart(ct: &str, body: &[u8]) -> (Map<String, Value>, Vec<Value>) {
             let head = String::from_utf8_lossy(&part[..h_end]).to_string();
             let data = &part[h_end + 4..];
             let name = head.split("name=\"").nth(1).and_then(|r| r.split('"').next()).unwrap_or("").to_string();
+            let ctype = head.lines().find(|l| l.to_lowercase().starts_with("content-type:")).map(|l| l[13..].trim().to_string()).unwrap_or_default();
+            // multipart/related and /mixed (Drive, Gmail uploads): parts have no name. A JSON part is
+            // the metadata (its fields go to the body); the others are files named part1, part2…
+            if name.is_empty() && !head.to_lowercase().contains("content-disposition") {
+                part_no += 1;
+                let n = part_no;
+                match serde_json::from_slice::<Value>(data) {
+                    Ok(Value::Object(m)) if ctype.to_lowercase().contains("json") => fields.extend(m),
+                    _ => files.push(json!({"field": format!("part{n}"), "filename": "", "size": data.len(), "contentType": ctype,
+                        "base64": if data.len() <= 1 << 20 { json!(B64.encode(data)) } else { Value::Null }})),
+                }
+                start = next;
+                continue;
+            }
             match head.split("filename=\"").nth(1).and_then(|r| r.split('"').next()) {
                 Some(fname) => {
-                    let ctype = head.lines().find(|l| l.to_lowercase().starts_with("content-type:")).map(|l| l[13..].trim().to_string()).unwrap_or_default();
                     files.push(json!({"field": name, "filename": fname, "size": data.len(), "contentType": ctype, "sha256": expr::eval("sha256(x)", &json!({"x": String::from_utf8_lossy(data)}).as_object().unwrap().clone()).unwrap_or(Value::Null),
                         "base64": if data.len() <= 1 << 20 { json!(B64.encode(data)) } else { Value::Null }}));
                     fields.insert(name, json!({"filename": fname, "size": data.len()}));
@@ -204,7 +218,7 @@ pub fn read_request(method: &str, path: &str, query: &str, headers: BTreeMap<Str
         (netserve_decode(&k.replace('+', " ")), json!(netserve_decode(&v.replace('+', " "))))
     }).collect();
     let ct = headers.get("content-type").cloned().unwrap_or_default().to_lowercase();
-    let (body, files) = if ct.contains("multipart/form-data") {
+    let (body, files) = if ct.contains("multipart/") {
         let (f, files) = parse_multipart(headers.get("content-type").map(String::as_str).unwrap_or(""), &raw);
         (Value::Object(f), files)
     } else if ct.contains("x-www-form-urlencoded") {
@@ -846,10 +860,18 @@ async fn fire(ctx: &Ctx, job: Value) {
     let tol = if wh.is_some() { w.tolerance } else { 300 };
     let mut headers: Vec<(String, String)> = vec![("content-type".into(), "application/json".into())];
     // Header names are templates too; a name that renders empty is left out.
+    // "*": the value renders to "Name: value" lines, one header each (headers a subscriber chose).
     for (k, v) in &s.headers {
         let k = expr::render(k, &sc).unwrap_or_default();
-        if !k.trim().is_empty() {
-            headers.push((k.trim().to_string(), expr::render(v, &sc).unwrap_or_default()));
+        let v = expr::render(v, &sc).unwrap_or_default();
+        if k.trim() == "*" {
+            for line in v.lines() {
+                if let Some((n, x)) = line.split_once(':').filter(|(n, _)| !n.trim().is_empty()) {
+                    headers.push((n.trim().to_string(), x.trim().to_string()));
+                }
+            }
+        } else if !k.trim().is_empty() {
+            headers.push((k.trim().to_string(), v));
         }
     }
     let evid = format!("evt_{}", util::uuid().replace('-', "")[..20].to_string());
@@ -1228,5 +1250,8 @@ mod t {
         assert_eq!(r.body["cpf"], "12345678909");
         assert_eq!(r.files[0]["filename"], "a.pdf");
         assert_eq!(r.files[0]["size"], 6);
+        let rel = b"--YY\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{\"name\": \"Q4 plan.pdf\", \"parents\": [\"f1\"]}\r\n--YY\r\nContent-Type: application/pdf\r\n\r\n%PDF-1\r\n--YY--\r\n";
+        let r = read_request("POST", "/x", "", BTreeMap::from([("content-type".to_string(), "multipart/related; boundary=YY".to_string())]), rel.to_vec());
+        assert_eq!((r.body["name"].as_str(), r.files[0]["field"].as_str(), r.files[0]["size"].as_u64()), (Some("Q4 plan.pdf"), Some("part2"), Some(6)));
     }
 }

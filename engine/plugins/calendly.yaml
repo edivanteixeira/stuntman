@@ -12,8 +12,8 @@ service:
   real_host: api.calendly.com
   limits:
     latency: 120ms..350ms
-  # ponytail: one signing key for every subscription (Calendly uses the subscription's
-  # signing_key); register this one, or verify with it.
+  # Each delivery is signed with its subscription's signing_key; a subscription made without one
+  # uses this key.
   webhooks:
     sign: stripe
     header: Calendly-Webhook-Signature
@@ -88,6 +88,7 @@ routes:
     send:
       - url: "{{ hook_url }}"
         event: invitee.canceled
+        secret: "{{ has(hook) && has(hook.body.signing_key) ? hook.body.signing_key : 'calendly-acme-signing-key' }}"
         body: |
           {"created_at": "{{ now() }}", "created_by": "{{ data.users[0].uri }}", "event": "invitee.canceled",
            "payload": {"uri": "{{ invitee.uri }}", "email": "{{ invitee.email }}", "name": {{ json(invitee.name) }}, "first_name": {{ json(invitee.first_name) }}, "last_name": {{ json(invitee.last_name) }},
@@ -127,6 +128,7 @@ routes:
     send:
       - url: "{{ hook_url }}"
         event: invitee.created
+        secret: "{{ has(hook) && has(hook.body.signing_key) ? hook.body.signing_key : 'calendly-acme-signing-key' }}"
         body: |
           {"created_at": "{{ now() }}", "created_by": "{{ data.users[0].uri }}", "event": "invitee.created",
            "payload": {"uri": "https://api.calendly.com/scheduled_events/{{ event_uuid }}/invitees/{{ invitee_uuid }}", "email": {{ json(body.invitee.email) }}, "name": {{ json(default(body.invitee.name, body.invitee.email)) }},
@@ -153,10 +155,10 @@ routes:
       - when: "body.scope == 'user' && !has(body.user)"
         answer: invalid_argument
       - answer: hook_created
-    # A refused request must not replace the kept subscription (keep runs before decide).
+    # A refused request (4xx) keeps nothing, so the subscription stays as it was.
     keep:
       state: webhook_subscriptions
-      key: "(hook_live && hook.body.url == body.url) || !headers.authorization.startsWith('Bearer ') ? '__refused' : body.organization"
+      key: body.organization
   - route: GET /webhook_subscriptions
     let:
       hook: "state.webhook_subscriptions[query.organization]"

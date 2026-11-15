@@ -322,7 +322,8 @@ pub struct Send {
     /// The event type (CloudEvents ce-type; shown on the call).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub event: String,
-    /// More headers, templates: {token: "{{ data.tokens[0] }}"}.
+    /// More headers, templates: {token: "{{ data.tokens[0] }}"}. Names are templates too (empty = left
+    /// out); the name "*" takes "Name: value" lines, one header each.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
     /// Sent only when this is true: "body.status == 'paid'".

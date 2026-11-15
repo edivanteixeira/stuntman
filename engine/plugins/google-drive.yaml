@@ -219,11 +219,11 @@ answers:
   - name: created
     sentence: "Created {{ body.mimeType == 'application/vnd.google-apps.folder' ? 'the folder' : 'the file' }} {{ body.name | default('Untitled') }}"
     body: '{"kind": "drive#file", "id": "{{ new_id }}", "name": {{ json(default(body.name, ''Untitled'')) }}, "mimeType": {{ json(default(body.mimeType, ''application/octet-stream'')) }}}'
-  # ponytail: the multipart metadata part is not parsed, so the name is "Untitled" (Drive's name
-  # for an upload without metadata); GET the file id for what was kept.
+  # multipart: the JSON metadata part is the body (name, mimeType, parents); media has no metadata,
+  # so the file is "Untitled", as Drive names it.
   - name: uploaded
-    sentence: "Uploaded {{ size(raw) }} bytes ({{ query.uploadType | default('resumable') }})"
-    body: '{"kind": "drive#file", "id": "{{ new_id }}", "name": "Untitled", "mimeType": {{ json(query.uploadType == ''media'' ? default(headers[''content-type''], ''application/octet-stream'') : ''application/octet-stream'') }}}'
+    sentence: "Uploaded {{ body.name | default('Untitled') }} ({{ query.uploadType | default('resumable') }})"
+    body: '{"kind": "drive#file", "id": "{{ new_id }}", "name": {{ json(query.uploadType == ''multipart'' ? default(body.name, ''Untitled'') : ''Untitled'') }}, "mimeType": {{ json(query.uploadType == ''media'' ? default(headers[''content-type''], ''application/octet-stream'') : (query.uploadType == ''multipart'' ? default(body.mimeType, default(files[0].contentType, ''application/octet-stream'')) : ''application/octet-stream'')) }}}'
   - name: resumable_session
     sentence: "Resumable upload session opened"
     headers: {location: 'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=ADPycd{{ random_id() }}{{ random_id() }}', content-length: '0'}

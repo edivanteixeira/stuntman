@@ -140,7 +140,12 @@ fn want(rq: &Value) -> Want {
             "equalTo" => Some(format!("raw == {}", q(&s))),
             "equalToJson" => {
                 let j: Value = if v.is_string() { serde_json::from_str(&s).unwrap_or(Value::Null) } else { v.clone() };
-                j.as_object().map(|o| o.iter().filter(|(_, x)| !x.is_object() && !x.is_array()).map(|(f, x)| format!("body.{f} == {}", if x.is_string() { q(x.as_str().unwrap()) } else { x.to_string() })).collect::<Vec<_>>().join(" && ")).filter(|c| !c.is_empty())
+                if b.get("ignoreArrayOrder").and_then(Value::as_bool).unwrap_or(false) {
+                    w.gaps.push("equalToJson ignoreArrayOrder: arrays are compared in order".into());
+                }
+                let mut cs = vec![];
+                json_conds("body", &j, &mut cs);
+                Some(cs.join(" && ")).filter(|c| !c.is_empty())
             }
             "matchesJsonPath" => if v.is_string() { json_path(&s) } else { None },
             "matchesXPath" | "equalToXml" => if v.is_string() && k == "matchesXPath" { xpath(&s) } else { None },
@@ -154,7 +159,45 @@ fn want(rq: &Value) -> Want {
     if rq.get("multipartPatterns").is_some() {
         w.gaps.push("multipartPatterns are not checked".into());
     }
+    if let Some(b) = rq["basicAuthCredentials"].as_object() {
+        let (u, pw) = (b.get("username").and_then(Value::as_str).unwrap_or(""), b.get("password").and_then(Value::as_str).unwrap_or(""));
+        w.conds.push(format!("string(headers['authorization']) == {}", q(&format!("Basic {}", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, format!("{u}:{pw}"))))));
+    }
+    for (k, m) in rq["cookies"].as_object().cloned().unwrap_or_default() {
+        match matcher(&format!("cookie(headers['cookie'], {})", q(&k)), &m) {
+            Some(c) => w.conds.push(c),
+            None => w.gaps.push(format!("cookie {k}: {m}")),
+        }
+    }
+    // Everything else is said, never dropped quietly. host/port/scheme: the app reaches Stuntman, not the
+    // real host (host groups the services); pathParameters of a urlPathTemplate become the route's {params}.
+    const KNOWN: &[&str] = &["method", "url", "urlPath", "urlPathPattern", "urlPattern", "urlPathTemplate", "host", "port", "scheme", "queryParameters", "headers",
+        "bodyPatterns", "multipartPatterns", "basicAuthCredentials", "cookies", "pathParameters"];
+    for k in rq.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()).unwrap_or_default() {
+        if !KNOWN.contains(&k.as_str()) {
+            w.gaps.push(format!("request {k} is not checked"));
+        }
+    }
+    if rq.get("pathParameters").is_some() {
+        w.gaps.push("pathParameters: matched as any value of the {param}".into());
+    }
     w
+}
+
+/// equalToJson → one condition per leaf: body.a.b == 'x'; arrays compare as JSON text.
+fn json_conds(path: &str, v: &Value, out: &mut Vec<String>) {
+    match v {
+        Value::Object(o) => {
+            for (k, x) in o {
+                let k2 = if k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !k.starts_with(|c: char| c.is_ascii_digit()) { format!("{path}.{k}") } else { format!("{path}[{}]", q(k)) };
+                json_conds(&k2, x, out);
+            }
+        }
+        Value::Array(_) => out.push(format!("json({path}) == {}", q(&serde_json::to_string(v).unwrap_or_default()))),
+        Value::String(x) => out.push(format!("{path} == {}", q(x))),
+        Value::Null => out.push(format!("{path} == null")),
+        x => out.push(format!("{path} == {x}")),
+    }
 }
 
 fn slug(s: &str) -> String {
@@ -183,6 +226,7 @@ pub fn plugin_of(g: &Group, files_root: &Path) -> (Plugin, Vec<(String, Vec<u8>)
     // route → [(priority, specific, Decide)]
     let mut routes: BTreeMap<String, Vec<(i64, bool, Decide)>> = BTreeMap::new();
     let mut names = std::collections::HashSet::new();
+    let mut route_sends: BTreeMap<Vec<String>, Vec<plugin::Send>> = BTreeMap::new();
     let mut maps = g.maps.clone();
     maps.sort_by_key(|(_, m)| m["priority"].as_i64().unwrap_or(5));
     for (file, m) in &maps {
@@ -263,6 +307,32 @@ pub fn plugin_of(g: &Group, files_root: &Path) -> (Plugin, Vec<(String, Vec<u8>)
                 name
             }
         };
+        const RS_KNOWN: &[&str] = &["status", "statusMessage", "headers", "body", "jsonBody", "base64Body", "bodyFileName", "fixedDelayMilliseconds", "delayDistribution", "transformers", "fault"];
+        for k in rs.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()).unwrap_or_default() {
+            if !RS_KNOWN.contains(&k.as_str()) {
+                gaps.push(format!("{}: response {k} is not converted", file.file_name().and_then(|f| f.to_str()).unwrap_or("")));
+            }
+        }
+        // Webhooks (postServeActions / serveEventListeners "webhook") become sends after this answer.
+        let actions: Vec<Value> = m["postServeActions"].as_array().cloned().unwrap_or_else(|| m["postServeActions"].as_object().map(|o| o.iter().map(|(k, v)| json!({"name": k, "parameters": v})).collect()).unwrap_or_default())
+            .into_iter().chain(m["serveEventListeners"].as_array().cloned().unwrap_or_default()).collect();
+        for act in actions {
+            let pr = &act["parameters"];
+            if act["name"] == "webhook" && pr["url"].is_string() {
+                let tpl = |x: &str| x.contains("{{");
+                let body = pr["body"].as_str().map(String::from).or_else(|| pr.get("jsonBody").map(|j| j.to_string())).unwrap_or_default();
+                if tpl(&body) || tpl(pr["url"].as_str().unwrap_or("")) {
+                    gaps.push(format!("{}: webhook templates ({{{{originalRequest…}}}}) are sent as text", file.file_name().and_then(|f| f.to_str()).unwrap_or("")));
+                }
+                let headers = pr["headers"].as_object().map(|h| h.iter().map(|(k, v)| (k.clone(), v.as_str().map(String::from).unwrap_or_else(|| v.to_string()).replace("{{", "{ {"))).collect()).unwrap_or_default();
+                let delay = pr["delay"]["milliseconds"].as_u64().or(pr["fixedDelayMilliseconds"].as_u64()).map(|d| format!("{d}ms")).unwrap_or_default();
+                route_sends.entry(w.methods.iter().map(|m| format!("{m} {}", w.path)).collect::<Vec<_>>()).or_default().push(plugin::Send {
+                    url: pr["url"].as_str().unwrap_or("").replace("{{", "{ {"), method: pr["method"].as_str().unwrap_or("POST").to_uppercase(), body: body.replace("{{", "{ {"),
+                    delay, headers, when: format!("answer == {}", q(&answer_name)), ..Default::default() });
+            } else {
+                gaps.push(format!("{}: action {} is not converted", file.file_name().and_then(|f| f.to_str()).unwrap_or(""), act["name"]));
+            }
+        }
         let mut conds = w.conds.clone();
         let specific = !state.is_empty() && state != "Started";
         if specific {
@@ -294,7 +364,8 @@ pub fn plugin_of(g: &Group, files_root: &Path) -> (Plugin, Vec<(String, Vec<u8>)
                 p.answers.push(Answer { name: "not_matched".into(), status: 404, headers: [("content-type".to_string(), "text/plain".to_string())].into(), body: "Request was not matched".into(), raw: true, note: "no mapping matched (as WireMock)".into(), ..Default::default() });
             }
         }
-        p.routes.push(Route { route: r, decide, fallthrough: true, ..Default::default() });
+        let send = route_sends.iter().filter(|(k, _)| k.contains(&r)).flat_map(|(_, v)| v.clone()).collect();
+        p.routes.push(Route { route: r, decide, send, fallthrough: true, ..Default::default() });
         prio.push(min_prio);
     }
     // Plain paths before regexes (/a/b before /a/.*), then by WireMock priority.
@@ -472,5 +543,11 @@ mod t {
         assert_eq!(w.conds[3], "raw.contains('abc')");
         let w = want(&json!({"method": "GET", "url": "/v1/x?a=1&b=2"}));
         assert_eq!((w.path.as_str(), w.conds.len()), ("/v1/x", 2));
+        let w = want(&json!({"method": "POST", "urlPath": "/o", "basicAuthCredentials": {"username": "acme", "password": "pw"}, "cookies": {"sid": {"equalTo": "s1"}},
+            "bodyPatterns": [{"equalToJson": {"order": {"id": 7, "tags": ["a"]}}}], "customMatcher": {"name": "x"}}));
+        assert!(w.conds.iter().any(|c| c == "string(headers['authorization']) == 'Basic YWNtZTpwdw=='"), "{:?}", w.conds);
+        assert!(w.conds.iter().any(|c| c.starts_with("cookie(headers['cookie'], 'sid')")), "{:?}", w.conds);
+        assert!(w.conds[0].contains("body.order.id == 7") && w.conds[0].contains("json(body.order.tags)"), "{:?}", w.conds);
+        assert_eq!(w.gaps, vec!["request customMatcher is not checked".to_string()]);
     }
 }

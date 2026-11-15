@@ -386,6 +386,11 @@ fn call(name: &str, a: &[Value], sc: &Scope) -> Result<Value, String> {
         "upper" => json!(s0().to_uppercase()),
         "lower" => json!(s0().to_lowercase()),
         "trim" => json!(s0().trim()),
+        // cookie(headers.cookie, 'sid'): one cookie's value from a Cookie header.
+        "cookie" => {
+            let name = a.get(1).map(text).unwrap_or_default();
+            json!(s0().split(';').filter_map(|kv| kv.trim().split_once('=')).find(|(k, _)| *k == name).map(|(_, v)| v.to_string()))
+        }
         "replace" => json!(s0().replace(&a.get(1).map(text).unwrap_or_default(), &a.get(2).map(text).unwrap_or_default())),
         "split" => json!(s0().split(&a.get(1).map(text).unwrap_or(",".into())).map(str::to_string).collect::<Vec<_>>()),
         "join" => json!(a.first().and_then(Value::as_array).map(|x| x.iter().map(text).collect::<Vec<_>>().join(&a.get(1).map(text).unwrap_or(",".into()))).unwrap_or_default()),
@@ -689,6 +694,7 @@ mod t {
         assert_eq!(eval("join(split('a b', ' '), '+')", &s).unwrap(), json!("a+b"));
         assert_eq!(eval("{'n': 2}", &s).unwrap(), json!({"n": 2}));
         assert_eq!(eval("base64(':pat')", &s).unwrap(), json!("OnBhdA=="));
+        assert_eq!(eval("cookie('a=1; sid=s1', 'sid')", &s).unwrap(), json!("s1"));
         let lets: std::collections::BTreeMap<String, String> = [("a".into(), "b + 1".into()), ("b".into(), "2".into())].into();
         assert_eq!(let_order(&lets).iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), vec!["b", "a"]);
         assert_eq!(paths("selfie.tag != person.tg && size(body.cpf) > 3"), vec!["selfie.tag", "person.tg", "body.cpf"]);

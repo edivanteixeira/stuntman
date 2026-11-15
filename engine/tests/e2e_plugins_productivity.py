@@ -154,7 +154,7 @@ def drive(s):
     assert v2["name"] == "Invoices" and v2["mimeType"] == "application/vnd.google-apps.folder", v2
     body = (b"--b1\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{\"name\": \"notes.txt\"}\r\n--b1\r\nContent-Type: text/plain\r\n\r\nhello drive\r\n--b1--\r\n")
     st, v, _ = s.api("POST", "/google-drive/upload/drive/v3/files?uploadType=multipart", body, dict(B, **{"Content-Type": "multipart/related; boundary=b1"}))
-    assert st == 200 and v["kind"] == "drive#file" and v["id"], (st, v)
+    assert st == 200 and v["kind"] == "drive#file" and v["id"] and v["name"] == "notes.txt" and v["mimeType"] == "text/plain", (st, v)
     st, v, _ = s.api("POST", "/google-drive/upload/drive/v3/files?uploadType=multipart", b"hello", dict(B, **{"Content-Type": "text/plain"}))
     assert st == 400 and "multipart" in v["error"]["message"], v
     st, v, _ = s.api("GET", "/google-drive/drive/v3/files")
@@ -191,7 +191,7 @@ def calendly(s):
     assert [e["status"] for e in v["collection"]] == ["active", "canceled"], v
     st, v, _ = s.api("GET", "/calendly/scheduled_events/EV0GLOBEX0000001/invitees", headers=B)
     assert v["collection"][0]["email"] == "lily.parker@globex.example.com", v
-    st, v, _ = s.api("POST", "/calendly/webhook_subscriptions", {"url": f"http://127.0.0.1:{HOOK}/calendly", "events": ["invitee.created", "invitee.canceled"], "organization": org, "scope": "organization"}, B)
+    st, v, _ = s.api("POST", "/calendly/webhook_subscriptions", {"url": f"http://127.0.0.1:{HOOK}/calendly", "events": ["invitee.created", "invitee.canceled"], "organization": org, "scope": "organization", "signing_key": "acme-hook-key-7f3a"}, B)
     assert st == 201 and v["resource"]["state"] == "active", (st, v)
     hook_uri = v["resource"]["uri"]
     st, v, _ = s.api("POST", "/calendly/webhook_subscriptions", {"url": f"http://127.0.0.1:{HOOK}/calendly", "events": ["invitee.created"], "organization": org, "scope": "organization"}, B)
@@ -204,7 +204,7 @@ def calendly(s):
     assert st == 201 and v["resource"]["email"] == "owen.hughes@globex.example.com", (st, v)
     h = wait(lambda: got("/calendly"), "invitee.created")[0]
     sig = dict(x.split("=", 1) for x in h["headers"]["calendly-webhook-signature"].split(","))
-    want = hmac.new(b"calendly-acme-signing-key", f"{sig['t']}.{h['body']}".encode(), hashlib.sha256).hexdigest()
+    want = hmac.new(b"acme-hook-key-7f3a", f"{sig['t']}.{h['body']}".encode(), hashlib.sha256).hexdigest()
     assert sig["v1"] == want and abs(int(sig["t"]) - time.time()) < 60, (sig, want)
     p = json.loads(h["body"])
     assert p["event"] == "invitee.created" and p["payload"]["email"] == "owen.hughes@globex.example.com", p
@@ -306,7 +306,8 @@ def devops(s):
     assert v["value"][0]["pullRequestId"] == 2201, v
     sub = {"publisherId": "tfs", "eventType": "git.pullrequest.created", "resourceVersion": "1.0", "consumerId": "webHooks", "consumerActionId": "httpRequest",
            "publisherInputs": {"projectId": "6ce954b1-ce1f-45d1-b94d-e6bf2464ba2c", "repository": ""},
-           "consumerInputs": {"url": f"http://127.0.0.1:{HOOK}/devops", "httpHeaders": "X-Acme-Secret:s3cr3t"}}
+           "consumerInputs": {"url": f"http://127.0.0.1:{HOOK}/devops", "httpHeaders": "X-Acme-Secret:s3cr3t\nX-Acme-Env: stg",
+                              "basicAuthUsername": "hooks", "basicAuthPassword": "pa55"}}
     st, v, _ = s.api("POST", "/azure-devops/acme/_apis/hooks/subscriptions?api-version=7.1", sub, P)
     assert st == 200 and v["id"] == "9b1c2d3e-0001-4000-8000-000000000001" and v["status"] == "enabled", (st, v)
     pr = {"sourceRefName": "refs/heads/feature/invoices", "targetRefName": "refs/heads/main", "title": "Invoices export"}
@@ -314,6 +315,8 @@ def devops(s):
     assert st == 201 and v["status"] == "active" and v["title"] == "Invoices export", (st, v)
     h = wait(lambda: got("/devops"), "service hook")[0]
     p = json.loads(h["body"])
+    assert h["headers"].get("x-acme-secret") == "s3cr3t" and h["headers"].get("x-acme-env") == "stg", h["headers"]
+    assert h["headers"].get("authorization") == "Basic " + base64.b64encode(b"hooks:pa55").decode(), h["headers"]
     assert p["eventType"] == "git.pullrequest.created" and p["resource"]["pullRequestId"] == v["pullRequestId"] and p["subscriptionId"] == "9b1c2d3e-0001-4000-8000-000000000001", p
     st, _, _ = s.api("DELETE", "/azure-devops/acme/_apis/hooks/subscriptions/9b1c2d3e-0001-4000-8000-000000000001?api-version=7.1", headers=P)
     assert st == 204, st

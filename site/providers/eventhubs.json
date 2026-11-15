@@ -1,0 +1,311 @@
+{
+ "id": "eventhubs",
+ "order": 23,
+ "name": "Event Hubs",
+ "color": "teal",
+ "tagline": "An Azure Event Hubs namespace the official SDKs talk to over AMQP: partitions, consumer groups, owner levels, checkpoints and throttling on cue, with a Kafka endpoint too.",
+ "stands_in_for": [
+  "Azure Event Hubs (AMQP 1.0, emulator mode)",
+  "The Event Hubs Kafka endpoint ($ConnectionString)",
+  "Pub/Sub import topics from Event Hubs"
+ ],
+ "point": [
+  [
+   "Connection string",
+   "Endpoint=sb://acme-hubs-stg.localhost:5673/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=…;EntityPath=orders;UseDevelopmentEmulator=true"
+  ],
+  [
+   "Emulator form",
+   "Endpoint=sb://localhost:5673;…;UseDevelopmentEmulator=true (the hub names the namespace)"
+  ],
+  [
+   "Kafka",
+   "localhost:9092 · SASL_PLAINTEXT · PLAIN · user $ConnectionString"
+  ]
+ ],
+ "capabilities": [
+  {
+   "title": "Partitions like the service",
+   "text": "A partition key goes where the service sends it (lookup3 hash); no key, round-robin; a batch lands in one partition."
+  },
+  {
+   "title": "Read from anywhere",
+   "text": "Receivers start at the beginning, @latest, after an offset or sequence number, or at an enqueued time."
+  },
+  {
+   "title": "Consumer groups",
+   "text": "$Default plus the groups you create; at most 5 receivers per partition and group, as in Azure."
+  },
+  {
+   "title": "Owner levels",
+   "text": "A receiver with a higher epoch takes the partition; the older one is disconnected with link stolen."
+  },
+  {
+   "title": "Checkpoints you can see",
+   "text": "BlobCheckpointStore blobs in a Stuntman Storage account show next to each partition's reader."
+  },
+  {
+   "title": "Management answers",
+   "text": "get_eventhub_properties and get_partition_properties: begin and last sequence number, last offset, empty."
+  },
+  {
+   "title": "Retention on the clock",
+   "text": "Events older than the hub's retention go when you move the environment clock; begin sequence moves on."
+  },
+  {
+   "title": "Kafka endpoint",
+   "text": "Kafka clients log in with $ConnectionString and read and write the same partitions as AMQP clients."
+  },
+  {
+   "title": "Feeds Pub/Sub",
+   "text": "A Pub/Sub import topic naming the hub reads it: partition key as ordering key, properties as attributes."
+  }
+ ],
+ "excerpts": [
+  {
+   "frame": 123688,
+   "crop": [
+    232,
+    0,
+    1208,
+    400
+   ],
+   "title": "A hub: its partitions and every event with who sent it",
+   "callouts": [
+    {
+     "x": 315,
+     "y": 94,
+     "title": "Hubs",
+     "text": "The namespace's event hubs with partitions, consumer groups and events kept."
+    },
+    {
+     "x": 480,
+     "y": 18,
+     "title": "Two doors",
+     "text": "AMQP on the Service Bus port, and Kafka through Streams' port."
+    },
+    {
+     "x": 492,
+     "y": 168,
+     "title": "Partitions",
+     "text": "Begin and last sequence number of each partition; click one to see only its events."
+    },
+    {
+     "x": 654,
+     "y": 238,
+     "title": "Partition key",
+     "text": "Sequence number, byte offset and the key that picked the partition."
+    },
+    {
+     "x": 1254,
+     "y": 300,
+     "title": "Who sent it",
+     "text": "The app over AMQP or Kafka apart from you and the agent."
+    }
+   ]
+  },
+  {
+   "frame": 123688,
+   "crop": [
+    472,
+    400,
+    968,
+    520
+   ],
+   "title": "Send, provoke, and the readers of each partition",
+   "callouts": [
+    {
+     "x": 558,
+     "y": 540,
+     "title": "Send events",
+     "text": "Body, properties, a partition key or a partition, as another producer would."
+    },
+    {
+     "x": 666,
+     "y": 610,
+     "title": "Server busy",
+     "text": "The next sends answer com.microsoft:server-busy; the SDKs send again."
+    },
+    {
+     "x": 979,
+     "y": 610,
+     "title": "Steal owner",
+     "text": "Readers lose their partition as if a higher epoch came."
+    },
+    {
+     "x": 892,
+     "y": 768,
+     "title": "Owner level",
+     "text": "Each receiver reading now, its epoch and the last sequence number sent."
+    },
+    {
+     "x": 1072,
+     "y": 802,
+     "title": "Checkpoint behind",
+     "text": "The app's BlobCheckpointStore checkpoint, amber when it trails the reader."
+    }
+   ]
+  }
+ ],
+ "provoke": [
+  {
+   "name": "Server busy",
+   "what": "The next N sends and management requests answer com.microsoft:server-busy",
+   "how": "set_eventhubs server_busy"
+  },
+  {
+   "name": "Quota exceeded",
+   "what": "The next N sends are rejected with QuotaExceeded",
+   "how": "set_eventhubs quota_exceeded"
+  },
+  {
+   "name": "Slow sends",
+   "what": "Each send waits before it is accepted",
+   "how": "set_eventhubs slow_sends"
+  },
+  {
+   "name": "Entity not found",
+   "what": "A hub answers not found to links and management",
+   "how": "set_eventhubs not_found"
+  },
+  {
+   "name": "Partition owner stolen",
+   "what": "Readers of a hub are disconnected with amqp:link:stolen",
+   "how": "set_eventhubs steal_owner"
+  },
+  {
+   "name": "Higher epoch",
+   "what": "A second receiver with a higher owner level takes the partition",
+   "how": "a receiver with owner_level"
+  },
+  {
+   "name": "Connection drop",
+   "what": "Every connection of the namespace closes; the SDKs reconnect",
+   "how": "set_eventhubs drop_connections"
+  },
+  {
+   "name": "Wrong key",
+   "what": "With any_key off, tokens not signed by a policy key get 401",
+   "how": "set_eventhubs any_key false"
+  },
+  {
+   "name": "Events expire",
+   "what": "Events older than the hub's retention go",
+   "how": "advance_clock"
+  }
+ ],
+ "advantages": [
+  {
+   "title": "No Azure subscription",
+   "text": "No namespace to provision or pay for; hubs exist the moment create_eventhub runs."
+  },
+  {
+   "title": "Throttling when you want",
+   "text": "ServerBusy and QuotaExceeded on the next send, not when a real namespace happens to hit its limit."
+  },
+  {
+   "title": "Epochs you can watch",
+   "text": "See which receiver owns each partition and its checkpoint, instead of guessing from logs."
+  },
+  {
+   "title": "Days pass in seconds",
+   "text": "Retention runs on the environment clock: test what expired events do without waiting a day."
+  }
+ ],
+ "agent": {
+  "prompt": "Check that our order consumer survives a throttled Event Hubs and resumes from its checkpoint.",
+  "steps": [
+   [
+    "tool",
+    "create_eventhub",
+    "{\"namespace\": \"acme-hubs-stg\", \"hub\": \"orders\", \"partitions\": 4}"
+   ],
+   [
+    "tool",
+    "set_eventhubs",
+    "{\"namespace\": \"acme-hubs-stg\", \"server_busy\": 2}"
+   ],
+   [
+    "tool",
+    "wait_for_eventhub_event",
+    "{\"namespace\": \"acme-hubs-stg\", \"hub\": \"orders\", \"where\": {\"kind\": \"OrderPaid\"}}"
+   ],
+   [
+    "result",
+    "ok",
+    "partition 0 · sequence 412 · sent by the app after 2 retries"
+   ],
+   [
+    "tool",
+    "set_eventhubs",
+    "{\"namespace\": \"acme-hubs-stg\", \"steal_owner\": \"orders\"}"
+   ]
+  ],
+  "tools": [
+   [
+    "list_eventhubs",
+    "Namespaces, hubs, partitions, readers and checkpoints"
+   ],
+   [
+    "create_eventhub",
+    "A hub with partitions, consumer groups and retention"
+   ],
+   [
+    "list_eventhub_events",
+    "Events with sequence number, offset and partition key"
+   ],
+   [
+    "eventhub_send",
+    "Send as another producer"
+   ],
+   [
+    "set_eventhubs",
+    "Server busy, quota, slow sends, not found, steal owner, drop"
+   ],
+   [
+    "wait_for_eventhub_event",
+    "Wait for the app's event"
+   ],
+   [
+    "advance_clock",
+    "Move time: retention"
+   ]
+  ],
+  "http": [
+   [
+    "GET",
+    "/api/eventhubs",
+    "list_eventhubs"
+   ],
+   [
+    "POST",
+    "/api/eventhubs/{namespace}/hubs",
+    "create_eventhub"
+   ],
+   [
+    "GET",
+    "/api/eventhubs/{namespace}/{hub}/events",
+    "list_eventhub_events"
+   ],
+   [
+    "POST",
+    "/api/eventhubs/{namespace}/{hub}/events",
+    "eventhub_send"
+   ],
+   [
+    "PUT",
+    "/api/eventhubs/{namespace}/settings",
+    "set_eventhubs"
+   ],
+   [
+    "GET",
+    "/api/eventhubs/{namespace}/{hub}/wait",
+    "wait_for_eventhub_event"
+   ]
+  ]
+ },
+ "notes": [
+  "AMQP on :5673 (TLS :5671); the Kafka endpoint is plaintext on Streams' :9092.",
+  "Create hubs first: a host that names no Event Hubs namespace becomes a Service Bus one."
+ ]
+}

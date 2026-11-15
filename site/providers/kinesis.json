@@ -1,0 +1,307 @@
+{
+ "id": "kinesis",
+ "order": 22,
+ "name": "Kinesis",
+ "color": "teal",
+ "tagline": "An Amazon Kinesis Data Streams endpoint the AWS SDKs talk to: shards by partition key, iterators, resharding, fan-out consumers and throttling on cue.",
+ "stands_in_for": [
+  "Amazon Kinesis Data Streams (Kinesis_20131202, JSON 1.1 and CBOR)",
+  "Enhanced fan-out (SubscribeToShard)",
+  "Pub/Sub import topics from Kinesis"
+ ],
+ "point": [
+  [
+   "Env",
+   "AWS_ENDPOINT_URL_KINESIS=http://localhost:4567"
+  ],
+  [
+   "boto3",
+   "boto3.client(\"kinesis\", endpoint_url=\"http://localhost:4567\")"
+  ],
+  [
+   "Credentials",
+   "any access key and secret; the region comes from the signature"
+  ]
+ ],
+ "capabilities": [
+  {
+   "title": "Streams and shards",
+   "text": "Provisioned or on-demand streams; shards split the 128-bit hash key space and the MD5 of the partition key picks one."
+  },
+  {
+   "title": "Every iterator type",
+   "text": "TRIM_HORIZON, LATEST, AT and AFTER_SEQUENCE_NUMBER, AT_TIMESTAMP; GetRecords pages with MillisBehindLatest."
+  },
+  {
+   "title": "Resharding with lineage",
+   "text": "SplitShard, MergeShards and UpdateShardCount close parents; readers reach their end and get the ChildShards."
+  },
+  {
+   "title": "Enhanced fan-out",
+   "text": "Register consumers and read with SubscribeToShard: an event stream that pushes records as they arrive."
+  },
+  {
+   "title": "Retention on the clock",
+   "text": "Records expire after the retention period and iterators after 5 minutes, both on the environment clock."
+  },
+  {
+   "title": "Java's CBOR too",
+   "text": "AWS JSON 1.1 and the CBOR the Java SDK sends by default: byte-string data, millisecond timestamps."
+  },
+  {
+   "title": "Put as another producer",
+   "text": "Put a record from the screen or a tool; the app's consumers read it like any other."
+  },
+  {
+   "title": "Feeds Pub/Sub",
+   "text": "A Pub/Sub import topic naming the stream's ARN reads it from TRIM_HORIZON, partition key as ordering key."
+  }
+ ],
+ "excerpts": [
+  {
+   "frame": 122531,
+   "crop": [
+    232,
+    0,
+    1208,
+    400
+   ],
+   "title": "A stream: its hash key space, and every record with who put it",
+   "callouts": [
+    {
+     "x": 339,
+     "y": 94,
+     "title": "Streams",
+     "text": "Provisioned and on-demand streams with their open shards and record counts."
+    },
+    {
+     "x": 480,
+     "y": 18,
+     "title": "Endpoint",
+     "text": "AWS_ENDPOINT_URL_KINESIS points the SDKs here; any key works."
+    },
+    {
+     "x": 1180,
+     "y": 173,
+     "title": "Hash key space",
+     "text": "One bar split by open shard: the MD5 of the partition key lands in one of them."
+    },
+    {
+     "x": 792,
+     "y": 378,
+     "title": "Closed shard",
+     "text": "Records of a parent closed by a split stay readable until the retention ends."
+    },
+    {
+     "x": 1262,
+     "y": 248,
+     "title": "Who put it",
+     "text": "The app's records apart from yours and the agent's."
+    }
+   ]
+  },
+  {
+   "frame": 122531,
+   "crop": [
+    472,
+    410,
+    968,
+    600
+   ],
+   "title": "Put a record, provoke, and the shards after a split",
+   "callouts": [
+    {
+     "x": 490,
+     "y": 458,
+     "title": "Put a record",
+     "text": "Data, partition key or an explicit hash key, as another producer would."
+    },
+    {
+     "x": 646,
+     "y": 622,
+     "title": "Throughput exceeded",
+     "text": "The next puts answer ProvisionedThroughputExceededException; the SDKs retry."
+    },
+    {
+     "x": 605,
+     "y": 654,
+     "title": "Reshard now",
+     "text": "Splits the widest open shard; consumers must follow the children."
+    },
+    {
+     "x": 652,
+     "y": 860,
+     "title": "Parent shard",
+     "text": "Children of a split name their parent; the parent's sequence range is closed."
+    },
+    {
+     "x": 592,
+     "y": 986,
+     "title": "Fan-out consumer",
+     "text": "Registered consumers read with SubscribeToShard."
+    }
+   ]
+  }
+ ],
+ "provoke": [
+  {
+   "name": "Throughput on puts",
+   "what": "PutRecord and PutRecords answer ProvisionedThroughputExceededException",
+   "how": "set_kinesis {provoke: throughput_puts, times: 2}"
+  },
+  {
+   "name": "Throughput on gets",
+   "what": "GetRecords answers ProvisionedThroughputExceededException",
+   "how": "set_kinesis {provoke: throughput_gets}"
+  },
+  {
+   "name": "Stream not found",
+   "what": "Calls naming the stream answer ResourceNotFoundException",
+   "how": "set_kinesis {provoke: not_found, stream}"
+  },
+  {
+   "name": "Expired iterator",
+   "what": "GetRecords answers ExpiredIteratorException",
+   "how": "set_kinesis {provoke: expired_iterator}"
+  },
+  {
+   "name": "KMS throttling",
+   "what": "Puts and gets answer KMSThrottlingException",
+   "how": "set_kinesis {provoke: kms_throttling}"
+  },
+  {
+   "name": "Slow puts",
+   "what": "Each put waits delay_ms (3 s by default)",
+   "how": "set_kinesis {provoke: slow_puts}"
+  },
+  {
+   "name": "Partial PutRecords",
+   "what": "Every second record fails; FailedRecordCount > 0",
+   "how": "set_kinesis {provoke: partial_failures}"
+  },
+  {
+   "name": "Resharding",
+   "what": "The widest open shard is split now",
+   "how": "set_kinesis {provoke: reshard, stream}"
+  },
+  {
+   "name": "Iterator ages out",
+   "what": "An iterator older than 5 minutes expires for real",
+   "how": "advance_clock {by: 6m}"
+  },
+  {
+   "name": "Records past retention",
+   "what": "Records older than the retention are gone",
+   "how": "advance_clock {by: 25h}"
+  }
+ ],
+ "advantages": [
+  {
+   "title": "Throttling when you want it",
+   "text": "Real streams throttle only under load; here the next N calls fail, so the retry and backoff paths get tested."
+  },
+  {
+   "title": "Resharding in a test",
+   "text": "Split a shard mid-test and see whether the consumer finishes the parent and follows the children."
+  },
+  {
+   "title": "No shard-hour bill",
+   "text": "Streams, shards and fan-out consumers cost nothing and vanish with the environment."
+  },
+  {
+   "title": "See every record",
+   "text": "Shard, sequence number, partition key, data and who put it, without writing a consumer."
+  }
+ ],
+ "agent": {
+  "prompt": "Check that our tracking producer retries when Kinesis throttles it twice.",
+  "steps": [
+   [
+    "tool",
+    "set_kinesis",
+    "{\"provoke\": \"throughput_puts\", \"times\": 2, \"stream\": \"shipments\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "the next 2 puts on shipments answer ProvisionedThroughputExceededException"
+   ],
+   [
+    "tool",
+    "wait_for_kinesis_record",
+    "{\"stream\": \"shipments\", \"contains\": \"SHP-1043\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "put by the app on the 3rd try · shardId-000000000001 · partition key SHP-1043"
+   ]
+  ],
+  "tools": [
+   [
+    "list_kinesis_streams",
+    "Streams, shards with hash ranges and parents, consumers"
+   ],
+   [
+    "list_kinesis_records",
+    "The newest records with shard, sequence and producer"
+   ],
+   [
+    "kinesis_put",
+    "Put a record as another producer would"
+   ],
+   [
+    "create_kinesis_stream",
+    "A provisioned or on-demand stream"
+   ],
+   [
+    "wait_for_kinesis_record",
+    "Wait for the app to put a matching record"
+   ],
+   [
+    "set_kinesis",
+    "Throttling, not found, expired iterator, KMS, slow, partial, reshard"
+   ],
+   [
+    "advance_clock",
+    "Age iterators and records past their retention"
+   ]
+  ],
+  "http": [
+   [
+    "GET",
+    "/api/kinesis/streams",
+    "list_kinesis_streams"
+   ],
+   [
+    "GET",
+    "/api/kinesis/streams/{stream}/records",
+    "list_kinesis_records"
+   ],
+   [
+    "POST",
+    "/api/kinesis/streams/{stream}/records",
+    "kinesis_put"
+   ],
+   [
+    "PUT",
+    "/api/kinesis/streams/{name}",
+    "create_kinesis_stream"
+   ],
+   [
+    "GET",
+    "/api/kinesis/streams/{stream}/wait",
+    "wait_for_kinesis_record"
+   ],
+   [
+    "PUT",
+    "/api/kinesis/config",
+    "set_kinesis"
+   ]
+  ]
+ },
+ "notes": [
+  "One port (4567) serves every environment; the default one answers.",
+  "Per-shard throughput limits are not enforced, only provoked."
+ ]
+}

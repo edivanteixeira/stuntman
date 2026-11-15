@@ -20,6 +20,9 @@
 //                back, what another connection sends does
 //   exclusive    two exclusive consumers on queue://orders.ex: the first takes everything; when it
 //                closes, the second takes over (failover)
+//   sched        ActiveMQ.Scheduler.Management: BROWSE to a temporary queue, REMOVE the first job, BROWSE again
+//   priority     consumers of priority 1 and 9 on queue://orders.pri (run with prefetch 2): 9 first
+//   advisory     ActiveMQ.Advisory.Consumer.Queue.orders.adv and MessageDelivered.Queue.orders.adv: their data structures
 //   poison       a transacted consumer on queue://orders.poison that rolls back every time, until the
 //                client's redelivery policy (6) sends a poison ack
 using Apache.NMS;
@@ -237,6 +240,59 @@ try
             int n2 = 0;
             while (c2.Receive(TimeSpan.FromSeconds(3)) is IMessage m) { n2++; Console.WriteLine("c2 got: " + Show(m)); }
             Console.WriteLine($"exclusive: c1={n1} c2={n2}");
+            break;
+        }
+        case "sched":
+        {
+            using var session = connection.CreateSession(AcknowledgementMode.AutoAcknowledge);
+            var reply = session.CreateTemporaryQueue();
+            using var rc = session.CreateConsumer(reply);
+            using var mp = session.CreateProducer(SessionUtil.GetDestination(session, "topic://ActiveMQ.Scheduler.Management"));
+            List<string> Browse()
+            {
+                var req = session.CreateMessage();
+                req.Properties.SetString("AMQ_SCHEDULER_ACTION", "BROWSE");
+                req.NMSReplyTo = reply;
+                mp.Send(req);
+                var ids = new List<string>();
+                while (rc.Receive(TimeSpan.FromSeconds(2)) is IMessage m) ids.Add(m.Properties.GetString("scheduledJobId"));
+                return ids;
+            }
+            var jobs = Browse();
+            Console.WriteLine($"browse: {jobs.Count}");
+            var rm = session.CreateMessage();
+            rm.Properties.SetString("AMQ_SCHEDULER_ACTION", "REMOVE");
+            rm.Properties.SetString("scheduledJobId", jobs.FirstOrDefault() ?? "");
+            mp.Send(rm);
+            Console.WriteLine($"after remove: {Browse().Count}");
+            break;
+        }
+        case "priority":
+        {
+            using var ls = connection.CreateSession(AcknowledgementMode.AutoAcknowledge);
+            using var hs = connection.CreateSession(AcknowledgementMode.AutoAcknowledge);
+            using var low = ls.CreateConsumer(SessionUtil.GetDestination(ls, "queue://orders.pri?consumer.priority=1"));
+            using var high = hs.CreateConsumer(SessionUtil.GetDestination(hs, "queue://orders.pri?consumer.priority=9"));
+            Thread.Sleep(300);
+            using (var p = ls.CreateProducer(SessionUtil.GetDestination(ls, "queue://orders.pri")))
+                for (int i = 0; i < 4; i++) p.Send(ls.CreateTextMessage($"P-{i}"));
+            Thread.Sleep(500);
+            string Two(IMessageConsumer c) => string.Join(" ", Enumerable.Range(0, 2).Select(_ => (c.Receive(TimeSpan.FromSeconds(2)) as ITextMessage)?.Text));
+            Console.WriteLine($"priority: high={Two(high)} low={Two(low)}");
+            break;
+        }
+        case "advisory":
+        {
+            using var session = connection.CreateSession(AcknowledgementMode.AutoAcknowledge);
+            using var advC = session.CreateConsumer(SessionUtil.GetDestination(session, "topic://ActiveMQ.Advisory.Consumer.Queue.orders.adv"));
+            using var advD = session.CreateConsumer(SessionUtil.GetDestination(session, "topic://ActiveMQ.Advisory.MessageDelivered.Queue.orders.adv"));
+            Thread.Sleep(300);
+            var q = SessionUtil.GetDestination(session, "queue://orders.adv");
+            using (var p = session.CreateProducer(q)) p.Send(session.CreateTextMessage("watched"));
+            using (var c = session.CreateConsumer(q)) c.Receive(TimeSpan.FromSeconds(3));
+            string Ds(IMessageConsumer c) => c.Receive(TimeSpan.FromSeconds(3)) is Apache.NMS.ActiveMQ.Commands.ActiveMQMessage m ? $"{m.NMSType}:{m.DataStructure?.GetType().Name}" : "none";
+            Console.WriteLine($"advisory consumer: {Ds(advC)}");
+            Console.WriteLine($"advisory delivered: {Ds(advD)}");
             break;
         }
         case "poison":

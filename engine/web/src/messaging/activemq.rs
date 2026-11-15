@@ -65,7 +65,8 @@ pub fn ActiveMq() -> impl IntoView {
                             {dest()["consumers"].as_array().cloned().unwrap_or_default().into_iter().map(|c| view! { <tr><td class="mono" title=s(&c, "id")>{format!("…{}", s(&c, "id").rsplit('-').next().unwrap_or_default())}
                                 {(!c["durable"].is_null()).then(|| view! { <span class="small cap">{format!("  durable {}", s(&c, "durable"))}</span> })}
                                 {c["exclusive"].as_bool().unwrap_or(false).then(|| view! { <span class="small cap">"  exclusive"</span> })}
-                                {c["noLocal"].as_bool().unwrap_or(false).then(|| view! { <span class="small cap">"  noLocal"</span> })}</td><td>{s(&c, "user")}</td>
+                                {c["noLocal"].as_bool().unwrap_or(false).then(|| view! { <span class="small cap">"  noLocal"</span> })}
+                                {(n(&c, "priority") != 0).then(|| view! { <span class="small cap">{format!("  priority {}", n(&c, "priority"))}</span> })}</td><td>{s(&c, "user")}</td>
                                 <td class="mono small">{if s(&c, "selector").is_empty() { "—".to_string() } else { s(&c, "selector") }}</td>
                                 <td class="mono">{n(&c, "prefetch").to_string()}</td><td class="mono">{s(&c, "remote")}<span class="small cap">{format!("  {}", s(&c, "wire"))}</span></td><td class="mono">{api::hms(n(&c, "since"))}</td></tr> }).collect_view()}</table>
                             {dest()["consumers"].as_array().is_none_or(|a| a.is_empty()).then(|| view! { <div class="small cap">"No consumer on this destination now."</div> })}

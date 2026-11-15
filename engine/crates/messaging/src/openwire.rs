@@ -529,6 +529,7 @@ macro_rules! types {
         impl Ds {
             pub fn new(t: u8) -> Option<Ds> { match t { $($typ => Some(Ds::$var($ty::default())),)* _ => None } }
             pub fn typ(&self) -> u8 { match self { $(Ds::$var(_) => $typ),* } }
+            pub fn name(&self) -> &'static str { match self { $(Ds::$var(_) => stringify!($var)),* } }
             pub fn io<W: Wire>(&mut self, w: &mut W) { match self { $(Ds::$var(x) => x.io(w)),* } }
         }
     };
@@ -798,6 +799,7 @@ CREATE TABLE IF NOT EXISTS amq_destinations(name TEXT PRIMARY KEY, created_at IN
 CREATE TABLE IF NOT EXISTS amq_settings(id INTEGER PRIMARY KEY, v TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS amq_durable(id TEXT PRIMARY KEY, client_id TEXT NOT NULL, name TEXT NOT NULL, dest TEXT NOT NULL, selector TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL, last_seen INTEGER NOT NULL, no_local TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS amq_outbox(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, seq INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS amq_tx(id TEXT PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL, xa_format INTEGER, xa_gtid BLOB, xa_bq BLOB,
   conn TEXT NOT NULL DEFAULT '', user TEXT NOT NULL DEFAULT '', sends INTEGER NOT NULL DEFAULT 0, acks INTEGER NOT NULL DEFAULT 0, started_at INTEGER NOT NULL, ended_at INTEGER);
 ";
@@ -833,10 +835,14 @@ fn dead_letter(c: &rusqlite::Connection, seq: i64, state: &str, cause: &str, ind
     };
     let mut hd: Map<String, Value> = serde_json::from_str(&headers).unwrap_or_default();
     let persistent = hd.get("persistent").and_then(|v| v.as_bool()).unwrap_or(true);
+    if state == "expired" {
+        outbox(c, "Expired", seq)?;
+    }
     if dest.contains("ActiveMQ.DLQ") || (state == "expired" && !persistent) {
         c.execute("UPDATE amq_messages SET state=?2, acked_at=?3, tx='' WHERE seq=?1", params![seq, state, now])?;
         return Ok(None);
     }
+    outbox(c, "MessageDLQd", seq)?;
     let to = dlq_for(&dest, individual);
     let mut pr: Map<String, Value> = serde_json::from_str(&props).unwrap_or_default();
     pr.insert("dlqDeliveryFailureCause".into(), json!(cause));
@@ -891,6 +897,9 @@ pub struct Settings {
     pub max_redeliveries: Option<i64>,
     /// ActiveMQ.DLQ.Queue.<name> / ActiveMQ.DLQ.Topic.<name> instead of the shared ActiveMQ.DLQ.
     pub individual_dlq: bool,
+    /// ActiveMQ.Advisory.MessageDelivered.* / MessageConsumed.* (off by default, as in ActiveMQ).
+    pub advisory_delivered: bool,
+    pub advisory_consumed: bool,
 }
 
 impl Settings {
@@ -940,6 +949,10 @@ struct Live {
     /// noLocal: not the messages its own connection (this id) sent.
     no_local: Option<String>,
     exclusive: bool,
+    /// ConsumerInfo.priority (consumer.priority): higher ones get queue messages first.
+    priority: i32,
+    /// It has prefetch room (or a pull waiting) now: kept up to date by its connection's pump.
+    room: bool,
     /// The negotiated wire format: "loose", "loose+cache", "tight" or "tight+cache".
     wire: String,
 }
@@ -1154,7 +1167,16 @@ async fn register(ctx: &Ctx, dest: &str, by: &str) {
         return;
     }
     let (d, by, now) = (dest.to_string(), by.to_string(), util::now_ms());
-    let _ = ctx.db.call(move |c| c.execute("INSERT OR IGNORE INTO amq_destinations(name, created_at, created_by) VALUES(?1, ?2, ?3)", params![d, now, by])).await;
+    if ctx.db.call(move |c| c.execute("INSERT OR IGNORE INTO amq_destinations(name, created_at, created_by) VALUES(?1, ?2, ?3)", params![d, now, by])).await.unwrap_or(0) > 0 {
+        // Boxed: the advisory goes through publish, which registers (advisory topics are not).
+        Box::pin(destination_advisory(ctx, dest, 0)).await;
+    }
+}
+
+/// ActiveMQ.Advisory.Queue / .Topic: a DestinationInfo (op 0 added, 1 removed).
+async fn destination_advisory(ctx: &Ctx, dest: &str, op: u8) {
+    let t = if dest.starts_with("topic://") { "Topic" } else { "Queue" };
+    advise(ctx, format!("{ADV}{t}"), Ds::DestinationInfo(DestinationInfo { destination: Some(Box::new(dest_ds(dest))), op, ..Default::default() }), Map::new()).await;
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1171,6 +1193,8 @@ pub struct NewMsg {
     pub tx: String,
     /// The sending connection's id (noLocal subscribers skip it); empty for the tools.
     pub origin: String,
+    /// Delivered now even with AMQ_SCHEDULED_* properties (the scheduler's BROWSE copies).
+    pub immediate: bool,
 }
 
 /// Puts a message on a queue, or a copy for each subscriber of a topic whose selector takes it:
@@ -1184,11 +1208,10 @@ pub async fn publish(ctx: &Ctx, m: NewMsg) -> Result<Vec<i64>, ApiError> {
         let env = ctx.env.to_string();
         let takes = |s: &Option<Arc<Sel>>| s.as_ref().is_none_or(|s| selects(s, &m.headers, &m.props, &m.message_id, 0));
         let mine = |nl: Option<&str>| !m.origin.is_empty() && nl == Some(m.origin.as_str());
-        targets = live().lock().unwrap().iter().filter(|l| l.env == env && l.dest == m.dest && l.durable.is_none() && takes(&l.sel) && !mine(l.no_local.as_deref())).map(|l| l.key.clone()).collect();
-        let d = m.dest.clone();
-        let subs: Vec<(String, String, String)> = ctx.db.call(move |c| c.prepare("SELECT id, selector, no_local FROM amq_durable WHERE dest=?1 ORDER BY id")?.query_map([d], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect()).await?;
-        for (id, s, nl) in subs {
-            if mine(Some(nl.as_str())) {
+        targets = live().lock().unwrap().iter().filter(|l| l.env == env && topic_match(&l.dest, &m.dest) && l.durable.is_none() && takes(&l.sel) && !mine(l.no_local.as_deref())).map(|l| l.key.clone()).collect();
+        let subs: Vec<(String, String, String, String)> = ctx.db.call(move |c| c.prepare("SELECT id, selector, no_local, dest FROM amq_durable ORDER BY id")?.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect()).await?;
+        for (id, s, nl, d) in subs {
+            if !topic_match(&d, &m.dest) || mine(Some(nl.as_str())) {
                 continue;
             }
             if s.is_empty() || selector::parse(&s).is_ok_and(|e| takes(&Some(Arc::new(e)))) {
@@ -1197,13 +1220,21 @@ pub async fn publish(ctx: &Ctx, m: NewMsg) -> Result<Vec<i64>, ApiError> {
         }
     }
     if targets.is_empty() {
+        if is_advisory(&m.dest) {
+            // Nobody listens: an advisory is not kept.
+            return Ok(vec![]);
+        }
         targets.push(String::new());
     }
     let now = util::now_ms();
     let clock = stuntman_core::clock::now(ctx);
     let num = |k: &str| m.props.get(k).and_then(|v| v.as_i64().or_else(|| v.as_str()?.trim().parse().ok())).unwrap_or(0).max(0);
-    let delay = num("AMQ_SCHEDULED_DELAY");
-    let job = Job { period: num("AMQ_SCHEDULED_PERIOD"), repeat: num("AMQ_SCHEDULED_REPEAT"), left: num("AMQ_SCHEDULED_REPEAT"), cron: m.props.get("AMQ_SCHEDULED_CRON").and_then(|v| v.as_str()).unwrap_or("").trim().to_string(), delay };
+    let delay = if m.immediate { 0 } else { num("AMQ_SCHEDULED_DELAY") };
+    let job = if m.immediate {
+        Job::default()
+    } else {
+        Job { period: num("AMQ_SCHEDULED_PERIOD"), repeat: num("AMQ_SCHEDULED_REPEAT"), left: num("AMQ_SCHEDULED_REPEAT"), cron: m.props.get("AMQ_SCHEDULED_CRON").and_then(|v| v.as_str()).unwrap_or("").trim().to_string(), delay }
+    };
     let (deliver_at, job) = if !job.cron.is_empty() {
         let c = crate::cron::parse(&job.cron).map_err(|e| ApiError::bad(format!("AMQ_SCHEDULED_CRON: {e}")))?;
         // The first delivery of a series is at the cron time; the repeats follow every period.
@@ -1246,6 +1277,182 @@ pub async fn publish(ctx: &Ctx, m: NewMsg) -> Result<Vec<i64>, ApiError> {
     Ok(seqs)
 }
 
+/// A stored message as the OpenWire message it was (body left out for advisory payloads).
+fn row_message(r: &Row, body: bool) -> Ds {
+    let hd: Map<String, Value> = serde_json::from_str(&r.headers).unwrap_or_default();
+    let props: Map<String, Value> = serde_json::from_str(&r.props).unwrap_or_default();
+    let compressed = hd.get("compressed").and_then(|v| v.as_bool()).unwrap_or(false);
+    let s = |k: &str| hd.get(k).and_then(|v| v.as_str()).map(String::from);
+    let id = mid(&r.message_id, r.seq);
+    // An advisory carries its subject (ConnectionInfo, ConsumerInfo…) as the message's data structure.
+    let mut data_structure: Obj = None;
+    if let Some(b) = s("dataStructure").and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok()) {
+        Reader::new(&b).nested(&mut data_structure);
+    }
+    let m = Msg {
+        producer_id: id.producer_id.clone(),
+        destination: Some(Box::new(dest_ds(&r.dest))),
+        message_id: Some(Box::new(Ds::MessageId(id))),
+        group_id: s("groupId"),
+        group_seq: hd.get("groupSeq").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+        correlation_id: s("correlationId"),
+        persistent: hd.get("persistent").and_then(|v| v.as_bool()).unwrap_or(true),
+        expiration: hd.get("expiration").and_then(|v| v.as_i64()).unwrap_or(0),
+        priority: hd.get("priority").and_then(|v| v.as_u64()).unwrap_or(4) as u8,
+        reply_to: s("replyTo").map(|d| Box::new(dest_ds(&d))),
+        original_destination: s("originalDestination").map(|d| Box::new(dest_ds(&d))),
+        timestamp: hd.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(r.enqueued_at),
+        kind: s("type"),
+        content: body.then(|| if r.kind == "text" && !compressed { text_content(&String::from_utf8_lossy(&r.body)) } else { r.body.clone() }),
+        props: (!props.is_empty()).then(|| map_encode(&props)),
+        data_structure,
+        compressed,
+        redelivery: r.redelivered as i32,
+        user_id: s("userId"),
+        broker_in: r.enqueued_at,
+        broker_out: util::now_ms(),
+        ..Default::default()
+    };
+    match r.kind.as_str() {
+        "text" => Ds::TextMessage(m),
+        "bytes" => Ds::BytesMessage(m),
+        "map" => Ds::MapMessage(m),
+        "object" => Ds::ObjectMessage(m),
+        "stream" => Ds::StreamMessage(m),
+        "blob" => Ds::BlobMessage(BlobMsg { m, url: s("blobUrl"), mime: s("blobMime"), deleted: false }),
+        _ => Ds::Message(m),
+    }
+}
+
+async fn load_rows(ctx: &Ctx, seqs: Vec<i64>) -> Vec<Row> {
+    ctx.db
+        .call(move |c| {
+            let mut out = vec![];
+            for s in seqs {
+                if let Some(r) = c.query_row(&format!("SELECT {ROW} FROM amq_messages WHERE seq=?1"), [s], row).optional()? {
+                    out.push(r);
+                }
+            }
+            Ok(out)
+        })
+        .await
+        .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------- advisories
+
+const ADV: &str = "topic://ActiveMQ.Advisory.";
+
+fn is_advisory(d: &str) -> bool {
+    d.contains("ActiveMQ.Advisory.")
+}
+
+/// "Queue.orders", "Topic.prices", "TempQueue.ID:…": how advisory topic names spell a destination.
+fn adv_name(dest: &str) -> String {
+    let (scheme, name) = dest.split_once("://").unwrap_or(("queue", dest));
+    let t = match scheme {
+        "topic" => "Topic",
+        "temp-queue" => "TempQueue",
+        "temp-topic" => "TempTopic",
+        _ => "Queue",
+    };
+    format!("{t}.{name}")
+}
+
+/// Topic wildcards: `*` one segment, `>` the rest (ActiveMQ's syntax). Without them, equality.
+pub fn topic_match(pattern: &str, name: &str) -> bool {
+    if !pattern.contains(['*', '>']) {
+        return pattern == name;
+    }
+    let (Some((ps, p)), Some((ns, n))) = (pattern.split_once("://"), name.split_once("://")) else { return false };
+    if ps != ns {
+        return false;
+    }
+    let (p, n): (Vec<&str>, Vec<&str>) = (p.split('.').collect(), n.split('.').collect());
+    for (i, seg) in p.iter().enumerate() {
+        match *seg {
+            ">" => return n.len() > i,
+            "*" if i < n.len() => {}
+            s if n.get(i) == Some(&s) => {}
+            _ => return false,
+        }
+    }
+    p.len() == n.len()
+}
+
+/// Someone listens on this advisory topic (a consumer connected now): only then is one made.
+fn adv_wanted(env: &str, topic: &str) -> bool {
+    live().lock().unwrap().iter().any(|l| l.env == env && is_advisory(&l.dest) && topic_match(&l.dest, topic))
+}
+
+/// Publishes an advisory: an ActiveMQMessage of type "Advisory" whose data structure is `ds`.
+async fn advise(ctx: &Ctx, topic: String, mut ds: Ds, extra: Map<String, Value>) {
+    if !adv_wanted(&ctx.env, &topic) {
+        return;
+    }
+    let mut w = Writer::default();
+    w.nested(&mut Some(Box::new(ds.clone())));
+    let mut props = Map::new();
+    props.insert("originBrokerId".into(), json!("ID:stuntman-1"));
+    props.insert("originBrokerName".into(), json!("stuntman"));
+    props.insert("originBrokerURL".into(), json!(format!("tcp://localhost:{}", port())));
+    props.extend(extra);
+    let mut headers = Map::new();
+    headers.insert("type".into(), json!("Advisory"));
+    headers.insert("persistent".into(), json!(false));
+    headers.insert("priority".into(), json!(4));
+    headers.insert("timestamp".into(), json!(util::now_ms()));
+    headers.insert("advisory".into(), json!(ds.name()));
+    headers.insert("dataStructure".into(), json!(base64::engine::general_purpose::STANDARD.encode(&w.0)));
+    let _ = &mut ds;
+    let _ = publish(ctx, NewMsg { dest: topic, kind: "message".into(), props, headers, sender: "broker".into(), via: "advisory".into(), ..Default::default() }).await;
+}
+
+/// Message advisories (Expired, MessageDLQd, MessageDelivered, MessageConsumed): the message
+/// without its body, and its id as orignalMessageId (ActiveMQ's spelling).
+async fn advise_rows(ctx: &Ctx, kind: &str, seqs: Vec<i64>) {
+    if !live().lock().unwrap().iter().any(|l| l.env == *ctx.env && is_advisory(&l.dest)) {
+        return;
+    }
+    for r in load_rows(ctx, seqs).await {
+        let mut extra = Map::new();
+        extra.insert("orignalMessageId".into(), json!(r.message_id));
+        extra.insert("orignalDestination".into(), json!(r.dest));
+        advise(ctx, format!("{ADV}{kind}.{}", adv_name(&r.dest)), row_message(&r, false), extra).await;
+    }
+}
+
+/// Expired and MessageDLQd events noted by the synchronous store code (amq_outbox), sent now.
+async fn flush_outbox(ctx: &Ctx) {
+    let ev: Vec<(String, i64)> = ctx
+        .db
+        .call(|c| {
+            let v: Vec<(String, i64)> = c.prepare("SELECT kind, seq FROM amq_outbox ORDER BY id")?.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
+            if !v.is_empty() {
+                c.execute("DELETE FROM amq_outbox", [])?;
+            }
+            Ok(v)
+        })
+        .await
+        .unwrap_or_default();
+    for (k, seq) in ev {
+        advise_rows(ctx, &k, vec![seq]).await;
+    }
+}
+
+fn outbox(c: &rusqlite::Connection, kind: &str, seq: i64) -> rusqlite::Result<()> {
+    if live().lock().unwrap().iter().any(|l| is_advisory(&l.dest)) {
+        c.execute("INSERT INTO amq_outbox(kind, seq) VALUES(?1, ?2)", params![kind, seq])?;
+    }
+    Ok(())
+}
+
+/// Producers with a destination, connected now: env, producer key, destination.
+fn producers() -> &'static Mutex<Vec<(String, String, String)>> {
+    static P: OnceLock<Mutex<Vec<(String, String, String)>>> = OnceLock::new();
+    P.get_or_init(Default::default)
+}
+
 #[derive(Clone, Debug)]
 struct Row {
     seq: i64,
@@ -1271,7 +1478,10 @@ fn group_key(env: &str, dest: &str, grp: &str) -> String {
 
 /// Marks the next pending message of a destination as delivered to this consumer: highest
 /// JMSPriority first, then oldest; one its selector takes; not of a group another consumer owns.
-async fn claim(ctx: &Ctx, dest: &str, target: &str, consumer: &str, sel: Option<Arc<Sel>>, no_local: Option<String>) -> Option<Row> {
+/// `higher`: the selectors of higher-priority consumers with prefetch room (a message one of them
+/// takes is left for it).
+async fn claim(ctx: &Ctx, dest: &str, target: &str, consumer: &str, sel: Option<Arc<Sel>>, no_local: Option<String>, higher: Vec<Arc<Sel>>) -> Option<Row> {
+    let topic = dest.starts_with("topic://");
     let (d, t, k, env, clock) = (dest.to_string(), target.to_string(), consumer.to_string(), ctx.env.to_string(), stuntman_core::clock::now(ctx));
     let (moved, got) = ctx
         .db
@@ -1280,8 +1490,11 @@ async fn claim(ctx: &Ctx, dest: &str, target: &str, consumer: &str, sel: Option<
             let mut gs = groups().lock().unwrap();
             let pick = {
                 // ponytail: scans pending rows in Rust (selectors, groups); an SQL prefilter when queues hold many thousands.
-                let mut st = c.prepare(&format!("SELECT {ROW}, grp FROM amq_messages WHERE dest=?1 AND state='pending' AND tx='' AND target IN ('', ?2) AND (?3 IS NULL OR origin<>?3) ORDER BY priority DESC, seq"))?;
-                let mut rows = st.query(params![d, t, no_local])?;
+                // A topic subscriber reads its own copies (whatever topic a wildcard matched).
+                let mut st = c.prepare(&format!(
+                    "SELECT {ROW}, grp FROM amq_messages WHERE state='pending' AND tx='' AND ((?4 AND target=?2) OR (NOT ?4 AND dest=?1 AND target IN ('', ?2))) AND (?3 IS NULL OR origin<>?3) ORDER BY priority DESC, seq"
+                ))?;
+                let mut rows = st.query(params![d, t, no_local, topic])?;
                 let mut pick = None;
                 while let Some(r) = rows.next()? {
                     let grp: String = r.get(9)?;
@@ -1289,7 +1502,7 @@ async fn claim(ctx: &Ctx, dest: &str, target: &str, consumer: &str, sel: Option<
                         continue;
                     }
                     let x = row(r)?;
-                    if sel.as_ref().is_none_or(|s| row_selects(s, &x)) {
+                    if sel.as_ref().is_none_or(|s| row_selects(s, &x)) && !higher.iter().any(|h| row_selects(h, &x)) {
                         pick = Some((x, grp));
                         break;
                     }
@@ -1389,6 +1602,58 @@ async fn release(ctx: &Ctx, key: String, held: Vec<i64>, last_delivered: Option<
         })
         .await;
     ring(ctx, "");
+}
+
+// ---------------------------------------------------------------- scheduler management
+
+/// A message to topic://ActiveMQ.Scheduler.Management: AMQ_SCHEDULER_ACTION BROWSE (each scheduled
+/// message, with scheduledJobId, to the JMSReplyTo), REMOVE (scheduledJobId) or REMOVEALL, BROWSE
+/// and REMOVEALL limited by ACTION_START_TIME / ACTION_END_TIME (next delivery time, ms, on the
+/// environment clock). A job's id is its message id. Returns how many jobs it touched.
+pub async fn scheduler_management(ctx: &Ctx, props: &Map<String, Value>, reply_to: Option<String>) -> Result<usize, ApiError> {
+    let s = |k: &str| props.get(k).and_then(|v| v.as_str()).map(String::from);
+    let n = |k: &str| props.get(k).and_then(|v| v.as_i64().or_else(|| v.as_str()?.trim().parse().ok()));
+    let (start, end) = (n("ACTION_START_TIME"), n("ACTION_END_TIME"));
+    let action = s("AMQ_SCHEDULER_ACTION").unwrap_or_default();
+    match action.as_str() {
+        "BROWSE" => {
+            let to = reply_to.ok_or_else(|| ApiError::bad("AMQ_SCHEDULER_ACTION BROWSE needs a JMSReplyTo"))?;
+            let rows: Vec<(String, Row)> = ctx
+                .db
+                .call(move |c| {
+                    c.prepare(&format!("SELECT {ROW}, job FROM amq_messages WHERE state='scheduled' AND (?1 IS NULL OR deliver_at>=?1) AND (?2 IS NULL OR deliver_at<=?2) ORDER BY deliver_at, seq"))?
+                        .query_map(params![start, end], |r| Ok((r.get::<_, String>(9)?, row(r)?)))?
+                        .collect()
+                })
+                .await?;
+            let count = rows.len();
+            for (_, r) in rows {
+                let mut p: Map<String, Value> = serde_json::from_str(&r.props).unwrap_or_default();
+                p.insert("scheduledJobId".into(), json!(r.message_id));
+                let headers: Map<String, Value> = serde_json::from_str(&r.headers).unwrap_or_default();
+                publish(ctx, NewMsg { dest: to.clone(), kind: r.kind, body: r.body, props: p, headers, message_id: r.message_id, sender: "broker".into(), via: "scheduler".into(), immediate: true, ..Default::default() }).await?;
+            }
+            Ok(count)
+        }
+        "REMOVE" | "REMOVEALL" => {
+            let id = s("scheduledJobId");
+            if action == "REMOVE" && id.is_none() {
+                return Err(ApiError::bad("AMQ_SCHEDULER_ACTION REMOVE needs scheduledJobId"));
+            }
+            let n = ctx
+                .db
+                .call(move |c| {
+                    c.execute(
+                        "UPDATE amq_messages SET state='discarded', job='' WHERE state='scheduled' AND (?1 IS NULL OR message_id=?1) AND (?2 IS NULL OR deliver_at>=?2) AND (?3 IS NULL OR deliver_at<=?3)",
+                        params![id, start, end],
+                    )
+                })
+                .await?;
+            ring(ctx, "");
+            Ok(n)
+        }
+        a => Err(ApiError::bad(format!("AMQ_SCHEDULER_ACTION “{a}”: BROWSE, REMOVE or REMOVEALL"))),
+    }
 }
 
 // ---------------------------------------------------------------- durable subscriptions
@@ -1639,6 +1904,7 @@ struct Conn {
     sent: u64,
     next: i32,
     fmt: Fmt,
+    conn_id: Obj,
 }
 
 impl Conn {
@@ -1670,45 +1936,7 @@ impl Conn {
     fn dispatch(&mut self, i: usize, r: Option<&Row>) -> Ds {
         let c = &self.cons[i];
         let (consumer_id, destination) = (c.id.clone(), Some(Box::new(dest_ds(&c.dest))));
-        let message = r.map(|r| {
-            let hd: Map<String, Value> = serde_json::from_str(&r.headers).unwrap_or_default();
-            let props: Map<String, Value> = serde_json::from_str(&r.props).unwrap_or_default();
-            let compressed = hd.get("compressed").and_then(|v| v.as_bool()).unwrap_or(false);
-            let s = |k: &str| hd.get(k).and_then(|v| v.as_str()).map(String::from);
-            let id = mid(&r.message_id, r.seq);
-            let m = Msg {
-                producer_id: id.producer_id.clone(),
-                destination: Some(Box::new(dest_ds(&r.dest))),
-                message_id: Some(Box::new(Ds::MessageId(id))),
-                group_id: s("groupId"),
-                group_seq: hd.get("groupSeq").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
-                correlation_id: s("correlationId"),
-                persistent: hd.get("persistent").and_then(|v| v.as_bool()).unwrap_or(true),
-                expiration: hd.get("expiration").and_then(|v| v.as_i64()).unwrap_or(0),
-                priority: hd.get("priority").and_then(|v| v.as_u64()).unwrap_or(4) as u8,
-                reply_to: s("replyTo").map(|d| Box::new(dest_ds(&d))),
-                original_destination: s("originalDestination").map(|d| Box::new(dest_ds(&d))),
-                timestamp: hd.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(r.enqueued_at),
-                kind: s("type"),
-                content: Some(if r.kind == "text" && !compressed { text_content(&String::from_utf8_lossy(&r.body)) } else { r.body.clone() }),
-                props: (!props.is_empty()).then(|| map_encode(&props)),
-                compressed,
-                redelivery: r.redelivered as i32,
-                user_id: s("userId"),
-                broker_in: r.enqueued_at,
-                broker_out: util::now_ms(),
-                ..Default::default()
-            };
-            Box::new(match r.kind.as_str() {
-                "text" => Ds::TextMessage(m),
-                "bytes" => Ds::BytesMessage(m),
-                "map" => Ds::MapMessage(m),
-                "object" => Ds::ObjectMessage(m),
-                "stream" => Ds::StreamMessage(m),
-                "blob" => Ds::BlobMessage(BlobMsg { m, url: s("blobUrl"), mime: s("blobMime"), deleted: false }),
-                _ => Ds::Message(m),
-            })
-        });
+        let message = r.map(|r| Box::new(row_message(r, true)));
         let redelivery = r.map(|r| r.redelivered as i32).unwrap_or(0);
         Ds::MessageDispatch(MessageDispatch { h: self.hdr(), consumer_id, destination, message, redelivery })
     }
@@ -1730,19 +1958,22 @@ impl Conn {
             Ds::ConnectionInfo(i) => {
                 let Some(ctx) = self.envs.default_env() else { return self.fail(wr, cid, "javax.jms.JMSException", "No Stuntman environment".into()).await };
                 let s = settings(&ctx).await;
-                let (user, pass) = (i.user.unwrap_or_default(), i.password.unwrap_or_default());
+                let (user, pass) = (i.user.clone().unwrap_or_default(), i.password.clone().unwrap_or_default());
                 if s.refuse_login || (!s.users.is_empty() && s.users.get(&user) != Some(&pass)) {
                     return self.fail(wr, cid, "java.lang.SecurityException", format!("User name [{user}] or password is invalid.")).await;
                 }
                 self.ctx = Some(ctx);
                 self.user = user;
-                self.client_id = i.client_id.unwrap_or_default();
+                self.client_id = i.client_id.clone().unwrap_or_default();
+                self.conn_id = i.connection_id.clone();
                 let env = self.ctx.as_ref().unwrap().env.to_string();
                 {
                     let mut cs = conns().lock().unwrap();
                     cs.retain(|c| c.1 != self.remote);
                     cs.push((env, self.remote.clone(), self.user.clone(), self.client_id.clone(), self.fmt.name(), util::now_ms()));
                 }
+                let ctx = self.ctx.clone().unwrap();
+                advise(&ctx, format!("{ADV}Connection"), Ds::ConnectionInfo(ConnectionInfo { password: None, ..i }), Map::new()).await;
                 self.reply(wr, cid, resp).await
             }
             Ds::ShutdownInfo(_) => Flow::Stop,
@@ -1767,13 +1998,25 @@ impl Conn {
                 if p.window > 0 {
                     self.windows.insert(id_key(&p.producer_id), p.window);
                 }
+                if let (Some(ctx), Some(d)) = (self.ctx.clone(), obj_dest(&p.destination).filter(|d| !is_advisory(d))) {
+                    let key = id_key(&p.producer_id);
+                    let n = {
+                        let mut ps = producers().lock().unwrap();
+                        ps.push((ctx.env.to_string(), key, d.clone()));
+                        ps.iter().filter(|x| x.0 == *ctx.env && x.2 == d).count()
+                    };
+                    let mut x = Map::new();
+                    x.insert("producerCount".into(), json!(n));
+                    advise(&ctx, format!("{ADV}Producer.{}", adv_name(&d)), Ds::ProducerInfo(p.clone()), x).await;
+                }
                 self.reply(wr, cid, resp).await
             }
             Ds::ConsumerInfo(i) => {
                 let ctx = self.ctx.clone().unwrap();
                 let key = id_key(&i.consumer_id);
                 let dest = obj_dest(&i.destination).unwrap_or_default();
-                let idle = i.browser || dest.is_empty() || dest.contains("ActiveMQ.Advisory") || dest.contains(',');
+                // Composite destinations (the clients' own TempQueue,TempTopic advisory watch) get nothing.
+                let idle = i.browser || dest.is_empty() || dest.contains(',');
                 let selector = i.selector.clone().filter(|s| !s.trim().is_empty());
                 let sel = match selector.as_deref().map(selector::parse) {
                     Some(Err(e)) => return self.fail(wr, cid, "javax.jms.InvalidSelectorException", format!("Invalid selector '{}': {e}", selector.unwrap_or_default())).await,
@@ -1800,11 +2043,18 @@ impl Conn {
                 }
                 register(&ctx, &dest, &self.user).await;
                 self.cons.push(Cons { key: key.clone(), target: target.clone(), sel: sel.clone(), no_local: no_local.clone(), id: i.consumer_id.clone(), dest: dest.clone(), prefetch: i.prefetch, held: vec![], pull: None, idle });
+                let info = i.clone();
                 if !idle {
-                    live().lock().unwrap().push(Live { env: ctx.env.to_string(), key, target, durable, dest: dest.clone(), selector: selector.unwrap_or_default(), sel: sel.clone(), prefetch: i.prefetch, remote: self.remote.clone(), user: self.user.clone(), since: util::now_ms(), no_local, exclusive, wire: self.fmt.name() });
+                    live().lock().unwrap().push(Live { env: ctx.env.to_string(), key, target, durable, dest: dest.clone(), selector: selector.unwrap_or_default(), sel: sel.clone(), prefetch: i.prefetch, remote: self.remote.clone(), user: self.user.clone(), since: util::now_ms(), no_local, exclusive, priority: i.priority as i8 as i32, room: true, wire: self.fmt.name() });
                 }
                 if self.reply(wr, cid, resp).await == Flow::Stop {
                     return Flow::Stop;
+                }
+                if !idle && !is_advisory(&dest) {
+                    let n = live().lock().unwrap().iter().filter(|l| l.env == *ctx.env && l.dest == dest).count();
+                    let mut x = Map::new();
+                    x.insert("consumerCount".into(), json!(n));
+                    advise(&ctx, format!("{ADV}Consumer.{}", adv_name(&dest)), Ds::ConsumerInfo(info), x).await;
                 }
                 if i.browser {
                     // A QueueBrowser: copies of what is pending, then the null dispatch that ends it.
@@ -1866,12 +2116,16 @@ impl Conn {
                         6 => "The message expired".to_string(),
                         _ => a.poison.as_ref().and_then(|e| e.message.clone()).unwrap_or_else(|| "Poison ack from the consumer".into()),
                     };
+                    let consumed = if matches!(a.ack_type, 2 | 4) { done.clone() } else { vec![] };
                     settle(&ctx, done, match a.ack_type {
                         1 => "dead_letter",
                         6 => "expired",
                         _ => "acked",
                     }, cause)
                     .await;
+                    if !consumed.is_empty() && settings(&ctx).await.advisory_consumed {
+                        advise_rows(&ctx, "MessageConsumed", consumed).await;
+                    }
                 }
                 self.reply(wr, cid, resp).await
             }
@@ -1886,6 +2140,14 @@ impl Conn {
                     _ => "message",
                 };
                 let Some(dest) = obj_dest(&m.destination) else { return self.fail(wr, cid, "javax.jms.InvalidDestinationException", "The message has no destination".into()).await };
+                if dest == "topic://ActiveMQ.Scheduler.Management" {
+                    let props = m.props.as_deref().map(map_decode).unwrap_or_default();
+                    let n = scheduler_management(self.ctx.as_ref().unwrap(), &props, obj_dest(&m.reply_to)).await;
+                    if let Err(e) = n {
+                        return self.fail(wr, cid, "javax.jms.JMSException", e.message).await;
+                    }
+                    return self.reply(wr, cid, resp).await;
+                }
                 let ctx = self.ctx.clone().unwrap();
                 let tx = tx_key(&m.tx);
                 if let Some(id) = &tx {
@@ -1934,7 +2196,7 @@ impl Conn {
                 if m.group_seq != 0 {
                     hd.insert("groupSeq".into(), json!(m.group_seq));
                 }
-                let n = NewMsg { dest, kind: kind.into(), body, props: m.props.as_deref().map(map_decode).unwrap_or_default(), headers: hd, message_id: mid_text(&m.message_id), sender: self.user.clone(), via: "openwire".into(), tx: tx.unwrap_or_default(), origin };
+                let n = NewMsg { dest, kind: kind.into(), body, props: m.props.as_deref().map(map_decode).unwrap_or_default(), headers: hd, message_id: mid_text(&m.message_id), sender: self.user.clone(), via: "openwire".into(), tx: tx.unwrap_or_default(), origin, immediate: false };
                 if let Err(e) = publish(&ctx, n).await {
                     return self.fail(wr, cid, "javax.jms.JMSException", e.message).await;
                 }
@@ -1956,9 +2218,12 @@ impl Conn {
                         while let Some(i) = self.cons.iter().position(|c| c.key.starts_with(&format!("{key}:"))) {
                             self.drop_consumer(i, Some(r.last_delivered)).await;
                         }
+                        let pre = format!("{key}:");
+                        self.drop_producers(|k| k.starts_with(&pre)).await;
                     }
                     Some(Ds::ProducerId(_)) => {
                         self.windows.remove(&key);
+                        self.drop_producers(|k| *k == key).await;
                     }
                     Some(Ds::ConnectionId(_)) => self.close().await,
                     _ => {}
@@ -1966,6 +2231,21 @@ impl Conn {
                 self.reply(wr, cid, resp).await
             }
             Ds::TransactionInfo(t) => self.transaction(wr, cid, resp, t).await,
+            Ds::DestinationInfo(di) => {
+                let ctx = self.ctx.clone().unwrap();
+                if let Some(d) = obj_dest(&di.destination).filter(|d| !d.starts_with("temp-") && !is_advisory(d)) {
+                    if di.op == 0 {
+                        register(&ctx, &d, &self.user).await;
+                    } else {
+                        let d2 = d.clone();
+                        if ctx.db.call(move |c| c.execute("DELETE FROM amq_destinations WHERE name=?1", [d2])).await.unwrap_or(0) > 0 {
+                            destination_advisory(&ctx, &d, 1).await;
+                        }
+                        ring(&ctx, &d);
+                    }
+                }
+                self.reply(wr, cid, resp).await
+            }
             Ds::RemoveSubscriptionInfo(r) => {
                 let ctx = self.ctx.clone().unwrap();
                 let client = r.client_id.filter(|c| !c.is_empty()).unwrap_or(self.client_id.clone());
@@ -2040,6 +2320,9 @@ impl Conn {
                     return self.fail(wr, cid, err, "Commit failed (set_activemq fail_commits): the transaction was rolled back".into()).await;
                 }
                 let acked = tx_commit(&ctx, &id).await;
+                if settings(&ctx).await.advisory_consumed {
+                    advise_rows(&ctx, "MessageConsumed", acked.clone()).await;
+                }
                 for c in &mut self.cons {
                     c.held.retain(|e| !acked.contains(&e.0));
                 }
@@ -2068,6 +2351,37 @@ impl Conn {
             durable_seen(&ctx, &c.target).await;
         }
         release(&ctx, c.key, c.held.into_iter().map(|e| e.0).collect(), last_delivered, !durable && c.dest.starts_with("topic://")).await;
+        if !c.idle && !is_advisory(&c.dest) {
+            let n = live().lock().unwrap().iter().filter(|l| l.env == *ctx.env && l.dest == c.dest).count();
+            let mut x = Map::new();
+            x.insert("consumerCount".into(), json!(n));
+            advise(&ctx, format!("{ADV}Consumer.{}", adv_name(&c.dest)), Ds::RemoveInfo(RemoveInfo { object_id: c.id, ..Default::default() }), x).await;
+        }
+    }
+
+    /// Producers gone (RemoveInfo of the producer or its session, or the connection closing).
+    async fn drop_producers(&mut self, gone: impl Fn(&String) -> bool) {
+        let Some(ctx) = self.ctx.clone() else { return };
+        let left: Vec<(String, String)> = {
+            let mut ps = producers().lock().unwrap();
+            let mine: Vec<(String, String)> = ps.iter().filter(|x| x.0 == *ctx.env && x.1.starts_with(&self.conn_prefix()) && gone(&x.1)).map(|x| (x.1.clone(), x.2.clone())).collect();
+            ps.retain(|x| !(x.0 == *ctx.env && mine.iter().any(|m| m.0 == x.1)));
+            mine
+        };
+        for (key, d) in left {
+            let n = producers().lock().unwrap().iter().filter(|x| x.0 == *ctx.env && x.2 == d).count();
+            let mut parts = key.rsplitn(3, ':');
+            let (value, session, conn) = (parts.next().and_then(|x| x.parse().ok()).unwrap_or(0), parts.next().and_then(|x| x.parse().ok()).unwrap_or(0), parts.next().unwrap_or("").to_string());
+            let id = Some(Box::new(Ds::ProducerId(ProducerId { connection: Some(conn), value, session })));
+            let mut x = Map::new();
+            x.insert("producerCount".into(), json!(n));
+            advise(&ctx, format!("{ADV}Producer.{}", adv_name(&d)), Ds::RemoveInfo(RemoveInfo { object_id: id, ..Default::default() }), x).await;
+        }
+    }
+
+    /// The connection id this connection's producer and consumer keys start with.
+    fn conn_prefix(&self) -> String {
+        format!("{}:", id_key(&self.conn_id))
     }
 
     async fn close(&mut self) {
@@ -2078,26 +2392,54 @@ impl Conn {
         while !self.cons.is_empty() {
             self.drop_consumer(0, None).await;
         }
+        self.drop_producers(|_| true).await;
+        if let (Some(ctx), Some(id)) = (self.ctx.clone(), self.conn_id.take()) {
+            advise(&ctx, format!("{ADV}Connection"), Ds::RemoveInfo(RemoveInfo { object_id: Some(id), ..Default::default() }), Map::new()).await;
+        }
     }
 
     /// Dispatches what each consumer has room for (its prefetch, or a pull), then answers pulls
     /// that timed out with an empty dispatch.
     async fn pump(&mut self, wr: &mut OwnedWriteHalf) -> Flow {
         let Some(ctx) = self.ctx.clone() else { return Flow::Go };
+        flush_outbox(&ctx).await;
+        let env = ctx.env.to_string();
+        let set_room = |key: &str, room: bool| {
+            if let Some(l) = live().lock().unwrap().iter_mut().find(|l| l.env == env && l.key == key) {
+                l.room = room;
+            }
+        };
         let mut st: Option<Settings> = None;
         for i in 0..self.cons.len() {
             loop {
                 let c = &self.cons[i];
                 let room = if c.prefetch > 0 { c.held.iter().filter(|e| !e.1).count() < c.prefetch as usize } else { c.pull.is_some() };
+                set_room(&c.key, room);
                 if c.idle || !room {
                     break;
                 }
-                // An exclusive consumer on the queue (the first one connected) takes everything.
-                let env = ctx.env.to_string();
-                if live().lock().unwrap().iter().find(|l| l.env == env && l.dest == c.dest && l.exclusive).is_some_and(|l| l.key != c.key) {
-                    break;
+                let mut higher = vec![];
+                if !c.dest.starts_with("topic://") {
+                    let ls = live().lock().unwrap();
+                    let mine = ls.iter().find(|l| l.env == env && l.key == c.key).map(|l| l.priority).unwrap_or(0);
+                    // An exclusive consumer on the queue (the highest priority, then the first connected) takes everything.
+                    let owner = ls.iter().filter(|l| l.env == env && l.dest == c.dest && l.exclusive).fold(None::<&Live>, |b, l| if b.is_none_or(|b| l.priority > b.priority) { Some(l) } else { b });
+                    if owner.is_some_and(|l| l.key != c.key) {
+                        break;
+                    }
+                    // Higher-priority consumers with room come first: what they would take is theirs.
+                    let mut gated = false;
+                    for l in ls.iter().filter(|l| l.env == env && l.dest == c.dest && l.key != c.key && l.priority > mine && l.room) {
+                        match &l.sel {
+                            Some(s) => higher.push(s.clone()),
+                            None => gated = true,
+                        }
+                    }
+                    if gated {
+                        break;
+                    }
                 }
-                let Some(r) = claim(&ctx, &c.dest, &c.target, &c.key, c.sel.clone(), c.no_local.clone()).await else { break };
+                let Some(r) = claim(&ctx, &c.dest, &c.target, &c.key, c.sel.clone(), c.no_local.clone(), higher).await else { break };
                 if st.is_none() {
                     st = Some(settings(&ctx).await);
                 }
@@ -2107,6 +2449,8 @@ impl Conn {
                 if c.prefetch <= 0 {
                     c.pull = None;
                 }
+                let room = if c.prefetch > 0 { c.held.iter().filter(|e| !e.1).count() < c.prefetch as usize } else { c.pull.is_some() };
+                set_room(&c.key, room);
                 if s.slow_dispatch_ms > 0 {
                     tokio::time::sleep(Duration::from_millis(s.slow_dispatch_ms)).await;
                 }
@@ -2115,6 +2459,9 @@ impl Conn {
                     return Flow::Stop;
                 }
                 ring(&ctx, &r.dest);
+                if s.advisory_delivered && !is_advisory(&r.dest) {
+                    advise_rows(&ctx, "MessageDelivered", vec![r.seq]).await;
+                }
                 self.sent += 1;
                 if s.drop_after > 0 && self.sent >= s.drop_after {
                     eprintln!("ActiveMQ: {}: dropped after {} message(s) (set_activemq drop_after)", self.remote, self.sent);
@@ -2157,7 +2504,7 @@ async fn connection(envs: Envs, sock: TcpStream, remote: String) {
             }
         }
     });
-    let mut c = Conn { envs, ctx: None, user: String::new(), client_id: String::new(), remote, cons: vec![], windows: HashMap::new(), sent: 0, next: 0, fmt: Fmt::default() };
+    let mut c = Conn { envs, ctx: None, user: String::new(), client_id: String::new(), remote, cons: vec![], windows: HashMap::new(), sent: 0, next: 0, fmt: Fmt::default(), conn_id: None };
     if c.send(&mut wr, wire_format()).await == Flow::Go {
         let first = tokio::time::timeout(Duration::from_secs(30), rx.recv()).await.ok().flatten();
         match first.as_deref().and_then(decode) {
@@ -2290,13 +2637,13 @@ fn dest_arg(a: &stuntman_core::tools::Args) -> Result<String, ApiError> {
 
 fn settings_view(s: &Settings) -> Value {
     json!({"users": s.users.keys().collect::<Vec<_>>(), "anyUser": s.users.is_empty(), "refuseLogin": s.refuse_login, "dropAfter": s.drop_after, "slowDispatchMs": s.slow_dispatch_ms, "redeliver": s.redeliver, "failCommits": s.fail_commits,
-        "maxRedeliveries": s.max_redeliveries(), "individualDlq": s.individual_dlq, "deadLetterQueue": if s.individual_dlq { "queue://ActiveMQ.DLQ.Queue.<name> / ActiveMQ.DLQ.Topic.<name>" } else { DLQ }})
+        "maxRedeliveries": s.max_redeliveries(), "individualDlq": s.individual_dlq, "advisoryDelivered": s.advisory_delivered, "advisoryConsumed": s.advisory_consumed, "deadLetterQueue": if s.individual_dlq { "queue://ActiveMQ.DLQ.Queue.<name> / ActiveMQ.DLQ.Topic.<name>" } else { DLQ }})
 }
 
 pub fn tools() -> Vec<Tool> {
     vec![
         Tool::new("list_activemq_destinations", "ActiveMQ (OpenWire, port 61616) queues and topics with their messages per state (scheduled, pending, delivered, acked, dead_letter, expired, rolled_back, discarded), the consumers connected now (with their selector and durable subscription), each topic's durable subscriptions (online or offline, with what they keep), the open and recent transactions (local and XA, prepared ones included), the connections logged in now with their negotiated wire format (loose or tight, with or without the marshal cache), the broker URL and what set_activemq changed.", |ctx, _a| async move {
-            let names: Vec<String> = ctx.db.call(|c| c.prepare("SELECT name FROM amq_destinations UNION SELECT DISTINCT dest FROM amq_messages ORDER BY 1")?.query_map([], |r| r.get(0))?.collect()).await?;
+            let names: Vec<String> = ctx.db.call(|c| c.prepare("SELECT name FROM amq_destinations UNION SELECT DISTINCT dest FROM amq_messages WHERE dest NOT LIKE '%ActiveMQ.Advisory.%' ORDER BY 1")?.query_map([], |r| r.get(0))?.collect()).await?;
             let env = ctx.env.to_string();
             let conns: Vec<Live> = live().lock().unwrap().iter().filter(|l| l.env == env).cloned().collect();
             let subs: Vec<Value> = ctx
@@ -2319,7 +2666,7 @@ pub fn tools() -> Vec<Tool> {
                 .await?;
             let mut out = vec![];
             for n in names {
-                let consumers: Vec<Value> = conns.iter().filter(|l| l.dest == n).map(|l| json!({"id": l.key, "prefetch": l.prefetch, "remote": l.remote, "user": l.user, "since": l.since, "selector": l.selector, "durable": l.durable, "noLocal": l.no_local.is_some(), "exclusive": l.exclusive, "wire": l.wire})).collect();
+                let consumers: Vec<Value> = conns.iter().filter(|l| l.dest == n).map(|l| json!({"id": l.key, "prefetch": l.prefetch, "remote": l.remote, "user": l.user, "since": l.since, "selector": l.selector, "durable": l.durable, "noLocal": l.no_local.is_some(), "exclusive": l.exclusive, "priority": l.priority, "wire": l.wire})).collect();
                 let mut d = json!({"name": n, "kind": n.split("://").next().unwrap_or("queue"), "counts": counts(&ctx, &n).await, "consumers": consumers});
                 if n.starts_with("topic://") {
                     d["subscriptions"] = json!(subs.iter().filter(|s| s["destination"] == json!(n)).map(|s| {
@@ -2397,7 +2744,7 @@ pub fn tools() -> Vec<Tool> {
             }
             let mut seqs = vec![];
             for _ in 0..a.u64("count").unwrap_or(1).clamp(1, 1000) {
-                seqs.extend(publish(&ctx, NewMsg { dest: dest.clone(), kind: kind.clone(), body: body.clone(), props: props.clone(), headers: headers.clone(), message_id: String::new(), sender: sender.clone(), via: via.clone(), tx: String::new(), origin: String::new() }).await?);
+                seqs.extend(publish(&ctx, NewMsg { dest: dest.clone(), kind: kind.clone(), body: body.clone(), props: props.clone(), headers: headers.clone(), message_id: String::new(), sender: sender.clone(), via: via.clone(), tx: String::new(), origin: String::new(), immediate: false }).await?);
             }
             Ok(json!({"destination": dest, "seqs": seqs, "counts": counts(&ctx, &dest).await}))
         })
@@ -2409,7 +2756,7 @@ pub fn tools() -> Vec<Tool> {
         .param("period", "AMQ_SCHEDULED_PERIOD like 10s: the time between repeats").param("repeat", "AMQ_SCHEDULED_REPEAT: how many more deliveries")
         .param("cron", "AMQ_SCHEDULED_CRON, 5 fields in UTC on the environment clock, like \"*/5 * * * *\" (repeats until cancel_activemq_scheduled)")
         .route("POST", "/activemq/messages"),
-        Tool::new("set_activemq", "ActiveMQ broker behaviour: users (name → password; empty: anyone logs in), refuse_login (every login fails with a SecurityException), drop_after (close the connection after N dispatched messages), slow_dispatch (wait before each dispatch), redeliver (the next N acks are lost: those messages come again with a higher redelivery count), fail_commits (the next N transaction commits fail with a TransactionRolledBackException, or an XAException for XA, and roll back), max_redeliveries (past it a message goes to the dead-letter queue; default 6), individual_dlq (one DLQ per destination instead of ActiveMQ.DLQ). Only what you pass changes; reset=true goes back to defaults.", |ctx, a| async move {
+        Tool::new("set_activemq", "ActiveMQ broker behaviour: users (name → password; empty: anyone logs in), refuse_login (every login fails with a SecurityException), drop_after (close the connection after N dispatched messages), slow_dispatch (wait before each dispatch), redeliver (the next N acks are lost: those messages come again with a higher redelivery count), fail_commits (the next N transaction commits fail with a TransactionRolledBackException, or an XAException for XA, and roll back), max_redeliveries (past it a message goes to the dead-letter queue; default 6), individual_dlq (one DLQ per destination instead of ActiveMQ.DLQ), advisory_delivered / advisory_consumed (the MessageDelivered / MessageConsumed advisory topics, off by default as in ActiveMQ). Only what you pass changes; reset=true goes back to defaults.", |ctx, a| async move {
             let mut s = if a.bool("reset").unwrap_or(false) { Settings::default() } else { settings(&ctx).await };
             match a.0.get("users") {
                 Some(Value::Object(o)) => s.users = o.iter().map(|(k, v)| (k.clone(), v.as_str().map(String::from).unwrap_or(v.to_string()))).collect(),
@@ -2445,6 +2792,12 @@ pub fn tools() -> Vec<Tool> {
             if let Some(b) = a.bool("individual_dlq") {
                 s.individual_dlq = b;
             }
+            if let Some(b) = a.bool("advisory_delivered") {
+                s.advisory_delivered = b;
+            }
+            if let Some(b) = a.bool("advisory_consumed") {
+                s.advisory_consumed = b;
+            }
             save(&ctx, &s).await?;
             ctx.live.send("activemq.settings", "", "changed");
             Ok(json!({"settings": settings_view(&s)}))
@@ -2455,6 +2808,8 @@ pub fn tools() -> Vec<Tool> {
         .param("fail_commits", "the next N commits fail and roll back (the app's retry path)")
         .param("max_redeliveries", "deliveries after the first before a message goes to the dead-letter queue (default 6; -1: never)")
         .param("individual_dlq", "true: ActiveMQ.DLQ.Queue.<name> / ActiveMQ.DLQ.Topic.<name> per destination; false: the shared ActiveMQ.DLQ")
+        .param("advisory_delivered", "true: ActiveMQ.Advisory.MessageDelivered.<Queue|Topic>.<name> on each dispatch")
+        .param("advisory_consumed", "true: ActiveMQ.Advisory.MessageConsumed.<Queue|Topic>.<name> on each ack")
         .param("reset", "true: back to defaults")
         .route("PUT", "/activemq/settings"),
         Tool::new("cancel_activemq_scheduled", "Cancels scheduled ActiveMQ messages (AMQ_SCHEDULED_DELAY, _PERIOD/_REPEAT, _CRON) before they go out: one (seq) or all of a destination. They are kept as discarded.", |ctx, a| async move {
@@ -2772,6 +3127,34 @@ mod t {
         let to: i64 = c.query_row("SELECT moved_to FROM amq_messages WHERE seq=?1", [t], |r| r.get(0)).unwrap();
         assert_eq!(c.query_row("SELECT dest FROM amq_messages WHERE seq=?1", [to], |r| r.get::<_, String>(0)).unwrap(), "queue://ActiveMQ.DLQ.Topic.prices");
         assert_eq!(dead_letter(&c, to, "dead_letter", "again", false, 2).unwrap(), None);
+    }
+
+    #[test]
+    fn advisory_names_and_wildcards() {
+        assert_eq!(adv_name("queue://orders"), "Queue.orders");
+        assert_eq!(adv_name("topic://prices.eu"), "Topic.prices.eu");
+        assert_eq!(adv_name("temp-queue://ID:x:1:1"), "TempQueue.ID:x:1:1");
+        for (p, n, ok) in [
+            ("topic://ActiveMQ.Advisory.Consumer.Queue.>", "topic://ActiveMQ.Advisory.Consumer.Queue.orders", true),
+            ("topic://ActiveMQ.Advisory.Consumer.Queue.>", "topic://ActiveMQ.Advisory.Consumer.Queue.orders.eu", true),
+            ("topic://ActiveMQ.Advisory.Consumer.Queue.>", "topic://ActiveMQ.Advisory.Consumer.Queue", false),
+            ("topic://ActiveMQ.Advisory.Consumer.*.orders", "topic://ActiveMQ.Advisory.Consumer.Topic.orders", true),
+            ("topic://prices.*", "topic://prices.eu.de", false),
+            ("topic://prices.*", "queue://prices.eu", false),
+            ("topic://prices", "topic://prices", true),
+            ("topic://prices", "topic://prices.eu", false),
+        ] {
+            assert_eq!(topic_match(p, n), ok, "{p} vs {n}");
+        }
+        // An advisory's data structure survives the store (loose, nested) and comes back on dispatch.
+        let info = Ds::ConsumerInfo(ConsumerInfo { consumer_id: cid(), destination: q(), prefetch: 1000, priority: 9, ..Default::default() });
+        let mut w = Writer::default();
+        w.nested(&mut Some(Box::new(info.clone())));
+        let headers = json!({"type": "Advisory", "dataStructure": base64::engine::general_purpose::STANDARD.encode(&w.0)}).to_string();
+        let r = Row { seq: 1, dest: format!("{ADV}Consumer.Queue.positions"), kind: "message".into(), message_id: String::new(), body: vec![], props: "{}".into(), headers, redelivered: 0, enqueued_at: 0 };
+        let Ds::Message(m) = row_message(&r, false) else { panic!() };
+        assert_eq!((m.data_structure.as_deref(), m.kind.as_deref(), m.content), (Some(&info), Some("Advisory"), None));
+        assert_eq!(info.name(), "ConsumerInfo");
     }
 
     #[test]

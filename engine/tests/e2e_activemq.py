@@ -4,8 +4,8 @@ Receive(timeout) until null with auto and client acks, prefetch 0 (MessagePull),
 provocations refuse_login, drop_after and fail_commits, local transactions (commit and rollback), a durable
 subscriber that disconnects and comes back, selectors (and an invalid one), message groups, JMSPriority order,
 scheduled delivery (delay, repeat, cron on the environment clock), expiration, a compressed body, noLocal and exclusive
-consumers, and dead letters (expired, past max_redeliveries, poisoned by the client, per-destination DLQ) consumed from
-the DLQ, all checked through the tools. XA, blob messages and the tight encoding are checked with the Java client.
+consumers, dead letters (expired, past max_redeliveries, poisoned by the client, per-destination DLQ) consumed from
+the DLQ, ActiveMQ.Scheduler.Management (BROWSE, REMOVE), consumer priority and advisories, all checked through the tools. XA, blob messages and the tight encoding are checked with the Java client.
 
     cargo build -p stuntman && python3 tests/e2e_activemq.py
 """
@@ -198,6 +198,20 @@ def main():
                   and all(m["properties"].get("dlqDeliveryFailureCause") for m in dlq), "ActiveMQ.DLQ holds the three, with their original destination and failure cause")
             code, out = client("acme", "s3cret", "drain", "queue://ActiveMQ.DLQ")
             check("consumed: 3" in out, "and the app consumes them from ActiveMQ.DLQ")
+
+            # ActiveMQ.Scheduler.Management over JMS, consumer priority, advisories.
+            for h in (1, 2):
+                s.call("POST", "/activemq/messages", dict(destination="queue://orders.later", text=f"in {h}h", delay=f"{h}h"))
+            code, out = client("acme", "s3cret", "sched")
+            check("browse: 2" in out and "after remove: 1" in out, "Scheduler.Management: BROWSE sent both jobs to the JMSReplyTo, REMOVE took one away")
+            check(sorted(m["state"] for m in msgs(destination="queue://orders.later")) == ["discarded", "scheduled"], "the removed job is discarded")
+            code, out = client("acme", "s3cret", "priority", uri=uri + "?nms.PrefetchPolicy.QueuePrefetch=2")
+            check("priority: high=P-0 P-1 low=P-2 P-3" in out, "consumer.priority 9 gets messages first while it has prefetch room")
+            s.call("PUT", "/activemq/settings", {"advisory_delivered": True})
+            code, out = client("acme", "s3cret", "advisory")
+            s.call("PUT", "/activemq/settings", {"advisory_delivered": False})
+            check("advisory consumer: Advisory:ConsumerInfo" in out and "advisory delivered: Advisory:ActiveMQTextMessage" in out, "advisories reach NMS with their data structures (ConsumerInfo, the delivered message)")
+            check(all("ActiveMQ.Advisory" not in d["name"] for d in s.call("GET", "/activemq/destinations")["destinations"]), "advisory topics stay out of the destination list")
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print("ActiveMQ e2e: " + ("ok" if not failed else f"{failed} failed"))

@@ -112,7 +112,7 @@ with ServiceBusClient.from_connection_string(CS) as sb:
         r.complete_message(back[0])
 
 c = api(f"/messaging/{NS}/orders/messages?last=20")["counts"]
-check(c["completed"] == 6 and c["dead_letter"] == 0, f"Stuntman saw 6 completed and the dead-letter emptied ({c})")
+check(c["completed"] == 5 and c["dead_letter"] == 0, f"Stuntman saw all 5 (m-0..2, the scheduled, the deferred) completed and the dead-letter emptied ({c})")
 dl = [m for m in api(f"/messaging/{NS}/orders/messages?state=completed")["messages"] if m["deadLetterReason"] == "BadOrder"]
 check(len(dl) == 1 and dl[0]["deadLetterDescription"] == "total is negative", "dead-letter reason and description kept")
 print("e2e servicebus: all checks passed" if failed == 0 else f"e2e servicebus: {failed} failed")

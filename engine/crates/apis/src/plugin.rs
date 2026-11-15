@@ -325,6 +325,9 @@ pub struct Send {
     /// More headers, templates: {token: "{{ data.tokens[0] }}"}.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
+    /// Sent only when this is true: "body.status == 'paid'".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub when: String,
 }
 fn post() -> String {
     "POST".into()
@@ -917,7 +920,7 @@ pub fn validate(p: &Plugin, t: &str) -> Vec<Value> {
             err("receive.auth: none | bearer | basic | session".into(), "auth:");
         }
         for s in &r.send {
-            if let Err(x) = expr::check_template(&s.url).and_then(|_| expr::check_template(&s.body)) {
+            if let Err(x) = expr::check_template(&s.url).and_then(|_| expr::check_template(&s.body)).and_then(|_| if s.when.is_empty() { Ok(()) } else { expr::parse(&s.when) }) {
                 err(format!("send: {x}"), &s.url);
             }
             if !s.sign.is_empty() && !SIGNS.contains(&s.sign.as_str()) {

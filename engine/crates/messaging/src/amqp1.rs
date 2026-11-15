@@ -1248,7 +1248,12 @@ async fn disposition(conn: &Arc<Conn>, ch: u16, d: Disposition) {
             let r = broker::settle(&ctx, &n.namespace, &token, outcome, &reason, &desc, &conn.client).await;
             if !d.settled {
                 let st = match r {
-                    Ok(_) => d.state.clone().unwrap_or(DeliveryState::Accepted(Accepted {})),
+                    // The service echoes the outcome it applied; a dead-letter comes back `rejected`
+                    // with no error (an error there means it failed: azure-servicebus 7.15+ checks).
+                    Ok(_) => match d.state.clone() {
+                        Some(DeliveryState::Rejected(_)) => DeliveryState::Rejected(Rejected { error: None }),
+                        o => o.unwrap_or(DeliveryState::Accepted(Accepted {})),
+                    },
                     Err(e) => DeliveryState::Rejected(Rejected { error: Some(err("com.microsoft:message-lock-lost", e.text())) }),
                 };
                 conn.send(perf(ch, &Performative::Disposition(Disposition { role: Role::Sender, first: id, last: None, settled: true, state: Some(st), batchable: false })));

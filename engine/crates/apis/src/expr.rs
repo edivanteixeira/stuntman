@@ -211,7 +211,7 @@ impl P {
         let t = self.peek().cloned().ok_or("the expression ends too early")?;
         self.i += 1;
         Ok(match t {
-            Tok::Num(n) => E::Lit(json!(n)),
+            Tok::Num(n) => E::Lit(if n.fract() == 0.0 && n.abs() < 9e15 { json!(n as i64) } else { json!(n) }),
             Tok::Str(s) => E::Lit(json!(s)),
             Tok::Id(id) => match id.as_str() {
                 "true" => E::Lit(json!(true)),
@@ -277,6 +277,19 @@ fn truthy(v: &Value) -> bool {
 
 fn num(v: &Value) -> Option<f64> {
     v.as_f64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+}
+
+/// The lets in the order they can be computed: one that names another runs after it
+/// (YAML maps arrive sorted, so `b: a + 1` before `a: 2` still works). Cycles keep the sorted order.
+pub fn let_order(lets: &std::collections::BTreeMap<String, String>) -> Vec<(&String, &String)> {
+    let uses = |e: &str, k: &str| lex(e).map(|t| t.iter().any(|t| matches!(t, Tok::Id(x) if x == k))).unwrap_or(false);
+    let mut left: Vec<(&String, &String)> = lets.iter().collect();
+    let mut out = vec![];
+    while !left.is_empty() {
+        let i = left.iter().position(|(_, e)| !left.iter().any(|(k, _)| uses(e, k))).unwrap_or(0);
+        out.push(left.remove(i));
+    }
+    out
 }
 
 pub fn text(v: &Value) -> String {
@@ -372,11 +385,24 @@ fn call(name: &str, a: &[Value], sc: &Scope) -> Result<Value, String> {
         "double" => json!(num(a.first().unwrap_or(&Value::Null))),
         "upper" => json!(s0().to_uppercase()),
         "lower" => json!(s0().to_lowercase()),
+        "trim" => json!(s0().trim()),
+        "replace" => json!(s0().replace(&a.get(1).map(text).unwrap_or_default(), &a.get(2).map(text).unwrap_or_default())),
+        "split" => json!(s0().split(&a.get(1).map(text).unwrap_or(",".into())).map(str::to_string).collect::<Vec<_>>()),
+        "join" => json!(a.first().and_then(Value::as_array).map(|x| x.iter().map(text).collect::<Vec<_>>().join(&a.get(1).map(text).unwrap_or(",".into()))).unwrap_or_default()),
+        // substring(s, start, end?): by characters; a negative start counts from the end.
+        "substring" => {
+            let c: Vec<char> = s0().chars().collect();
+            let n = c.len() as i64;
+            let at = |v: Option<&Value>, d: i64| v.and_then(num).map(|x| x as i64).map(|x| if x < 0 { (n + x).max(0) } else { x.min(n) }).unwrap_or(d);
+            let (st, en) = (at(a.get(1), 0), at(a.get(2), n));
+            json!(c[st as usize..en.max(st) as usize].iter().collect::<String>())
+        }
         "digits" => json!(digits(&s0())),
         "mask" => json!(mask(&s0())),
         "cpf_ok" => json!(cpf_ok(&s0())),
         "sha256" => json!(hex::encode(sha2::Sha256::digest(s0().as_bytes()))),
         // base64url(json({"jti": uuid()})): JWT parts, no padding.
+        "base64" => json!(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, s0().as_bytes())),
         "base64url" => json!(base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, s0().as_bytes())),
         "uuid" => json!(stuntman_core::util::uuid()),
         // random_id(): 8 letters and digits, for ids that change on every call ("ch_{{ random_id() }}").
@@ -658,6 +684,13 @@ mod t {
         assert!(cpf_ok("123.456.789-09") && !cpf_ok("123.456.789-00"));
         assert_eq!(eval("base64url(json({'alg': 'none'}))", &s).unwrap(), json!("eyJhbGciOiJub25lIn0"));
         assert_eq!(mask("123.456.789-09"), "123.•••.•••-09");
+        assert_eq!(eval("split(replace('X-Key:abc', 'X-', ''), ':')[1]", &s).unwrap(), json!("abc"));
+        assert_eq!(eval("substring('2026-11-15', 0, 4) + substring('abc', -1)", &s).unwrap(), json!("2026c"));
+        assert_eq!(eval("join(split('a b', ' '), '+')", &s).unwrap(), json!("a+b"));
+        assert_eq!(eval("{'n': 2}", &s).unwrap(), json!({"n": 2}));
+        assert_eq!(eval("base64(':pat')", &s).unwrap(), json!("OnBhdA=="));
+        let lets: std::collections::BTreeMap<String, String> = [("a".into(), "b + 1".into()), ("b".into(), "2".into())].into();
+        assert_eq!(let_order(&lets).iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), vec!["b", "a"]);
         assert_eq!(paths("selfie.tag != person.tg && size(body.cpf) > 3"), vec!["selfie.tag", "person.tg", "body.cpf"]);
     }
 

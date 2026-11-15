@@ -216,14 +216,16 @@ async fn conn(ctx: Ctx, sock: TcpStream) {
                     "550 No such directory".into()
                 }
             }
-            "PASV" | "EPSV" => match TcpListener::bind((local_ip, 0)).await {
+            "PASV" | "EPSV" => match passive(local_ip).await {
                 Ok(l) => {
                     let port = l.local_addr().map(|a| a.port()).unwrap_or(0);
                     s.pasv = Some(l);
                     if cmd == "EPSV" {
                         format!("229 Entering Extended Passive Mode (|||{port}|)")
                     } else {
-                        let ip = match local_ip { std::net::IpAddr::V4(v) => v.octets(), _ => [127, 0, 0, 1] };
+                        // In a container the local address is not the one the client reached: STUNTMAN_FTP_PASSIVE_HOST.
+                        let adv = std::env::var("STUNTMAN_FTP_PASSIVE_HOST").ok().and_then(|h| h.parse().ok()).unwrap_or(local_ip);
+                        let ip = match adv { std::net::IpAddr::V4(v) => v.octets(), _ => [127, 0, 0, 1] };
                         format!("227 Entering Passive Mode ({},{},{},{},{},{})", ip[0], ip[1], ip[2], ip[3], port >> 8, port & 255)
                     }
                 }
@@ -379,4 +381,21 @@ pub fn serve(envs: Envs, port: u16) {
             }
         }
     });
+}
+
+/// A data listener: any free port, or one from STUNTMAN_FTP_PASSIVE_PORTS ("30000-30009") so a
+/// container can publish the range.
+async fn passive(local_ip: std::net::IpAddr) -> std::io::Result<TcpListener> {
+    let Some((a, b)) = std::env::var("STUNTMAN_FTP_PASSIVE_PORTS").ok().and_then(|r| {
+        let (a, b) = r.split_once('-')?;
+        Some((a.trim().parse::<u16>().ok()?, b.trim().parse::<u16>().ok()?))
+    }) else {
+        return TcpListener::bind((local_ip, 0)).await;
+    };
+    for p in a..=b {
+        if let Ok(l) = TcpListener::bind(("0.0.0.0", p)).await {
+            return Ok(l);
+        }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::AddrInUse, "every passive port is taken"))
 }

@@ -113,7 +113,7 @@ def run(data):
     assert approved["sentence"] == "Validated 123.•••.•••-09 with a selfie: face 0.99, alive", approved["sentence"]
     assert approved["sent"]["cpf"] == EMMA and approved["billable"] and approved["caller"] == "acme-api", approved
     full = call("GET", f"/apis/calls/{approved['id']}?raw=true")
-    assert full["request"]["headers"]["authorization"].startswith("Bearer") and [s["step"] for s in full["steps"]] == ["receive", "keep", "decide", "respond"], full["steps"]
+    assert full["request"]["headers"]["authorization"].startswith("Bearer") and [s["step"] for s in full["steps"]] == ["receive", "decide", "respond", "keep"], full["steps"]
     # The data table drives answers: a test adds a suspended CPF
     call("PUT", "/plugins/serpro-datavalid/data/people", {"rows": [{"cpf": "963.741.852-63", "name": "Ruby Lane", "answer": "cpf_irregular"}], "add": True})
     st, v, _ = api("POST", V5, {**ok, "cpf": "963.741.852-63"}, bearer)
@@ -213,7 +213,7 @@ def run(data):
     before = len(call("GET", "/apis/calls?service=serpro-datavalid&limit=500")["calls"])
     t = call("POST", "/plugins/serpro-datavalid/try", {"method": "POST", "path": "/{product}/v5/pessoa-fisica/validacao",
               "request": {"path": "/datavalid/v5/pessoa-fisica/validacao", "headers": {"authorization": "Bearer x"}, "body": {**ok, "cpf": OTHER_FACE}}})
-    assert t["answer"] == "face_mismatch" and t["status"] == 200 and t["steps"][-1]["step"] == "respond", t
+    assert t["answer"] == "face_mismatch" and t["status"] == 200 and "respond" in [s["step"] for s in t["steps"]], t
     assert len(call("GET", "/apis/calls?service=serpro-datavalid&limit=500")["calls"]) == before
     p = call("GET", "/plugins/serpro-datavalid")
     bad = p["yaml"].replace("person.answer == 'borderline'", "person.anser == 'borderline'")

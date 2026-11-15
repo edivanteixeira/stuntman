@@ -549,8 +549,9 @@ pub async fn run(ctx: &Ctx, p: &Plugin, r: &Route, params: Map<String, Value>, r
         steps.push(json!({"step": "step", "text": match &st { Some(s) => format!("Push {code}: {}", s["status"].as_str().unwrap_or("")), None => format!("No push “{code}”") }, "ok": st.is_some()}));
         sc.insert("step".into(), st.unwrap_or(Value::Null));
     }
+    let mut keep = None;
     if chosen.is_none() {
-        for (k, e) in &r.lets {
+        for (k, e) in expr::let_order(&r.lets) {
             match expr::eval(e, &sc) {
                 Ok(v) => {
                     sc.insert(k.clone(), v);
@@ -558,13 +559,7 @@ pub async fn run(ctx: &Ctx, p: &Plugin, r: &Route, params: Map<String, Value>, r
                 Err(x) => steps.push(json!({"step": "let", "text": format!("{k}: {x}"), "ok": false})),
             }
         }
-        if let Some(k) = &r.keep {
-            let key = expr::eval(&k.key, &sc).map(|v| expr::text(&v)).unwrap_or_default();
-            if !dry {
-                let _ = store::keep(ctx, &svc.name, &k.state, &key, json!({"at": util::now_ms(), "body": req.body})).await;
-            }
-            steps.push(json!({"step": "keep", "text": format!("Saved to state “{}” by {}{}", k.state, key, if dry { " (not kept: Try it)" } else { "" }), "ok": true}));
-        }
+        keep = r.keep.as_ref();
         if let Some(w) = &r.wait {
             let key = expr::eval(&w.key, &sc).map(|v| expr::text(&v)).unwrap_or_default();
             let n = if dry { 1 } else { store::wait_count(ctx, &svc.name, &route_name, &key).await.unwrap_or(1) };
@@ -644,6 +639,15 @@ pub async fn run(ctx: &Ctx, p: &Plugin, r: &Route, params: Map<String, Value>, r
             o.sentence = format!("{} {}: {}", m, req.path, plugin::GENERIC.iter().find(|g| g.0 == name).map(|g| g.1.to_string()).unwrap_or(name.clone()));
             steps.push(json!({"step": "respond", "text": o.sentence.clone(), "ok": false}));
         }
+    }
+    // keep saves only what was accepted: a refused call (4xx/5xx) leaves the state as it was.
+    if let Some(k) = keep {
+        let key = expr::eval(&k.key, &sc).map(|v| expr::text(&v)).unwrap_or_default();
+        let ok = o.status > 0 && o.status < 400;
+        if !dry && ok {
+            let _ = store::keep(ctx, &svc.name, &k.state, &key, json!({"at": util::now_ms(), "body": req.body})).await;
+        }
+        steps.push(json!({"step": "keep", "text": if ok { format!("Saved to state “{}” by {}{}", k.state, key, if dry { " (not kept: Try it)" } else { "" }) } else { format!("Not saved to state “{}”: the answer is {}", k.state, o.status) }, "ok": true}));
     }
     if !r.send.is_empty() {
         steps.push(json!({"step": "send", "text": format!("{} webhook(s) after responding{}", r.send.len(), if dry { " (not sent: Try it)" } else { "" }), "ok": true}));
@@ -787,6 +791,9 @@ pub fn send_webhooks(ctx: &Ctx, call_id: &str, p: &Plugin, r: &Route, sc: Map<St
     let source = if p.service.base_url.is_empty() { format!("/{}", p.service.name) } else { p.service.base_url.clone() };
     let n = r.send.len();
     for (i, s) in r.send.iter().enumerate() {
+        if !s.when.is_empty() && !expr::test(&s.when, &sc).unwrap_or(false) {
+            continue;
+        }
         let mut delay = util::parse_ms(&s.delay).unwrap_or(0);
         if prov.iter().any(|x| x == "out_of_order") && n > 1 && i == 0 {
             delay += 2000;
@@ -833,12 +840,17 @@ async fn fire(ctx: &Ctx, job: Value) {
     }
     let w = wh.clone().unwrap_or_default();
     let sign = if !s.sign.is_empty() { s.sign.clone() } else if wh.is_some() { w.sign.clone() } else if !s.secret.is_empty() { "hex".into() } else { String::new() };
-    let secret = util::resolve_secret(if s.secret.is_empty() { &w.secret } else { &s.secret }, &ctx.data_dir);
+    // The secret may be a template: each subscription signs with its own key ("{{ state.sub.signing_key }}").
+    let secret = util::resolve_secret(&expr::render(if s.secret.is_empty() { &w.secret } else { &s.secret }, &sc).unwrap_or_default(), &ctx.data_dir);
     let header = if s.header.is_empty() { w.header.clone() } else { s.header.clone() };
     let tol = if wh.is_some() { w.tolerance } else { 300 };
     let mut headers: Vec<(String, String)> = vec![("content-type".into(), "application/json".into())];
+    // Header names are templates too; a name that renders empty is left out.
     for (k, v) in &s.headers {
-        headers.push((k.clone(), expr::render(v, &sc).unwrap_or_default()));
+        let k = expr::render(k, &sc).unwrap_or_default();
+        if !k.trim().is_empty() {
+            headers.push((k.trim().to_string(), expr::render(v, &sc).unwrap_or_default()));
+        }
     }
     let evid = format!("evt_{}", util::uuid().replace('-', "")[..20].to_string());
     headers.extend(sign_headers(&sign, &header, &secret, &body, stuntman_core::clock::now(ctx) / 1000, tol, &w.provoke, &s.event, job["source"].as_str().unwrap_or(""), &evid));

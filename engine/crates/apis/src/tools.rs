@@ -44,6 +44,8 @@ pub async fn service_view(ctx: &Ctx, p: &Plugin) -> Value {
         "spec": p.spec.as_ref().map(|s| json!({"version": s.version, "file": s.openapi, "apiVersion": s.api_version, "source": s.source, "validate": s.validate, "schemas": s.schemas.len()})),
         "record": p.record.as_ref().map(|r| json!({"upstream": r.upstream, "mode": r.mode, "until": r.until, "stopped": r.stopped, "paused": r.paused, "live": crate::record::live(r), "started": r.started})), "recorded": match &p.record { Some(r) => store::count_recorded(ctx, &p.service.name, r.started).await.unwrap_or(0), None => 0 }, "answers": p.answers.len(), "pages": p.pages.len(),
         "mtls": p.service.auth.client_certificate.as_ref().map(|c| c.required).unwrap_or(false), "session": p.service.auth.session,
+        "mcp": p.mcp.as_ref().map(|m| json!({"path": m.path, "tools": crate::mcp::tools(p), "auth": m.auth, "sse": m.sse})),
+        "signature": p.soap.as_ref().and_then(|s| s.signature.clone()), "icp": p.service.auth.client_certificate.as_ref().map(|c| c.icp).unwrap_or(false),
         "urls": {"local": format!("http://{ip}:{}{}/{}", crate::port(), ctx.prefix(), p.service.name), "host": format!("http://{}.{base}:{}", p.service.name, crate::port()),
                  "real": p.service.real_host, "realBase": p.service.base_url,
                  "https": format!("https://{}:{}", if p.service.real_host.is_empty() { format!("{}.{base}", p.service.name) } else { p.service.real_host.clone() }, crate::tls_port())},
@@ -427,7 +429,7 @@ fn answers_tools() -> Vec<Tool> {
         })
         .req("service", "plugin")
         .route("GET", "/plugins/{service}/answers"),
-        Tool::new("set_answer", "Creates or replaces a named answer (status, body template, headers, sentence); checked against the schema unless raw=true (malformed on purpose); fault={code, reason} makes it a SOAP fault.", |ctx, a| async move {
+        Tool::new("set_answer", "Creates or replaces a named answer (status, body template, headers, sentence); checked against the schema unless raw=true (malformed on purpose); fault={code, reason} makes it a SOAP fault; stream=[{after, event, data}] sends it in parts (stream_format sse | ndjson | chunks); template=handlebars renders WireMock templates; latency waits before answering.", |ctx, a| async move {
             let s = service_of(&a)?;
             let mut p = plugin::get(&ctx, &s)?;
             let name = a.need("name")?;
@@ -451,6 +453,21 @@ fn answers_tools() -> Vec<Tool> {
             }
             if let Some(t) = a.str("note") {
                 ans.note = t;
+            }
+            if let Some(v) = a.get("stream") {
+                ans.stream = if v.is_null() { vec![] } else { serde_json::from_value(v.clone()).map_err(|e| ApiError::bad(format!("stream: [{{after, event, data}}]: {e}")))? };
+            }
+            if let Some(t) = a.str("stream_format") {
+                ans.stream_format = if t == "sse" { String::new() } else { t };
+            }
+            if let Some(t) = a.get("template") {
+                ans.template = t.as_str().unwrap_or("").to_string();
+            }
+            if let Some(t) = a.get("latency") {
+                ans.latency = t.as_str().unwrap_or("").to_string();
+            }
+            if let Some(v) = a.get("rpc_error") {
+                ans.rpc_error = v.as_i64();
             }
             match a.get("fault") {
                 Some(Value::Null) | Some(Value::Bool(false)) => ans.fault = None,
@@ -476,7 +493,7 @@ fn answers_tools() -> Vec<Tool> {
             plugin::save(&ctx, &p)?;
             Ok(json!({"answer": ans}))
         })
-        .req("service", "plugin").req("name", "answer name").param("status", "HTTP status").param("body", "template (text) or JSON").param("headers", "{name: value}").param("raw", "true: sent as typed")
+        .req("service", "plugin").req("name", "answer name").param("status", "HTTP status").param("body", "template (text) or JSON").param("headers", "{name: value}").param("raw", "true: sent as typed").param("stream", "[{after, event, data}]").param("stream_format", "sse | ndjson | chunks").param("template", "handlebars").param("latency", "800ms").param("rpc_error", "MCP: a JSON-RPC error code")
         .param("sentence", "the sentence on Calls (template)").param("note", "what it means").param("old_name", "rename")
         .param("fault", "SOAP: {code: Sender | Receiver, reason} makes it a fault (the body is its detail); null makes it a response again")
         .route("PUT", "/plugins/{service}/answers/{name}"),
@@ -553,7 +570,7 @@ fn service_tools() -> Vec<Tool> {
         })
         .req("service", "plugin")
         .route("GET", "/plugins/{service}/service"),
-        Tool::new("set_service", "Changes the service block: any_client, token_ttl, billing (enabled, per_call, warn_above), latency, rate, fail_share, base_url, real_host, title.", |ctx, a| async move {
+        Tool::new("set_service", "Changes the service block: any_client, token_ttl, billing (enabled, per_call, warn_above), latency, rate, fail_share, base_url, real_host, title; webhook signing (webhook_signing, webhook_header, webhook_secret, webhook_tolerance, webhook_provoke), idempotency, xml_signature_* and client_certificate_icp.", |ctx, a| async move {
             let s = service_of(&a)?;
             let mut p = plugin::get(&ctx, &s)?;
             let cur = plugin::text(&ctx, &s);
@@ -633,6 +650,16 @@ fn service_tools() -> Vec<Tool> {
                     w.provoke = list;
                 }
             }
+            if a.get("xml_signature_check").is_some() || a.get("xml_signature_sign").is_some() || a.get("xml_signature_invalid").is_some() || a.get("xml_signature_sha256").is_some() {
+                let sp = p.soap.as_mut().ok_or_else(|| ApiError::bad("XML signatures are for SOAP services"))?;
+                let sg = sp.signature.get_or_insert_with(Default::default);
+                if let Some(x) = a.bool("xml_signature_check") { sg.check = x; }
+                if let Some(x) = a.get("xml_signature_sign") { sg.sign = x.as_str().unwrap_or("").to_string(); }
+                if let Some(x) = a.get("xml_signature_invalid") { sg.invalid = x.as_str().unwrap_or("").to_string(); }
+                if let Some(x) = a.bool("xml_signature_sha256") { sg.sha256 = x; }
+                if !sg.check && sg.sign.is_empty() { sp.signature = None; }
+            }
+            let sv = &mut p.service;
             if let Some(v) = a.get("idempotency") {
                 sv.idempotency = match v {
                     Value::Bool(false) => None,
@@ -653,6 +680,7 @@ fn service_tools() -> Vec<Tool> {
         .param("latency", "300ms..600ms | none").param("rate", "10/s | none").param("fail_share", "0 to 1, or 50%").param("base_url", "real base URL").param("real_host", "real host name").param("title", "display name").param("version", "the version you read")
         .param("webhook_signing", "hex | hex_ts | stripe | svix | github | cloudevents | none").param("webhook_secret", "secret://name").param("webhook_header", "the signature header").param("webhook_tolerance", "seconds, 300")
         .param("webhook_provoke", "wrong_signature, old_timestamp, no_signature, twice, out_of_order | none").param("idempotency", "true | false | the header name (Idempotency-Key)")
+        .param("xml_signature_check", "SOAP: bool, check the request's XML signature").param("xml_signature_sign", "SOAP: the answer element to sign (infProt), empty: none").param("xml_signature_invalid", "SOAP: the answer for a bad signature").param("xml_signature_sha256", "SOAP: bool, RSA-SHA256 instead of RSA-SHA1")
         .route("PUT", "/plugins/{service}/service"),
         Tool::new("clock", "The environment's clock (real time plus what advance_clock moved) and the webhooks waiting for their time.", |ctx, _a| async move {
             let now = stuntman_core::clock::now(&ctx);

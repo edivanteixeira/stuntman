@@ -294,7 +294,11 @@ pub fn all() -> Vec<Tool> {
                 "keys": {"current": p.keys.current, "currentSince": store::key_created(&ctx, &p.name, &p.keys.current).await?, "next": p.keys.next,
                     "rotatedAt": store::get(&ctx, "rotated", &p.name).await?.filter(|(d, ..)| d["kid"] == json!(p.keys.current)).map(|(_, at, _)| at)},
                 "lifetimes": p.lifetimes, "provoke": p.provoke, "file": config::file_name(&p.name), "yaml": config::text(&ctx, &p.name),
-                "flavours": config::FLAVOURS.iter().map(|(k, l)| json!({"id": k, "label": l})).collect::<Vec<_>>()}))
+                "flavours": config::FLAVOURS.iter().map(|(k, l)| json!({"id": k, "label": l})).collect::<Vec<_>>(),
+                "saml": p.saml.as_ref().map(|sm| json!({"metadata": format!("{b}/saml/metadata"), "sso": format!("{b}/saml/sso"), "entityId": crate::saml::entity_id(&ctx, &p), "signAssertion": sm.sign_assertion, "signResponse": sm.sign_response, "nameId": sm.name_id})),
+                "ldap": p.ldap.as_ref().map(|l| json!({"url": format!("ldap://localhost:{}", std::env::var("STUNTMAN_LDAP_PORT").unwrap_or("3389".into())), "baseDn": p.base_dn(), "provoke": l.provoke})),
+                "passwordGrant": p.password_grant, "tokenEndpoint": format!("{b}/oauth2/v2.0/token"),
+                "botframework": {"openid": format!("{}/v1/.well-known/openidconfiguration", crate::botframework::base(&ctx)), "connector": format!("{}/connector/", crate::botframework::base(&ctx))}}))
         }).param("provider", "provider").route("GET", "/identity/{provider}/tenant"),
         Tool::new("set_tenant", "Changes flavour (entra-v2, google, okta, oidc), lifetimes (id, access, refresh), clock_skew and other tenants.", |ctx, a| async move {
             let _w = crate::WRITE.lock().await;

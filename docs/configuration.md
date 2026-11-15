@@ -37,6 +37,7 @@ default; most setups change nothing.
 | `STUNTMAN_KAFKA_ADVERTISED_HOST` | `localhost` | the host the broker tells clients to connect to (set it when the app runs in another container) |
 | `STUNTMAN_SCHEMA_REGISTRY_PORT` | `8081` | Schema Registry |
 | `STUNTMAN_PUBSUB_PORT` | `8085` | Google Cloud Pub/Sub emulator (gRPC, and the REST publish) |
+| `STUNTMAN_KINESIS_PORT` | `4567` | Amazon Kinesis Data Streams (apps set `AWS_ENDPOINT_URL_KINESIS=http://localhost:4567`) |
 | `STUNTMAN_RABBITMQ_MGMT_PORT` | `15672` | RabbitMQ management HTTP API |
 | `STUNTMAN_ACTIVEMQ_PORT` | `61616` | ActiveMQ (OpenWire) broker |
 
@@ -62,10 +63,11 @@ The project was first called Dublê: `DUBLE_*` variables still work when the `ST
 | `1143` / `1110` | IMAP / POP3 |
 | `9092` / `8081` | Kafka / Schema Registry |
 | `8085` | Google Cloud Pub/Sub (gRPC; REST publish) |
+| `4567` | Amazon Kinesis Data Streams |
 | `15672` | RabbitMQ management API |
 | `61616` | ActiveMQ (OpenWire) |
 
-LDAP, FTP, SFTP, IMAP, POP3, Kafka, the Schema Registry, Pub/Sub, the RabbitMQ management API, ActiveMQ, GELF and StatsD have no host
+LDAP, FTP, SFTP, IMAP, POP3, Kafka, the Schema Registry, Pub/Sub, Kinesis, the RabbitMQ management API, ActiveMQ, GELF and StatsD have no host
 name to tell environments apart, so they serve the default environment (GELF and StatsD can name another one; see
 [Providers › Telemetry](providers.md#telemetry)).
 

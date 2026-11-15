@@ -3,7 +3,8 @@
 //! reads it for real: Cloud Storage from a storage account holding a container of the bucket's name
 //! (text split at the delimiter, gzip/zstandard/bzip2/xz too; Avro and Pub/Sub Avro object container
 //! files, codecs null, deflate, snappy, zstandard, bzip2 and xz), MSK and Confluent
-//! Cloud from the Kafka topic of that name in Streams, from the earliest offset. Every source can be
+//! Cloud from the Kafka topic of that name in Streams, from the earliest offset; Amazon Kinesis from
+//! the Stuntman Kinesis stream the ARN names, from TRIM_HORIZON. Every source can be
 //! fed with the pubsub_ingest tool. Ingested messages go through the topic's transforms and schema.
 //!
 //! The mapping (Google documents data and, for Pub/Sub Avro, attributes and
@@ -45,12 +46,13 @@ pub fn describe(t: &Topic) -> Option<Value> {
     Some(json!({"kind": kind, "from": from, "state": state}))
 }
 
-/// The source's state as Stuntman sees it: ACTIVE, or BUCKET_NOT_FOUND / TOPIC_NOT_FOUND when the
-/// backend has no such bucket or Kafka topic (pubsub_ingest still feeds it).
+/// The source's state as Stuntman sees it: ACTIVE, or BUCKET_NOT_FOUND / TOPIC_NOT_FOUND /
+/// STREAM_NOT_FOUND when the backend has no such bucket, Kafka topic or Kinesis stream
+/// (pubsub_ingest still feeds it).
 pub async fn set_state(ctx: &Ctx, t: &mut Topic) -> Result<bool, ApiError> {
     let Some(src) = t.ingestion_data_source_settings.as_mut().and_then(|s| s.source.as_mut()) else { return Ok(false) };
     let (slot, want) = match src {
-        Source::AwsKinesis(k) => (&mut k.state, 1),
+        Source::AwsKinesis(k) => { let found = kinesis_stream(ctx, &k.stream_arn).await?.is_some(); (&mut k.state, if found { 1 } else { 4 }) }
         Source::AzureEventHubs(e) => (&mut e.state, 1),
         Source::CloudStorage(c) => { let found = bucket_account(ctx, &c.bucket).is_some(); (&mut c.state, if found { 1 } else { 4 }) }
         Source::AwsMsk(m) => { let found = stuntman_streams::store::topic(ctx, &m.topic).await?.is_some(); (&mut m.state, if found { 1 } else { 5 }) }
@@ -59,6 +61,12 @@ pub async fn set_state(ctx: &Ctx, t: &mut Topic) -> Result<bool, ApiError> {
     let changed = *slot != want;
     *slot = want;
     Ok(changed)
+}
+
+/// The Stuntman Kinesis stream an ARN (or a bare name) names, with its shard ids, parents first.
+async fn kinesis_stream(ctx: &Ctx, arn: &str) -> Result<Option<(String, Vec<String>)>, ApiError> {
+    let name = stuntman_kinesis::store::stream_name(arn);
+    ctx.db.call(move |cn| Ok(stuntman_kinesis::store::load(cn, &name).ok().map(|s| (s.name, s.shards.into_iter().map(|x| x.id).collect())))).await
 }
 
 fn bucket_account(ctx: &Ctx, bucket: &str) -> Option<String> {
@@ -269,6 +277,20 @@ pub async fn poll(ctx: &Ctx, t: &Topic) -> Result<(), ApiError> {
                     attrs: r.headers.into_iter().map(|(k, v)| (k, v.map(|x| String::from_utf8_lossy(&x).to_string()).unwrap_or_default())).collect(),
                 }).collect();
                 feed(ctx, &t, out).await?;
+            }
+        }
+        Some(Source::AwsKinesis(k)) => {
+            // From TRIM_HORIZON at creation, shard by shard (parents before their children).
+            let Some((stream, shards)) = kinesis_stream(ctx, &k.stream_arn).await? else { return Ok(()) };
+            let now = stuntman_core::clock::now(ctx);
+            for shard in shards {
+                let mk = format!("kinesis:{stream}:{shard}");
+                let from = store::ingest_mark(ctx, &t.name, &mk).await?.unwrap_or(0);
+                let (s2, sh2) = (stream.clone(), shard.clone());
+                let recs = ctx.db.call(move |cn| Ok(stuntman_kinesis::store::shard_records(cn, &s2, &sh2, from, now).unwrap_or_default())).await?;
+                let Some(last) = recs.last().map(|r| r.0) else { continue };
+                store::set_ingest_mark(ctx, &t.name, &mk, last + 1).await?;
+                feed(ctx, &t, recs.into_iter().map(|(_, key, data)| Rec { data, key, ..Default::default() }).collect()).await?;
             }
         }
         _ => {}

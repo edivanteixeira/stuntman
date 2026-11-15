@@ -71,13 +71,13 @@ docker run -d --name stuntman --restart unless-stopped \
   -p 127.0.0.1:10000:10000 -p 127.0.0.1:9000:9000 -p 127.0.0.1:4317:4317 -p 127.0.0.1:4318:4318 \
   -p 127.0.0.1:3389:3389 -p 127.0.0.1:2121:2121 -p 127.0.0.1:30000-30009:30000-30009 -p 127.0.0.1:2222:2222 \
   -p 127.0.0.1:1143:1143 -p 127.0.0.1:1110:1110 -p 127.0.0.1:9092:9092 -p 127.0.0.1:8081:8081 \
-  -p 127.0.0.1:8085:8085 -p 127.0.0.1:15672:15672 -p 127.0.0.1:61616:61616 \
+  -p 127.0.0.1:8085:8085 -p 127.0.0.1:4567:4567 -p 127.0.0.1:15672:15672 -p 127.0.0.1:61616:61616 \
   -p 127.0.0.1:12201:12201/udp -p 127.0.0.1:8125:8125/udp \
   -v stuntman-data:/data edivanteixeira/stuntman
 ```
 
    The second half of the ports (LDAP, FTP and its passive range, SFTP, IMAP, POP3, Kafka, Schema Registry,
-   Pub/Sub, RabbitMQ management, ActiveMQ, GELF, StatsD) is only needed when the project uses those lines; leave them in when unsure.
+   Pub/Sub, Kinesis, RabbitMQ management, ActiveMQ, GELF, StatsD) is only needed when the project uses those lines; leave them in when unsure.
 
 4. Wait until `http://localhost:8025/api/env` answers `200` (poll every 2 s, up to 60 s).
 5. If a container named `stuntman` already exists but is stopped, run `docker start stuntman` instead.
@@ -124,6 +124,7 @@ hosts, SDK packages and setting names. Do not print secret values you come acros
 | **RabbitMQ** | `amqp://`, `RabbitMQ.Client`, `amqplib`, `pika`, `bunny`; the management API (`:15672`, MassTransit) |
 | **ActiveMQ** | `tcp://…:61616`, `activemq:tcp://…`, `failover:(tcp://…)` broker URLs, `Apache.NMS.ActiveMQ`, `activemq-client` / `activemq-all`, `spring.activemq.*`, `ConnectionFactory` with OpenWire, `BrokerURL` settings; an `ActiveMQ.DLQ` or `AMQ_SCHEDULED_*` in the code (Stuntman speaks OpenWire; STOMP/AMQP-only ActiveMQ clients are not covered) |
 | **Google Cloud Pub/Sub** | `PUBSUB_EMULATOR_HOST`, `google-cloud-pubsub`, `@google-cloud/pubsub`, `Google.Cloud.PubSub.V1`, `cloud.google.com/go/pubsub`, `spring-cloud-gcp-starter-pubsub`, `pubsub.googleapis.com`, `projects/<p>/topics/<t>` names |
+| **Amazon Kinesis** | `AWS_ENDPOINT_URL_KINESIS`, `boto3.client("kinesis")`, `@aws-sdk/client-kinesis`, `AWSSDK.Kinesis`, `software.amazon.awssdk:kinesis`, `aws-sdk-go-v2/service/kinesis`, KCL (`amazon-kinesis-client`), `kinesis.<region>.amazonaws.com`, `PutRecord`/`GetShardIterator` calls, stream ARNs `arn:aws:kinesis:…:stream/<name>` |
 | **Kafka** | `bootstrap.servers`, `Confluent.Kafka`, `kafkajs`, `kafka-python`, `confluent-kafka`, `schema.registry.url` |
 | **File servers** | `ftp://`, `sftp://`, FluentFTP, SSH.NET, paramiko, `ssh2-sftp-client`, EDI drop folders |
 | **Identity** | `login.microsoftonline.com` (Entra ID), `accounts.google.com`, `*.okta.com`, OIDC `Authority` / `issuer` settings; SAML metadata URLs and ACS settings; `ldap://`, `DirectoryServices`, `ldap3`; Bot Framework / Teams bots (`MicrosoftAppId`) |
@@ -204,6 +205,7 @@ Change **base URLs only**; the app keeps its code and SDKs.
 | RabbitMQ management API | `http://localhost:15672` |
 | ActiveMQ (OpenWire) | `tcp://localhost:61616` (Java, Spring `spring.activemq.broker-url`) / `activemq:tcp://localhost:61616` (Apache.NMS.ActiveMQ); keep a `failover:(…)` wrapper if the app has one, with only this URL inside |
 | Google Cloud Pub/Sub | `PUBSUB_EMULATOR_HOST=localhost:8085` (no credentials needed; in .NET also `EmulatorDetection = EmulatorDetection.EmulatorOrProduction`) |
+| Amazon Kinesis | `AWS_ENDPOINT_URL_KINESIS=http://localhost:4567` (or the client's endpoint override), any access key and secret, any region |
 | SAML 2.0 | IdP metadata `http://localhost:8025/login/<tenant>/saml/metadata` |
 | LDAP | `ldap://localhost:3389`, base DN from `set_provider` |
 

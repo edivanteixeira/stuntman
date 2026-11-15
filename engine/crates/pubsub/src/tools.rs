@@ -267,7 +267,7 @@ pub fn all() -> Vec<Tool> {
         })
         .req("table", "acme-stg.logistics.shipments").req("schema", "[{\"name\": \"shipment\", \"type\": \"STRING\", \"mode\": \"REQUIRED\"}]")
         .route("PUT", "/pubsub/bigquery/tables/{table}"),
-        Tool::new("set_pubsub_topic", "Sets a topic's ingestion source (kind aws_kinesis, cloud_storage, azure_event_hubs, aws_msk, confluent_cloud with that source's fields) and/or a JavaScript UDF transform (udf_code, udf_function), making the topic when missing. Cloud Storage reads a Stuntman storage container of the bucket's name; MSK and Confluent read the Streams (Kafka) topic.", |ctx, a| async move {
+        Tool::new("set_pubsub_topic", "Sets a topic's ingestion source (kind aws_kinesis, cloud_storage, azure_event_hubs, aws_msk, confluent_cloud with that source's fields) and/or a JavaScript UDF transform (udf_code, udf_function), making the topic when missing. Cloud Storage reads a Stuntman storage container of the bucket's name; MSK and Confluent read the Streams (Kafka) topic; Kinesis reads the Stuntman Kinesis stream its stream_arn names, from TRIM_HORIZON.", |ctx, a| async move {
             let t = resolve(&ctx, &a, "topic", "topics").await?;
             store::create_topic(&ctx, &store::bare(&t)).await?;
             let mut topic = store::topic(&ctx, &t).await?.ok_or_else(|| ApiError::not_found(format!("No topic {t}")))?;

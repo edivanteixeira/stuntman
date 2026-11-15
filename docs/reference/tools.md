@@ -5,7 +5,7 @@ Every action in Stuntman is one tool. Each tool is an **MCP tool** (same name) a
 
 _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit by hand._
 
-**376 tools** in 16 areas.
+**382 tools** in 17 areas.
 
 - [Environments and timeline](#environments-and-timeline) · 12 tools
 - [Email and mailboxes](#email-and-mailboxes) · 39 tools
@@ -20,6 +20,7 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 - [Files (FTP, SFTP)](#files-ftp-sftp) · 8 tools
 - [Streams (Kafka, Schema Registry)](#streams-kafka-schema-registry) · 10 tools
 - [Pub/Sub (Google Cloud)](#pub-sub-google-cloud) · 14 tools
+- [Kinesis (Amazon Kinesis Data Streams)](#kinesis-amazon-kinesis-data-streams) · 6 tools
 - [Secrets (Key Vault)](#secrets-key-vault) · 31 tools
 - [Webhook inboxes](#webhook-inboxes) · 9 tools
 - [Telemetry (OpenTelemetry)](#telemetry-opentelemetry) · 25 tools
@@ -395,10 +396,21 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `list_pubsub_bigtable_rows` | `GET /api/pubsub/bigtable` | — | table, subscription, limit | The rows Bigtable subscriptions wrote (Stuntman keeps the tables): row key subscription#salt#message_id (or the delimited key), the data in family data (qualifier ""), and with write_metadata the pubsub_metadata family (subscription_name, message_id, publish_time, attributes, ordering_key). |
 | `set_pubsub_bigtable_table` | `PUT /api/pubsub/bigtable/tables/{table}` | table, row_key_schema | — | Defines a Bigtable table's row key schema for Bigtable subscriptions with row_key_schema: fields [{name, type STRING \| INT64 \| BYTES}] taken from the message's JSON, encoding singleton, delimited_bytes (delimiter, default #) or ordered_code_bytes. |
 | `set_pubsub_bigquery_table` | `PUT /api/pubsub/bigquery/tables/{table}` | table, schema | — | Defines a BigQuery table's schema for BigQuery subscriptions: columns [{name, type, mode}] (STRING, BYTES, INTEGER, FLOAT, NUMERIC, BOOLEAN, TIMESTAMP, DATE, JSON, RECORD; NULLABLE, REQUIRED, REPEATED). With it, use_table_schema maps the message's JSON fields to columns, drop_unknown_fields drops extras, and a row that does not fit is not written (retried, then dead-lettered). |
-| `set_pubsub_topic` | `PUT /api/pubsub/topics/{topic}` | topic | ingestion, udf_code, udf_function, project | Sets a topic's ingestion source (kind aws_kinesis, cloud_storage, azure_event_hubs, aws_msk, confluent_cloud with that source's fields) and/or a JavaScript UDF transform (udf_code, udf_function), making the topic when missing. Cloud Storage reads a Stuntman storage container of the bucket's name; MSK and Confluent read the Streams (Kafka) topic. |
+| `set_pubsub_topic` | `PUT /api/pubsub/topics/{topic}` | topic | ingestion, udf_code, udf_function, project | Sets a topic's ingestion source (kind aws_kinesis, cloud_storage, azure_event_hubs, aws_msk, confluent_cloud with that source's fields) and/or a JavaScript UDF transform (udf_code, udf_function), making the topic when missing. Cloud Storage reads a Stuntman storage container of the bucket's name; MSK and Confluent read the Streams (Kafka) topic; Kinesis reads the Stuntman Kinesis stream its stream_arn names, from TRIM_HORIZON. |
 | `pubsub_ingest` | `POST /api/pubsub/topics/{topic}/ingest` | topic, records | project | Feeds records into an import topic as its source would: records [{data, key, attributes}] — Kafka (MSK, Confluent): value → data, key → ordering key, headers → attributes; Kinesis: partition key → ordering key; Event Hubs: partition key → ordering key, properties → attributes; Cloud Storage: each record one text line. They go through the topic's transforms and schema. |
 | `wait_for_pubsub_message` | `GET /api/pubsub/topics/{topic}/wait` | topic | contains, attributes, ordering_key, since, timeout, project | Waits for the first message the app published (not you or an agent) on a topic that matches: text in the data, attributes, ordering key. Looks back 15 s by default; 408 after the timeout. |
 | `set_pubsub` | `PUT /api/pubsub/config` | — | project, provoke, times, topic, delay_ms | Pub/Sub settings: project (for short names) and a provocation on Publish: unavailable, deadline_exceeded, resource_exhausted, not_found, slow_publish (delay_ms), duplicate (each message delivered again after its first ack); times = for the next N publishes (0 = until cleared), topic = only that topic; none clears. |
+
+## Kinesis (Amazon Kinesis Data Streams)
+
+| Tool | HTTP | Required | Optional | What it does |
+|---|---|---|---|---|
+| `list_kinesis_streams` | `GET /api/kinesis/streams` | — | — | The Kinesis streams of this environment: mode, retention, shards (hash key range, sequence range, parent shards, open or closed, records), enhanced fan-out consumers, tags; how to connect; the provocation. |
+| `create_kinesis_stream` | `PUT /api/kinesis/streams/{name}` | name | shards, mode | Creates a stream: shards = N for provisioned mode (hash key space split evenly), or mode = on_demand (4 shards). |
+| `list_kinesis_records` | `GET /api/kinesis/streams/{stream}/records` | stream | shard, limit, since | The newest records of a stream (or one shard): shard, sequence number, partition key, data (JSON or text), who put it, when. |
+| `kinesis_put` | `POST /api/kinesis/streams/{stream}/records` | stream, data | partition_key, explicit_hash_key | Puts a record as another producer would: data (JSON or text), partition_key (MD5 of it picks the shard), explicit_hash_key to choose the shard. The app's consumers read it. |
+| `wait_for_kinesis_record` | `GET /api/kinesis/streams/{stream}/wait` | stream | contains, partition_key, since, timeout | Waits for the first record the app put (not you or an agent) on a stream that matches: text in the data, partition key. Looks back 15 s by default; 408 after the timeout. |
+| `set_kinesis` | `PUT /api/kinesis/config` | provoke | times, stream, delay_ms | A provocation on the Kinesis endpoint: throughput_puts, throughput_gets (ProvisionedThroughputExceededException), not_found (ResourceNotFoundException), expired_iterator, kms_throttling, slow_puts (delay_ms), partial_failures (PutRecords fails every second record); times = for the next N calls (0 = until cleared), stream = only that stream; none clears. reshard splits the stream's widest open shard now. |
 
 ## Secrets (Key Vault)
 

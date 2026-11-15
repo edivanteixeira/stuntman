@@ -2,10 +2,10 @@
 
 > The stunt double for every provider your app calls: SMS, WhatsApp, email (SMTP, SendGrid, IMAP, POP3), storage
 > (Azure Blob, S3), file servers (FTP, FTPS, SFTP), queues (Service Bus, RabbitMQ, ActiveMQ over OpenWire), Kafka
-> and Schema Registry, Google Cloud Pub/Sub, identity (OIDC, OAuth2, SAML, LDAP, Bot Framework), secrets, AI model APIs (OpenAI, Azure OpenAI, Anthropic,
+> and Schema Registry, Google Cloud Pub/Sub, Amazon Kinesis, identity (OIDC, OAuth2, SAML, LDAP, Bot Framework), secrets, AI model APIs (OpenAI, Azure OpenAI, Anthropic,
 > Gemini, OpenRouter, DeepSeek), product analytics (PostHog, Segment, Mixpanel, GA4), webhooks, telemetry (OTLP,
 > GELF, StatsD) and any REST, GraphQL or SOAP API. It answers like the provider, keeps state, sends callbacks and
-> fails on cue. Every action (376 tools) is an MCP tool (streamable HTTP at /mcp) and an HTTP route under /api. Open
+> fails on cue. Every action (382 tools) is an MCP tool (streamable HTTP at /mcp) and an HTTP route under /api. Open
 > source, Apache-2.0.
 
 To set Stuntman up for a project, read and follow the agent setup guide step by step:

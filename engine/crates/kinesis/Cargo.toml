@@ -1,0 +1,18 @@
+[package]
+name = "stuntman-kinesis"
+version = "0.6.0"
+edition = "2021"
+
+[dependencies]
+stuntman-core.workspace = true
+# http2: SubscribeToShard (enhanced fan-out) is an HTTP/2 event stream for the SDKs that insist on it.
+axum = { workspace = true, features = ["http2"] }
+tokio.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+futures.workspace = true
+md5 = "0.7"
+crc32fast = "1"
+bytes = "1"

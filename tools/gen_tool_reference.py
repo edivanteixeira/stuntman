@@ -20,6 +20,7 @@ AREAS = [  # (crate, title, file globs)
     ("files", "Files (FTP, SFTP)", ["crates/files/src/tools.rs"]),
     ("streams", "Streams (Kafka, Schema Registry)", ["crates/streams/src/tools.rs"]),
     ("pubsub", "Pub/Sub (Google Cloud)", ["crates/pubsub/src/tools.rs"]),
+    ("kinesis", "Kinesis (Amazon Kinesis Data Streams)", ["crates/kinesis/src/tools.rs"]),
     ("keyvault", "Secrets (Key Vault)", ["crates/keyvault/src/tools.rs"]),
     ("webhook", "Webhook inboxes", ["crates/webhook/src/tools.rs"]),
     ("telemetry", "Telemetry (OpenTelemetry)", ["crates/telemetry/src/tools.rs"]),

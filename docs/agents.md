@@ -126,7 +126,7 @@ The tools it will use:
 
 ## Tools by intent
 
-A sample; the full list of 376 is in the [tool reference](reference/tools.md).
+A sample; the full list of 382 is in the [tool reference](reference/tools.md).
 
 | Intent | Tools |
 |---|---|

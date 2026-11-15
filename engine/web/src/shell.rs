@@ -9,7 +9,7 @@ use leptos_router::{
 };
 use serde_json::Value;
 
-use crate::{ai, api, apis, catalog, email, events, ftp, pubsub, sms, streams, environments, identity, keyvault, messaging, storage, telemetry, timeline, ui, webhook, whatsapp};
+use crate::{ai, api, apis, catalog, email, events, ftp, kinesis, pubsub, sms, streams, environments, identity, keyvault, messaging, storage, telemetry, timeline, ui, webhook, whatsapp};
 
 #[component]
 pub fn App() -> impl IntoView {
@@ -82,6 +82,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/ftp") view=ftp::Files/>
                     <Route path=path!("/streams") view=streams::Streams/>
                     <Route path=path!("/pubsub") view=pubsub::PubSub/>
+                    <Route path=path!("/kinesis") view=kinesis::Kinesis/>
                     <Route path=path!("/mailboxes") view=email::mailboxes::Mailboxes/>
                     <Route path=path!("/identity/protocols") view=identity::protocols::Protocols/>
                     <Route path=path!("/catalog") view=catalog::Store/>
@@ -138,7 +139,7 @@ pub fn App() -> impl IntoView {
 /// the page's own column, with + New on top), then environments and settings. "" = not in this build.
 // Scenarios (B5/B6) is designed but deferred (2026-11-13): it comes back here when built.
 const TOP: [(&str, &str); 2] = [("Timeline", "/timeline"), ("Unmatched", "/apis/unmatched")];
-const KINDS: [(&str, &str); 15] = [("E-mail", "/notifications"), ("WhatsApp", "/whatsapp"), ("SMS", "/sms"), ("Storage", "/files"), ("Queues", "/queues"), ("Streams", "/streams"), ("Pub/Sub", "/pubsub"), ("Files", "/ftp"), ("Key Vault", "/secrets"), ("Identity", "/identity"),
+const KINDS: [(&str, &str); 16] = [("E-mail", "/notifications"), ("WhatsApp", "/whatsapp"), ("SMS", "/sms"), ("Storage", "/files"), ("Queues", "/queues"), ("Streams", "/streams"), ("Pub/Sub", "/pubsub"), ("Kinesis", "/kinesis"), ("Files", "/ftp"), ("Key Vault", "/secrets"), ("Identity", "/identity"),
     ("HTTP APIs", "/apis"), ("AI models", "/ai"), ("Events", "/events"), ("Webhooks", "/inboxes/webhooks"), ("Telemetry", "/telemetry")];
 const BOTTOM: [(&str, &str); 3] = [("Environments", "/environments"), ("Catalog", "/catalog"), ("Settings", "")];
 
@@ -151,6 +152,7 @@ fn rail_on(path: &str) -> &'static str {
     else if any(&["/notifications", "/inboxes", "/services/email", "/mailboxes"]) { "E-mail" }
     else if any(&["/streams"]) { "Streams" }
     else if any(&["/pubsub"]) { "Pub/Sub" }
+    else if any(&["/kinesis"]) { "Kinesis" }
     else if any(&["/ftp"]) { "Files" }
     else if any(&["/ai"]) { "AI models" }
     else if any(&["/events"]) { "Events" }

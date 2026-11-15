@@ -392,10 +392,42 @@ expiry, snapshots, schemas, BigQuery tables), `list_pubsub_messages`, `pubsub_pu
 `set_pubsub`. Short names (`shipments`) find the topic of that
 name, else use the `project` of `set_pubsub` (`acme-stg`). In the web UI: **Pub/Sub**.
 
-Limits: Kinesis and Event Hubs have no Stuntman backend, so those import topics only get what `pubsub_ingest` feeds;
+Limits: an Amazon Kinesis import topic reads the [Kinesis](#kinesis) stream its `stream_arn` names, from TRIM_HORIZON
+(partition key → ordering key; STREAM_NOT_FOUND when there is no such stream); Event Hubs has no Stuntman backend, so
+those import topics only get what `pubsub_ingest` feeds;
 AI inference has no 60-second timeout to hit: the simulator answers
 in process (force `slow` for a slow model). The KMS key and message storage policy have no effect. The minimums Pub/Sub
 sets on Cloud Storage `max_messages` and `max_duration` are not enforced, so tests can use small batches.
+
+## Kinesis
+
+| | |
+|---|---|
+| **Speaks** | Amazon Kinesis Data Streams on `:4567`: AWS JSON 1.1 (`X-Amz-Target: Kinesis_20131202.*`) and the CBOR (`application/x-amz-cbor-1.1`) the AWS SDK for Java sends by default; SigV4 accepted with any key, the region taken from the signature. CreateStream (provisioned or on-demand), DeleteStream, DescribeStream, DescribeStreamSummary, ListStreams, ListShards (with shard filters), PutRecord, PutRecords, GetShardIterator (TRIM_HORIZON, LATEST, AT/AFTER_SEQUENCE_NUMBER, AT_TIMESTAMP), GetRecords (MillisBehindLatest, NextShardIterator, ChildShards), SplitShard, MergeShards, UpdateShardCount, Increase/DecreaseStreamRetentionPeriod, Add/Remove/ListTagsForStream and the resource-ARN tag calls, Register/List/Describe/DeregisterStreamConsumer, SubscribeToShard (enhanced fan-out, an event stream over HTTP/1.1 or HTTP/2), DescribeLimits |
+| **Point your app at** | `AWS_ENDPOINT_URL_KINESIS=http://localhost:4567` (or the client's `endpoint_url` / `ServiceURL` / `endpointOverride`), any access key and secret, any region |
+| **It keeps** | streams with mode, retention, tags and shards (hash key range, sequence number range, parent and adjacent parent after a split or merge), every record with its partition key, shard, sequence number, arrival time and who put it (`app` or you), enhanced fan-out consumers; the provocation in `kinesis/config.yaml` |
+| **You can provoke** | `set_kinesis` with `provoke`: `throughput_puts`, `throughput_gets` (ProvisionedThroughputExceededException; the SDKs retry), `not_found` (ResourceNotFoundException), `expired_iterator`, `kms_throttling` (KMSThrottlingException), `slow_puts` (`delay_ms`, 3 s), `partial_failures` (PutRecords fails every second record); `times` limits it to the next N calls, `stream` to one stream; `reshard` splits the stream's widest open shard now |
+
+The partition key's MD5, read as a 128-bit number, picks the open shard whose hash key range holds it (or
+`ExplicitHashKey` does). Shards of a new stream split the key space evenly; on-demand streams have 4. A split or merge
+closes the parent at the stream's last sequence number: reading it to its end gives no `NextShardIterator` and lists
+its `ChildShards`, new records go to the children. Iterators expire after 5 minutes and records after the retention
+period, both on the environment clock (`advance_clock`). One port serves every environment: the default one answers.
+
+```text
+create_kinesis_stream {"name": "shipments", "shards": 2}
+kinesis_put           {"stream": "shipments", "data": {"shipment": "SHP-1042", "status": "DELIVERED"}, "partition_key": "SHP-1042"}
+set_kinesis           {"provoke": "throughput_puts", "times": 2, "stream": "shipments"}
+wait_for_kinesis_record {"stream": "shipments", "contains": "SHP-1042"}
+```
+
+Tools: `list_kinesis_streams`, `create_kinesis_stream`, `list_kinesis_records`, `kinesis_put`,
+`wait_for_kinesis_record`, `set_kinesis`. In the web UI: **Kinesis**. A Pub/Sub import topic whose
+`aws_kinesis.stream_arn` names one of these streams reads it ([Pub/Sub](#pubsub)).
+
+Limits: the real per-shard limits (1 MB/s or 1,000 records/s in, 2 MB/s out, 5 GetRecords/s) are not enforced, only
+provoked; streams are ACTIVE at once (no CREATING/UPDATING); server-side encryption, enhanced monitoring and
+UpdateStreamMode are not offered; the account is always `000000000000`.
 
 ## Identity
 

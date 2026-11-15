@@ -79,13 +79,15 @@ pub fn open(name: &str) -> Result<Ctx, ApiError> {
     };
     ctx.db.migrate(stuntman_core::trips::SQL).map_err(|e| ApiError::internal(e.to_string()))?;
     stuntman_core::trips::upgrade(&ctx.db);
+    ctx.db.migrate(stuntman_core::usage::SQL).map_err(|e| ApiError::internal(e.to_string()))?;
     {
-        // The heartbeat: a gap between two runs' beats is "Stuntman was offline".
+        // The heartbeat: a gap between two runs' beats is "Stuntman was offline". It also writes the usage counts.
         let c = ctx.clone();
         let start = util::now_ms();
         tokio::spawn(async move {
             loop {
                 if stuntman_core::trips::beat(&c, start).await.is_err() { break; }
+                let _ = stuntman_core::usage::flush(&c).await;
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 if !srv().envs.all().iter().any(|e| e.env == c.env) { break; }
             }

@@ -222,7 +222,7 @@ pub fn NewService() -> impl IntoView {
                     }}
                 </div>
                 <div class="caps" style="margin:28px 0 12px">"Or start empty"</div>
-                <div class="callout" style="max-width:900px"><div class="t2">"Answers 200 to every call and records it. Build its routes from Unmatched or in the route editor."</div>
+                <div class="callout" style="max-width:900px"><div class="t2">"Answers 200 to every call and records it. Build its routes from Not answered (Timeline) or in the route editor."</div>
                     <div class="row" style="margin-top:10px"><span class="small cap">"Name"</span>
                         <input class="input mono" style="width:240px" placeholder="payments-partner" prop:value=move || empty_name.get() on:input=move |e| empty_name.set(event_target_value(&e).trim().to_lowercase())/>
                         <button class="btn primary" disabled=move || empty_name.get().is_empty() on:click=move |_| i2("empty".into(), empty_name.get_untracked())>"Create"</button></div></div>

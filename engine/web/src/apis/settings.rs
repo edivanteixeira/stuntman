@@ -103,13 +103,13 @@ pub fn Settings() -> impl IntoView {
                             <a class="link" style="display:inline-block;margin-top:8px" href=answers>"Edit the data in Answers ›"</a>
                             <SigningClock service=service.get() plugin=pl.clone()/>
                             <div class="caps" style="margin:28px 0 8px">"Remove"</div>
-                            <div class="small t2">"Calls to this service become Unmatched. The plugin file is deleted from this environment."</div>
+                            <div class="small t2">"Calls to this service become Not answered. The plugin file is deleted from this environment."</div>
                             <button class="btn danger" style="margin-top:10px" on:click=move |_| remove.set(true)>"Remove this service"</button>
                         }
                     }}
                 </div>
             </div>
-            <Confirm open=remove question=Signal::derive(move || format!("Remove {}?", service.get())) detail=Signal::derive(|| "Calls to it become Unmatched; the plugin file is deleted from this environment.".to_string())
+            <Confirm open=remove question=Signal::derive(move || format!("Remove {}?", service.get())) detail=Signal::derive(|| "Calls to it become Not answered; the plugin file is deleted from this environment.".to_string())
                 action="Remove" on_yes=Callback::new(do_remove)/>
         </div>
     }

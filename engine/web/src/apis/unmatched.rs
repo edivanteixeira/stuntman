@@ -12,6 +12,17 @@ use crate::{
     ui,
 };
 
+/// Drafts a route from a request no route took and opens it in its service's routes.
+pub fn make_route(nav: impl Fn(&str, leptos_router::NavigateOptions) + 'static, id: String) {
+    leptos::task::spawn_local(async move {
+        match api::send("POST", &format!("/apis/unmatched/{}/route", enc(&id)), json!({})).await {
+            Ok(v) if !s(&v, "service").is_empty() => nav(&format!("/apis/{}/routes?draft={}", enc(&s(&v, "service")), enc(&id)), Default::default()),
+            Ok(_) => ui::toast_err("No plugin answers this host: install one from the catalog, or an empty one that records"),
+            Err(e) => ui::toast_err(e),
+        }
+    });
+}
+
 #[component]
 pub fn Unmatched() -> impl IntoView {
     let live = expect_context::<api::Live>();
@@ -53,16 +64,7 @@ pub fn Unmatched() -> impl IntoView {
     });
     let create = {
         let nav = nav.clone();
-        move |id: String| {
-            let nav = nav.clone();
-            leptos::task::spawn_local(async move {
-                match api::send("POST", &format!("/apis/unmatched/{}/route", enc(&id)), json!({})).await {
-                    Ok(v) if !s(&v, "service").is_empty() => nav(&format!("/apis/{}/routes?draft={}", enc(&s(&v, "service")), enc(&id)), Default::default()),
-                    Ok(_) => ui::toast_err("No plugin answers this host: install one from the catalog, or an empty one that records"),
-                    Err(e) => ui::toast_err(e),
-                }
-            });
-        }
+        move |id: String| make_route(nav.clone(), id)
     };
     let ignore = move |id: String| leptos::task::spawn_local(async move {
         match api::send("POST", &format!("/apis/unmatched/{}/ignore", enc(&id)), json!({})).await { Ok(_) => { sel.set(Value::Null); ui::toast("Ignored; still answered 404") } Err(e) => ui::toast_err(e) }
@@ -75,7 +77,7 @@ pub fn Unmatched() -> impl IntoView {
                     <div class="caps section" style="padding:18px 24px 8px">"Group by"</div>
                     {[("path", "Path"), ("service", "Service"), ("caller", "Caller"), ("host", "Host")].into_iter().map(|(v, l)| view! {
                         <div class="crow" class:on=move || group.get() == v on:click=move |_| group.set(v.into())><span>{l}</span></div> }).collect_view()}
-                    <div class="small cap" style="padding:16px 24px">"An unmatched request reached Stuntman but no route of any plugin took it. Stuntman answered 404 “no route” and kept it here."</div>
+                    <div class="small cap" style="padding:16px 24px">"A request not answered reached Stuntman but no route of any plugin took it. Stuntman answered 404 “no route” and kept it here."</div>
                 </div>
                 <div class="pane files">
                     <div class="caps" style="padding:18px 24px 8px">"Reached Stuntman, no route"</div>

@@ -686,6 +686,7 @@ async fn conn(ctx: Ctx, mut sock: tokio::net::TcpStream) {
         let mut r = R::new(&buf);
         let (Ok(api), Ok(v), Ok(corr)) = (r.i16(), r.i16(), r.i32()) else { break };
         let client = r.nstr().ok().flatten().unwrap_or_default();
+        stuntman_core::usage::hit(&ctx, "streams");
         if c.client.is_empty() && !client.is_empty() {
             c.client = client.clone();
             ctx.live.seen(&client, "Streams");

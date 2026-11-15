@@ -29,11 +29,13 @@ pub struct Client {
 pub struct Live {
     tx: broadcast::Sender<Change>,
     clients: Arc<Mutex<BTreeMap<String, Client>>>,
+    /// Calls per service kind, not yet written (see `usage`).
+    pub usage: crate::usage::Counter,
 }
 
 impl Default for Live {
     fn default() -> Self {
-        Self { tx: broadcast::channel(1024).0, clients: Default::default() }
+        Self { tx: broadcast::channel(1024).0, clients: Default::default(), usage: Default::default() }
     }
 }
 
@@ -44,9 +46,13 @@ impl Live {
     pub fn subscribe(&self) -> broadcast::Receiver<Change> {
         self.tx.subscribe()
     }
+    /// A client called: it joins the Connected list and counts one call of its service kind.
     pub fn seen(&self, name: &str, via: &str) {
         let c = Client { name: name.into(), via: via.into(), last_seen: crate::util::now_ms() };
         self.clients.lock().unwrap().insert(format!("{via}:{name}"), c);
+        if let Some(k) = crate::usage::kind_of_via(via) {
+            self.usage.hit(k);
+        }
     }
     /// Clients seen in the last 10 minutes.
     pub fn clients(&self) -> Vec<Client> {

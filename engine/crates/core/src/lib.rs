@@ -14,6 +14,7 @@ pub mod netserve;
 pub mod store;
 pub mod tools;
 pub mod trips;
+pub mod usage;
 pub mod util;
 pub mod yamlfile;
 

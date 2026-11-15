@@ -587,6 +587,7 @@ impl Subscriber for Svc {
     async fn pull(&self, r: Request<PullRequest>) -> Result<Resp<PullResponse>, Status> {
         let ctx = self.ctx(&r)?;
         let q = r.into_inner();
+        stuntman_core::usage::hit(&ctx, "pubsub");
         let s = need_sub(&ctx, &q.subscription).await?;
         pullable(&s)?;
         store::seen(&ctx, &s.name).await.map_err(int)?;
@@ -611,6 +612,7 @@ impl Subscriber for Svc {
     async fn streaming_pull(&self, r: Request<Streaming<StreamingPullRequest>>) -> Result<Resp<tonic::codegen::BoxStream<StreamingPullResponse>>, Status> {
         let ctx = self.ctx(&r)?;
         let mut inb = r.into_inner();
+        stuntman_core::usage::hit(&ctx, "pubsub");
         let first = inb.message().await?.ok_or_else(|| Status::invalid_argument("The first StreamingPullRequest must name a subscription."))?;
         let s = need_sub(&ctx, &first.subscription).await?;
         pullable(&s)?;

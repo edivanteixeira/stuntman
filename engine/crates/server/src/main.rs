@@ -270,6 +270,19 @@ async fn main() {
             environments::sweep().await;
         }
     });
+    // Ctrl-C or a container stop: write the usage counts the heartbeat has not written yet.
+    tokio::spawn(async {
+        #[cfg(unix)]
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM");
+        #[cfg(unix)]
+        tokio::select! { _ = tokio::signal::ctrl_c() => {} _ = term.recv() => {} }
+        #[cfg(not(unix))]
+        let _ = tokio::signal::ctrl_c().await;
+        for c in srv().envs.all() {
+            let _ = stuntman_core::usage::flush(&c).await;
+        }
+        std::process::exit(0);
+    });
 
     let root_router = Router::new().fallback(dispatch);
     println!("Stuntman {} · environments {} · http://localhost:{port} · MCP http://localhost:{port}/mcp (others: /e/<name>/mcp) · data {}", env!("CARGO_PKG_VERSION"), names.join(", "), root.display());

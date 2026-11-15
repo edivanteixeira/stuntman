@@ -264,6 +264,7 @@ async fn deliver(conn: Arc<Conn>, ch: u16, handle: u32, ctx: Ctx, ns: String, hu
             continue;
         }
         let evs = eh::read(&ctx, &ns, &hub, part, cur, credit.min(100) as usize).await.unwrap_or_default();
+        if !evs.is_empty() { stuntman_core::usage::hit(&ctx, "queues"); }
         if evs.is_empty() {
             if drain {
                 let dc = {
@@ -315,6 +316,7 @@ pub(super) async fn publish(conn: &Arc<Conn>, ch: u16, p: &Partial, msg: Message
 }
 
 async fn accept(conn: &Conn, ctx: &Ctx, n: &eh::Namespace, p: &Partial, msg: Message<Body<Value>>, hub: &str, part: Option<u32>) -> Result<(), (&'static str, String)> {
+    stuntman_core::usage::hit(ctx, "queues");
     let h = n.hub(hub).cloned().ok_or_else(|| ("amqp:not-found", eh::not_found_text(&n.namespace, hub)))?;
     if n.provoke.slow_sends_ms > 0 {
         tokio::time::sleep(std::time::Duration::from_millis(n.provoke.slow_sends_ms)).await;

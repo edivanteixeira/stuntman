@@ -5,9 +5,9 @@ Every action in Stuntman is one tool. Each tool is an **MCP tool** (same name) a
 
 _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit by hand._
 
-**388 tools** in 17 areas.
+**389 tools** in 17 areas.
 
-- [Environments and timeline](#environments-and-timeline) · 12 tools
+- [Environments and timeline](#environments-and-timeline) · 13 tools
 - [Email and mailboxes](#email-and-mailboxes) · 39 tools
 - [SMS](#sms) · 17 tools
 - [WhatsApp](#whatsapp) · 28 tools
@@ -41,6 +41,7 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `timeline` | `GET /api/timeline` | — | range, to, from, sel_from, sel_to, service, who, show, q, limit, buckets | Everything that reached this environment's services in a window: rows (newest first), counts per service and per actor, activity lanes, and offline gaps. |
 | `get_timeline_row` | `GET /api/timeline/{id}` | id | — | One Timeline row and the rest of its journey (rows with the same trace id). |
 | `wait_for_timeline` | `POST /api/timeline/wait` | — | service, who, show, q, since, timeout | Waits until a row that matches appears (after `since`, default now) and returns it; 408 after the timeout. |
+| `usage` | `GET /api/usage` | — | — | Which services this environment's apps use: per service kind (email, whatsapp, sms, storage, queues, streams, pubsub, kinesis, files, keyvault, identity, apis, ai, events, webhooks, telemetry) the calls today and in the last 7 days, the last call, and live (a call in the last 5 minutes). Your own tool calls do not count. |
 
 ## Email and mailboxes
 

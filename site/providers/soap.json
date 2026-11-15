@@ -1,0 +1,373 @@
+{
+ "id": "soap",
+ "order": 2,
+ "name": "SOAP",
+ "color": "blue",
+ "tagline": "Give Stuntman the provider's WSDL and it answers like the SOAP endpoint: operations, XSD checks, faults, WS-Security and XML signatures.",
+ "stands_in_for": [
+  "SOAP 1.1 and 1.2 services (WSDL 1.1)",
+  "WS-Security UsernameToken",
+  "XML signatures (XMLDSig)",
+  "ICP-Brasil style e-CNPJ and e-CPF certificates",
+  "mTLS gateways",
+  "Fiscal web services such as NF-e events"
+ ],
+ "point": [
+  [
+   "Endpoint",
+   "http://localhost:8028/example-insurance/PolicyService"
+  ],
+  [
+   "WSDL",
+   "the same address with ?wsdl (XSDs served too)"
+  ],
+  [
+   "Real host",
+   "the WSDL's soap:address host on :8443, Test CA trusted"
+  ]
+ ],
+ "capabilities": [
+  {
+   "title": "Service from a WSDL",
+   "text": "A URL, a file or the text: one operation per WSDL operation, a default answer from the response type, each declared fault as a named answer."
+  },
+  {
+   "title": "Picks the operation",
+   "text": "By SOAPAction (1.1 header or 1.2 action), or by the element in soap:Body. Unknown operations go to Unmatched with the envelope."
+  },
+  {
+   "title": "Checks bodies against XSD",
+   "text": "Missing fields, wrong types and unknown elements get the provider's Sender fault naming the field."
+  },
+  {
+   "title": "Faults are answers",
+   "text": "A fault has a code (Sender or Receiver), a reason template and a detail element. It goes out with HTTP 500, as real stacks send it."
+  },
+  {
+   "title": "WS-Security",
+   "text": "UsernameToken present (any) or with matching user and password; a wrong one gets the security-token fault."
+  },
+  {
+   "title": "XML signatures",
+   "text": "Checks each enveloped ds:Signature (RSA-SHA1 or SHA256, C14N) and signs an element of the answers with the service's own e-CNPJ."
+  },
+  {
+   "title": "mTLS with a CNPJ",
+   "text": "On :8443 the app's certificate must be signed by the Test CA, valid and carry a CNPJ; steps read it as client_cnpj."
+  },
+  {
+   "title": "Callbacks as SOAP",
+   "text": "send steps post an envelope with the callback's SOAPAction; send_callback calls the app's endpoint on demand."
+  },
+  {
+   "title": "Re-import keeps your work",
+   "text": "A new WSDL adds operations with default answers; your steps, answers, data and security stay."
+  }
+ ],
+ "excerpts": [
+  {
+   "frame": 40804,
+   "crop": [
+    472,
+    90,
+    968,
+    560
+   ],
+   "title": "Operations from the WSDL, with their steps",
+   "callouts": [
+    {
+     "x": 580,
+     "y": 155,
+     "title": "One per WSDL operation",
+     "text": "Each with its SOAPAction and calls today; the request and response types come from the WSDL."
+    },
+    {
+     "x": 860,
+     "y": 240,
+     "title": "Receive",
+     "text": "The envelope is checked against the WSDL's XSD and the WS-Security UsernameToken."
+    },
+    {
+     "x": 860,
+     "y": 480,
+     "title": "Decide",
+     "text": "First match wins: a cargo value over the limit gets the coverage_exceeded fault."
+    },
+    {
+     "x": 545,
+     "y": 435,
+     "title": "Re-import WSDL",
+     "text": "Reads a new WSDL and keeps your steps; the served WSDL is one click away."
+    },
+    {
+     "x": 590,
+     "y": 535,
+     "title": "Operation it lacks",
+     "text": "A call for an operation the WSDL does not have gets a Sender fault and shows in Unmatched."
+    }
+   ]
+  },
+  {
+   "frame": 41056,
+   "crop": [
+    472,
+    90,
+    968,
+    560
+   ],
+   "title": "A fault is a named answer",
+   "callouts": [
+    {
+     "x": 590,
+     "y": 168,
+     "title": "Faults from the WSDL",
+     "text": "Declared faults arrive as answers, next to each operation's default response."
+    },
+    {
+     "x": 1150,
+     "y": 146,
+     "title": "Response or Fault",
+     "text": "The same answer editor; Fault adds code, reason and detail."
+    },
+    {
+     "x": 815,
+     "y": 223,
+     "title": "Code and status",
+     "text": "Sender or Receiver (Client and Server for SOAP 1.1), sent with HTTP 500 unless you set another."
+    },
+    {
+     "x": 960,
+     "y": 410,
+     "title": "Detail from the XSD",
+     "text": "The fault's detail element is a template, checked against the WSDL's fault type."
+    },
+    {
+     "x": 1320,
+     "y": 330,
+     "title": "What the app gets",
+     "text": "The whole envelope in the call's SOAP version, filled from the last call."
+    }
+   ]
+  },
+  {
+   "frame": 74318,
+   "crop": [
+    472,
+    220,
+    968,
+    580
+   ],
+   "title": "mTLS, ICP certificates and XML signatures",
+   "callouts": [
+    {
+     "x": 510,
+     "y": 262,
+     "title": "Require a client certificate",
+     "text": "On HTTPS a missing certificate fails the handshake; one not signed by the Test CA is refused."
+    },
+    {
+     "x": 505,
+     "y": 396,
+     "title": "Must carry a CNPJ",
+     "text": "ICP-Brasil style: the certificate needs OID 2.16.76.1.3.3. An e-CPF or an expired one fails."
+    },
+    {
+     "x": 505,
+     "y": 470,
+     "title": "Check each request's signature",
+     "text": "A tampered or unsigned document gets the signature_invalid answer, or a Sender fault."
+    },
+    {
+     "x": 715,
+     "y": 517,
+     "title": "Sign the answers",
+     "text": "The named element of each answer is signed with the service's own certificate. Faults are not signed."
+    },
+    {
+     "x": 580,
+     "y": 751,
+     "title": "Test certificates",
+     "text": "Synthetic e-CNPJ or e-CPF as .pfx and PEM; ask for an expired or untrusted one on purpose."
+    }
+   ]
+  }
+ ],
+ "provoke": [
+  {
+   "name": "A declared fault",
+   "what": "Any fault the WSDL declares, on the next calls",
+   "how": "force_answer coverage_exceeded, or a decide rule"
+  },
+  {
+   "name": "A fault it does not declare",
+   "what": "A new fault with your code, reason and detail",
+   "how": "set_answer fault={code, reason}"
+  },
+  {
+   "name": "Validation fault",
+   "what": "A body that breaks the XSD gets the provider's Sender fault naming the field",
+   "how": "send a bad body, or tighten types"
+  },
+  {
+   "name": "VersionMismatch",
+   "what": "A SOAP 1.1 envelope sent to a 1.2 service, or the reverse",
+   "how": "soap.version in the plugin"
+  },
+  {
+   "name": "Refused credentials",
+   "what": "The security token could not be authenticated or authorized",
+   "how": "security: username_token and a wrong password"
+  },
+  {
+   "name": "Refused XML signature",
+   "what": "A missing, broken or tampered ds:Signature",
+   "how": "set_service xml_signature_check"
+  },
+  {
+   "name": "Refused client certificate",
+   "what": "No certificate, an e-CPF, an expired or an untrusted one fails the handshake",
+   "how": "set_service client_certificate_icp + new_test_certificate"
+  },
+  {
+   "name": "Server fault",
+   "what": "500 goes out as a Receiver fault",
+   "how": "force_answer 500"
+  },
+  {
+   "name": "Slow or dropped",
+   "what": "Latency, reset, empty, timeout, 503 or an HTML page",
+   "how": "force_answer, set_service latency"
+  },
+  {
+   "name": "Unknown operation",
+   "what": "A SOAPAction the WSDL lacks gets a Sender fault and lands in Unmatched",
+   "how": "call it; list_unmatched"
+  }
+ ],
+ "advantages": [
+  {
+   "title": "No provider copy needed",
+   "text": "The WSDL is enough: no recording, no running SOAP stack, no VPN to a homologation server."
+  },
+  {
+   "title": "Every fault on demand",
+   "text": "Faults that a test environment almost never returns come on the next call, then stop."
+  },
+  {
+   "title": "Certificates without paperwork",
+   "text": "Synthetic e-CNPJ and e-CPF test certificates in one call, valid, expired or untrusted."
+  },
+  {
+   "title": "Envelopes you can read",
+   "text": "Each call shows the operation picked, the checks it passed and the raw envelopes in and out."
+  }
+ ],
+ "agent": {
+  "prompt": "Stand in for the insurer's SOAP service from its WSDL and check how we handle the coverage fault.",
+  "steps": [
+   [
+    "tool",
+    "import_wsdl",
+    "{\"service\": \"example-insurance\", \"source\": \"https://insurance.example.com/PolicyService?wsdl\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "4 operations, 3 faults, 1 callback"
+   ],
+   [
+    "tool",
+    "force_answer",
+    "{\"service\": \"example-insurance\", \"answer\": \"coverage_exceeded\", \"count\": 1}"
+   ],
+   [
+    "tool",
+    "wait_for_api_call",
+    "{\"service\": \"example-insurance\", \"answer\": \"coverage_exceeded\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "RegisterShipment answered the CoverageExceeded fault, HTTP 500"
+   ]
+  ],
+  "tools": [
+   [
+    "import_wsdl",
+    "A SOAP service from a WSDL (URL, file or text)"
+   ],
+   [
+    "reimport_wsdl",
+    "Reads the WSDL again and keeps your steps"
+   ],
+   [
+    "list_operations",
+    "Operations, SOAPActions and the served WSDL's URL"
+   ],
+   [
+    "set_operation",
+    "Replaces an operation's steps"
+   ],
+   [
+    "try_operation",
+    "Runs an envelope through the service; nothing is kept"
+   ],
+   [
+    "send_callback",
+    "Calls the app's endpoint as the provider would"
+   ],
+   [
+    "set_answer",
+    "With fault, makes an answer a SOAP fault"
+   ],
+   [
+    "new_test_certificate",
+    "An ICP-Brasil style e-CNPJ or e-CPF test certificate"
+   ],
+   [
+    "sign_xml",
+    "Signs an element of an XML document"
+   ],
+   [
+    "verify_xml_signature",
+    "Checks every ds:Signature of a document"
+   ]
+  ],
+  "http": [
+   [
+    "POST",
+    "/api/plugins/wsdl",
+    "import_wsdl"
+   ],
+   [
+    "GET",
+    "/api/plugins/{service}/operations",
+    "list_operations"
+   ],
+   [
+    "POST",
+    "/api/plugins/{service}/operations/try",
+    "try_operation"
+   ],
+   [
+    "POST",
+    "/api/plugins/{service}/callback",
+    "send_callback"
+   ],
+   [
+    "POST",
+    "/api/apis/test-certificates",
+    "new_test_certificate"
+   ],
+   [
+    "POST",
+    "/api/apis/xml/sign",
+    "sign_xml"
+   ]
+  ]
+ },
+ "notes": [
+  "WSDL 1.1 document/literal only: no WSDL 2.0, RPC/encoded or MTOM.",
+  "WS-Security covers UsernameToken with a plain-text password, not WS-Security signatures, encryption or timestamps."
+ ]
+}

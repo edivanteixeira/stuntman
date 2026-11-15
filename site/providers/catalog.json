@@ -1,0 +1,341 @@
+{
+ "id": "catalog",
+ "order": 22,
+ "name": "Plugin catalog",
+ "color": "blue",
+ "tagline": "26 ready plugins for providers apps call every day, installed one at a time or a whole collection at once.",
+ "stands_in_for": [
+  "Google reCAPTCHA",
+  "Cloudflare Turnstile",
+  "Bank gateway (boletos, mTLS)",
+  "Orders partner (REST example)",
+  "Partner portal (session cookie)",
+  "SERPRO Datavalid",
+  "GCC consent",
+  "Soluti BirdID",
+  "Valid ViDaaS",
+  "Lacuna REST PKI",
+  "OSRM",
+  "Google Maps Platform",
+  "Nominatim",
+  "OCR.space",
+  "ReceitaWS",
+  "SEFAZ NF-e (SP, homologação)",
+  "Comtele SMS",
+  "Stripe",
+  "Resend",
+  "OneSignal",
+  "Microsoft Graph",
+  "Google Drive",
+  "Calendly",
+  "lemlist",
+  "Azure DevOps",
+  "New Relic NerdGraph"
+ ],
+ "point": [
+  [
+   "Install",
+   "install_plugin(plugin=\"stripe\")"
+  ],
+  [
+   "Base URL",
+   "http://localhost:8028/<plugin>"
+  ],
+  [
+   "Real host",
+   "the provider's host on :8443, Test CA trusted"
+  ]
+ ],
+ "capabilities": [
+  {
+   "title": "Install in one call",
+   "text": "install_plugin adds a plugin to the environment; plugin=empty starts one that records."
+  },
+  {
+   "title": "Collections",
+   "text": "Brazil ICP-Brasil, Logistics & fiscal, Payments & notifications, Workplace & dev tools: install_collection adds what is missing."
+  },
+  {
+   "title": "Look before installing",
+   "text": "get_catalog_plugin shows routes, pages it draws, synthetic people, situations to provoke, permissions and files."
+  },
+  {
+   "title": "Find and filter",
+   "text": "By words, region (Global or Brazil), browser pages or collection; cards say installed here and update available."
+  },
+  {
+   "title": "Yours to edit",
+   "text": "An installed plugin is plain YAML: route editor, set_answer, or put_plugin with a version check (409 on conflict)."
+  },
+  {
+   "title": "Import your own",
+   "text": "import_plugin reads a folder, a .zip or a git URL (path, ref) and checks it; install_import installs it."
+  },
+  {
+   "title": "Validated with line numbers",
+   "text": "validate_plugin returns schema and expression errors with line numbers before anything is saved."
+  },
+  {
+   "title": "Stripe in test mode",
+   "text": "PaymentIntents with test payment methods such as pm_card_chargeDeclined, Idempotency-Key replays and Stripe-signed webhooks."
+  },
+  {
+   "title": "Brazil signing stack",
+   "text": "Datavalid identity checks, BirdID authorize pages, ViDaaS push approvals and REST PKI PAdES signatures, with synthetic CPFs."
+  }
+ ],
+ "excerpts": [
+  {
+   "frame": 16138,
+   "crop": [
+    240,
+    90,
+    1200,
+    470
+   ],
+   "title": "The catalog",
+   "callouts": [
+    {
+     "x": 330,
+     "y": 438,
+     "title": "Region",
+     "text": "Filter Global or Brazil, set by the plugin's author."
+    },
+    {
+     "x": 620,
+     "y": 130,
+     "title": "A collection",
+     "text": "A pack of plugins for one kind of app; add the rest in one call."
+    },
+    {
+     "x": 530,
+     "y": 276,
+     "title": "Installed here",
+     "text": "Each card says whether this environment has it, and its version."
+    },
+    {
+     "x": 1150,
+     "y": 264,
+     "title": "What it covers",
+     "text": "Routes and the answers you can give, before you install."
+    },
+    {
+     "x": 1079,
+     "y": 439,
+     "title": "Add to the environment",
+     "text": "Installs the plugin YAML; point the app at it or use the real host name."
+    }
+   ]
+  },
+  {
+   "frame": 12270,
+   "crop": [
+    240,
+    90,
+    1200,
+    520
+   ],
+   "title": "An installed plugin: named answers and data",
+   "callouts": [
+    {
+     "x": 300,
+     "y": 260,
+     "title": "Named answers",
+     "text": "Each situation the provider can answer, with its status, ready to force."
+    },
+    {
+     "x": 720,
+     "y": 330,
+     "title": "Body template",
+     "text": "Filled from the request and the state, in the provider's own shape."
+    },
+    {
+     "x": 1180,
+     "y": 137,
+     "title": "Force for the next calls",
+     "text": "The same as force_answer: ends by itself after N calls."
+    },
+    {
+     "x": 1100,
+     "y": 325,
+     "title": "Data the answers read",
+     "text": "Synthetic CPFs with their state; set_data replaces or appends rows."
+    },
+    {
+     "x": 680,
+     "y": 576,
+     "title": "Used by",
+     "text": "The route and decide step that gives this answer."
+    }
+   ]
+  }
+ ],
+ "provoke": [
+  {
+   "name": "Token used twice",
+   "what": "reCAPTCHA answers timeout-or-duplicate for a reused token",
+   "how": "send the same token again"
+  },
+  {
+   "name": "Bot score",
+   "what": "reCAPTCHA scores 0.1 for a token starting with bot",
+   "how": "a bot… token"
+  },
+  {
+   "name": "Turnstile fails",
+   "what": "A token starting with fail fails the check",
+   "how": "a fail… token"
+  },
+  {
+   "name": "Card declined",
+   "what": "Stripe declines the PaymentIntent",
+   "how": "pm_card_chargeDeclined"
+  },
+  {
+   "name": "Face mismatch",
+   "what": "Datavalid says the selfie is someone else",
+   "how": "force_answer face_mismatch"
+  },
+  {
+   "name": "Free tier exhausted",
+   "what": "ReceitaWS answers 429 after 3 calls a minute",
+   "how": "call it a fourth time"
+  },
+  {
+   "name": "Expired person certificate",
+   "what": "A cloud certificate that expired yesterday, in every plugin",
+   "how": "issue_person_certificate"
+  },
+  {
+   "name": "Push rejected",
+   "what": "ViDaaS push approval rejected or timed out on the phone",
+   "how": "approve_push answer=reject | timeout"
+  },
+  {
+   "name": "Signature step fails",
+   "what": "REST PKI start or finish answers 422 or 500",
+   "how": "fail_restpki step=finish"
+  },
+  {
+   "name": "Any plugin down",
+   "what": "503, timeout or reset on any installed plugin",
+   "how": "force_answer"
+  }
+ ],
+ "advantages": [
+  {
+   "title": "Written once, by someone",
+   "text": "A person who knows the provider writes the plugin; everyone else installs it in one call."
+  },
+  {
+   "title": "Situations named",
+   "text": "Each plugin lists what it can answer and provoke, named for what it means."
+  },
+  {
+   "title": "Synthetic data built in",
+   "text": "People, CPFs, CNPJs and accounts at acme and globex; never a real person."
+  },
+  {
+   "title": "Safe by default",
+   "text": "A plugin cannot reach the network or the disk unless it declares it; pages are fields, not scripts."
+  }
+ ],
+ "agent": {
+  "prompt": "Set up the payments and notifications providers for this environment and show me what Stripe can provoke.",
+  "steps": [
+   [
+    "tool",
+    "install_collection",
+    "{\"name\": \"Payments & notifications\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "installed stripe, resend, onesignal"
+   ],
+   [
+    "tool",
+    "get_catalog_plugin",
+    "{\"plugin\": \"stripe\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "routes, webhooks, situations: card_declined, missing_amount, 429, 503, timeout"
+   ]
+  ],
+  "tools": [
+   [
+    "list_plugins",
+    "The catalog with collections, filters and what is installed"
+   ],
+   [
+    "get_catalog_plugin",
+    "One plugin before installing it"
+   ],
+   [
+    "install_plugin",
+    "Installs a plugin, or an empty one that records"
+   ],
+   [
+    "install_collection",
+    "Installs a collection's missing plugins"
+   ],
+   [
+    "import_plugin",
+    "Reads your plugin from a folder, .zip or git URL"
+   ],
+   [
+    "install_import",
+    "Installs a plugin import_plugin read"
+   ],
+   [
+    "validate_plugin",
+    "Errors with line numbers before saving"
+   ],
+   [
+    "put_plugin",
+    "Replaces the whole plugin YAML"
+   ],
+   [
+    "remove_api_service",
+    "Removes a plugin from the environment"
+   ]
+  ],
+  "http": [
+   [
+    "GET",
+    "/api/plugins",
+    "list_plugins"
+   ],
+   [
+    "GET",
+    "/api/catalog/{plugin}",
+    "get_catalog_plugin"
+   ],
+   [
+    "POST",
+    "/api/plugins",
+    "install_plugin"
+   ],
+   [
+    "POST",
+    "/api/catalog/collections/install",
+    "install_collection"
+   ],
+   [
+    "POST",
+    "/api/catalog/imports",
+    "import_plugin"
+   ],
+   [
+    "POST",
+    "/api/plugins/{service}/validate",
+    "validate_plugin"
+   ]
+  ]
+ },
+ "notes": [
+  "The catalog lives in engine/plugins/ in the repository; contributions must pass validate_plugin and use synthetic data."
+ ]
+}

@@ -1,0 +1,328 @@
+{
+ "id": "pubsub",
+ "order": 15,
+ "name": "Pub/Sub",
+ "color": "teal",
+ "tagline": "A Google Cloud Pub/Sub emulator with schemas, snapshots, five subscription kinds, filters, transforms and exactly-once delivery.",
+ "stands_in_for": [
+  "Google Cloud Pub/Sub (google.pubsub.v1 gRPC)",
+  "Pub/Sub emulator",
+  "BigQuery, Cloud Storage and Bigtable subscriptions"
+ ],
+ "point": [
+  [
+   "Env",
+   "PUBSUB_EMULATOR_HOST=localhost:8085"
+  ],
+  [
+   ".NET",
+   "EmulatorDetection = EmulatorDetection.EmulatorOrProduction"
+  ],
+  [
+   "REST publish",
+   "POST http://localhost:8085/v1/projects/{p}/topics/{t}:publish"
+  ]
+ ],
+ "capabilities": [
+  {
+   "title": "Publisher, Subscriber, Schema APIs",
+   "text": "Topics, subscriptions, Pull, StreamingPull, acks, snapshots, Seek and schema revisions over gRPC, with paging."
+  },
+  {
+   "title": "Five subscription kinds",
+   "text": "Pull, push (wrapped or unwrapped, with an OIDC token), BigQuery, Cloud Storage and Bigtable; their rows and files are kept."
+  },
+  {
+   "title": "Schemas that validate",
+   "text": "Avro and Protocol Buffers in JSON or binary; a publish no revision accepts gets INVALID_ARGUMENT."
+  },
+  {
+   "title": "Filters and ordering",
+   "text": "Attribute filters with hasPrefix, NOT, AND, OR; ordering keys wait while one of their messages is out."
+  },
+  {
+   "title": "Retries and dead letters",
+   "text": "Nack or a passed deadline redelivers with the retry backoff; past max attempts the message moves to the dead-letter topic."
+  },
+  {
+   "title": "Exactly-once delivery",
+   "text": "Expired ack ids fail with EXACTLY_ONCE_ACKID_FAILURE; StreamingPull confirms acks, as ack_with_response reads."
+  },
+  {
+   "title": "JavaScript and AI transforms",
+   "text": "UDFs run in QuickJS with Pub/Sub's signature; AI inference transforms are answered by the AI models simulator."
+  },
+  {
+   "title": "Import topics",
+   "text": "Cloud Storage, Amazon MSK and Confluent Cloud sources read Stuntman storage and Kafka; any source takes pubsub_ingest."
+  },
+  {
+   "title": "Snapshots and Seek",
+   "text": "Seek to a snapshot or a time replays what is retained, with retain-acked and topic retention honoured."
+  }
+ ],
+ "excerpts": [
+  {
+   "frame": 74855,
+   "crop": [
+    472,
+    95,
+    968,
+    380
+   ],
+   "title": "A topic, and each subscription's view of its messages",
+   "callouts": [
+    {
+     "x": 630,
+     "y": 114,
+     "title": "Schema",
+     "text": "Every publish is validated; subscribers get the googclient_schema* attributes."
+    },
+    {
+     "x": 837,
+     "y": 136,
+     "title": "Ingestion",
+     "text": "An import topic reading a Kafka topic as Amazon MSK, with its state."
+    },
+    {
+     "x": 1060,
+     "y": 136,
+     "title": "Transform",
+     "text": "A JavaScript UDF runs on every message before the schema check."
+    },
+    {
+     "x": 994,
+     "y": 189,
+     "title": "Ordering key",
+     "text": "Messages with the same key are delivered in order, one out at a time."
+    },
+    {
+     "x": 1237,
+     "y": 284,
+     "title": "State per subscription",
+     "text": "Pending, outstanding, acked, expired or dead after 5 attempts, per subscription."
+    }
+   ]
+  },
+  {
+   "frame": 74855,
+   "crop": [
+    472,
+    490,
+    968,
+    375
+   ],
+   "title": "Provoke on publish, and the subscriptions",
+   "callouts": [
+    {
+     "x": 542,
+     "y": 530,
+     "title": "Unavailable",
+     "text": "Publish answers UNAVAILABLE; the client libraries retry it."
+    },
+    {
+     "x": 1252,
+     "y": 530,
+     "title": "Ack transient",
+     "text": "Exactly-once acks fail with TRANSIENT_FAILURE_UNORDERED_ACK_ID until times runs out."
+    },
+    {
+     "x": 1150,
+     "y": 651,
+     "title": "Dead-letter topic",
+     "text": "After 5 delivery attempts the message moves to shipments-dlq."
+    },
+    {
+     "x": 872,
+     "y": 683,
+     "title": "Filter",
+     "text": "Messages whose attributes do not match never reach this subscription."
+    },
+    {
+     "x": 651,
+     "y": 752,
+     "title": "BigQuery, Storage, Bigtable",
+     "text": "Subscriptions that write rows and files Stuntman keeps for you to read."
+    }
+   ]
+  }
+ ],
+ "provoke": [
+  {
+   "name": "Unavailable",
+   "what": "Publish answers UNAVAILABLE; clients retry",
+   "how": "set_pubsub {provoke: unavailable, times: 2}"
+  },
+  {
+   "name": "Deadline exceeded",
+   "what": "Publish answers DEADLINE_EXCEEDED",
+   "how": "set_pubsub {provoke: deadline_exceeded}"
+  },
+  {
+   "name": "Resource exhausted",
+   "what": "Publish answers RESOURCE_EXHAUSTED",
+   "how": "set_pubsub {provoke: resource_exhausted}"
+  },
+  {
+   "name": "Topic not found",
+   "what": "Publish answers NOT_FOUND, for one topic or all",
+   "how": "set_pubsub {provoke: not_found, topic}"
+  },
+  {
+   "name": "Slow publish",
+   "what": "Each publish waits delay_ms (3 s by default)",
+   "how": "set_pubsub {provoke: slow_publish}"
+  },
+  {
+   "name": "Duplicate delivery",
+   "what": "A message comes again after its first ack",
+   "how": "set_pubsub {provoke: duplicate}"
+  },
+  {
+   "name": "Transient ack failure",
+   "what": "Exactly-once acks and modacks fail and are retried",
+   "how": "set_pubsub {provoke: ack_transient}"
+  },
+  {
+   "name": "Push endpoint fails",
+   "what": "Non-2xx answers retry with backoff, then dead-letter",
+   "how": "create_pubsub_subscription {push_endpoint}"
+  },
+  {
+   "name": "Row that does not fit",
+   "what": "BigQuery row refused, retried, then dead-lettered",
+   "how": "set_pubsub_bigquery_table"
+  },
+  {
+   "name": "AI transform fails",
+   "what": "429 or 5xx from the model fails the publish",
+   "how": "force_ai_failure"
+  },
+  {
+   "name": "Subscription expires",
+   "what": "An idle subscription past its ttl is deleted",
+   "how": "create_pubsub_subscription {expiration_ttl} + advance_clock"
+  }
+ ],
+ "advantages": [
+  {
+   "title": "Cloud behaviour, locally",
+   "text": "Schemas, snapshots, dead letters, filters, exactly-once and push auth behave as in the cloud, not only the basics."
+  },
+  {
+   "title": "See every subscription's state",
+   "text": "One message shows acked here, outstanding there, dead in a third subscription, with delivery attempts."
+  },
+  {
+   "title": "Sinks without a cloud",
+   "text": "BigQuery rows, Cloud Storage files and Bigtable rows are kept locally, so the test reads what would land."
+  },
+  {
+   "title": "Failures the clients retry",
+   "text": "UNAVAILABLE, transient ack failures and duplicates on cue test the retry paths before production does."
+  }
+ ],
+ "agent": {
+  "prompt": "Make sure our shipment publisher survives two UNAVAILABLE errors in a row.",
+  "steps": [
+   [
+    "tool",
+    "set_pubsub",
+    "{\"provoke\": \"unavailable\", \"times\": 2, \"topic\": \"shipments\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "the next 2 publishes to shipments answer UNAVAILABLE"
+   ],
+   [
+    "tool",
+    "wait_for_pubsub_message",
+    "{\"topic\": \"shipments\", \"contains\": \"SHP-1043\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "published by the app on the 3rd try; billing pending, audit pending"
+   ]
+  ],
+  "tools": [
+   [
+    "list_pubsub_topics",
+    "Topics, subscriptions, counts per state, snapshots, schemas"
+   ],
+   [
+    "list_pubsub_messages",
+    "Messages with their state in each subscription"
+   ],
+   [
+    "pubsub_publish",
+    "Publish as another service would"
+   ],
+   [
+    "create_pubsub_subscription",
+    "Pull, push, BigQuery, Cloud Storage or Bigtable"
+   ],
+   [
+    "set_pubsub_schema",
+    "Create a schema or a revision; attach it to a topic"
+   ],
+   [
+    "set_pubsub_topic",
+    "Ingestion source and JavaScript UDF of a topic"
+   ],
+   [
+    "pubsub_ingest",
+    "Feed records into an import topic"
+   ],
+   [
+    "wait_for_pubsub_message",
+    "Wait for the app to publish a matching message"
+   ],
+   [
+    "list_pubsub_bigquery_rows",
+    "Rows BigQuery subscriptions wrote"
+   ],
+   [
+    "set_pubsub",
+    "Default project and a provocation on Publish"
+   ]
+  ],
+  "http": [
+   [
+    "GET",
+    "/api/pubsub/topics",
+    "list_pubsub_topics"
+   ],
+   [
+    "GET",
+    "/api/pubsub/messages",
+    "list_pubsub_messages"
+   ],
+   [
+    "POST",
+    "/api/pubsub/topics/{topic}/publish",
+    "pubsub_publish"
+   ],
+   [
+    "PUT",
+    "/api/pubsub/subscriptions/{subscription}",
+    "create_pubsub_subscription"
+   ],
+   [
+    "GET",
+    "/api/pubsub/topics/{topic}/wait",
+    "wait_for_pubsub_message"
+   ],
+   [
+    "PUT",
+    "/api/pubsub/config",
+    "set_pubsub"
+   ]
+  ]
+ },
+ "notes": [
+  "Plaintext gRPC without auth, as the official emulator; one port serves every environment.",
+  "Kinesis and Event Hubs import topics only get what pubsub_ingest feeds."
+ ]
+}

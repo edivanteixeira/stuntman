@@ -1,0 +1,372 @@
+{
+ "id": "http-apis",
+ "order": 1,
+ "name": "HTTP APIs",
+ "color": "blue",
+ "tagline": "Any REST, GraphQL or MCP API described once as a YAML plugin: routes, state, answers, callbacks and failures on cue.",
+ "stands_in_for": [
+  "Any REST or JSON API",
+  "GraphQL APIs",
+  "OAuth2 and PKCE providers",
+  "Session-cookie portals",
+  "Remote MCP servers",
+  "Signed webhook senders"
+ ],
+ "point": [
+  [
+   "Base URL",
+   "http://localhost:8028/<service>"
+  ],
+  [
+   "Real host",
+   "https://<provider host>:8443 with the Stuntman Test CA trusted"
+  ],
+  [
+   "Agents",
+   "MCP at http://localhost:8025/mcp, HTTP at /api"
+  ]
+ ],
+ "capabilities": [
+  {
+   "title": "Routes as readable steps",
+   "text": "Each route reads receive, let, keep, wait, decide, respond, send. Edit in the route editor or the YAML; every change is validated first."
+  },
+  {
+   "title": "State and data tables",
+   "text": "keep stores what the provider remembers between calls; data tables (people, flagged documents) feed answers through lookup()."
+  },
+  {
+   "title": "Auth like the provider",
+   "text": "OAuth2 client credentials with a token route, Basic, session cookies from a login route, and mTLS client certificates."
+  },
+  {
+   "title": "Browser steps",
+   "text": "Plugins draw authorize pages (PKCE, OTP, pick a person) and push approvals the app polls. Agents pass them with authorize_as and approve_push."
+  },
+  {
+   "title": "GraphQL and streams",
+   "text": "Routes share POST /graphql and answer by operation name. Answers can stream as SSE, NDJSON or plain chunks."
+  },
+  {
+   "title": "Be an MCP server",
+   "text": "An mcp: block serves tools/list and tools/call on /<service>/mcp; each tool decides like a route. set_mcp_tool adds one."
+  },
+  {
+   "title": "Signed webhooks",
+   "text": "send steps sign as hex HMAC, Stripe, Svix, GitHub or CloudEvents. Delays follow the environment's clock: advance_clock(by=\"30d\")."
+  },
+  {
+   "title": "Idempotency and scenarios",
+   "text": "A repeated Idempotency-Key replays the first answer (409 on another body). Scenarios switch a service's behaviour by name."
+  },
+  {
+   "title": "Catch unmatched calls",
+   "text": "Requests no route takes are kept with the closest route; route_from_request drafts the missing route from one."
+  }
+ ],
+ "excerpts": [
+  {
+   "frame": 31538,
+   "crop": [
+    240,
+    88,
+    1200,
+    580
+   ],
+   "title": "A route, step by step, with its YAML",
+   "callouts": [
+    {
+     "x": 330,
+     "y": 205,
+     "title": "Routes of the plugin",
+     "text": "One route per kind of request the provider takes, with its calls today and billing."
+    },
+    {
+     "x": 700,
+     "y": 202,
+     "title": "Receive",
+     "text": "Bearer token from the plugin's own token route; a missing body field answers 400 like the provider."
+    },
+    {
+     "x": 700,
+     "y": 291,
+     "title": "Keep",
+     "text": "State the provider remembers between calls, keyed by an expression. Refused calls change nothing."
+    },
+    {
+     "x": 735,
+     "y": 400,
+     "title": "Decide",
+     "text": "First match wins: conditions on body, state and data pick a named answer."
+    },
+    {
+     "x": 1180,
+     "y": 297,
+     "title": "The same file",
+     "text": "The YAML beside the editor marks the changed lines. Try it runs a sample request without keeping anything."
+    }
+   ]
+  },
+  {
+   "frame": 12276,
+   "crop": [
+    300,
+    96,
+    1140,
+    580
+   ],
+   "title": "A browser step the plugin draws",
+   "callouts": [
+    {
+     "x": 720,
+     "y": 293,
+     "title": "People from the plugin",
+     "text": "Synthetic people with their certificates come from the plugin's data table."
+    },
+    {
+     "x": 720,
+     "y": 357,
+     "title": "Broken on purpose",
+     "text": "Pick a person whose certificate expired to see how the app handles it."
+    },
+    {
+     "x": 588,
+     "y": 510,
+     "title": "One-time code",
+     "text": "Any 6 digits pass; 000000 is refused on purpose."
+    },
+    {
+     "x": 882,
+     "y": 573,
+     "title": "Authorize or Deny",
+     "text": "Redirects to the app with code and state; the token call then checks the PKCE verifier."
+    },
+    {
+     "x": 1170,
+     "y": 185,
+     "title": "What Stuntman records",
+     "text": "Each step lands on the timeline. Agents skip the page with authorize_as."
+    }
+   ]
+  },
+  {
+   "frame": 73254,
+   "crop": [
+    480,
+    320,
+    960,
+    560
+   ],
+   "title": "Webhook signing, idempotency and the clock",
+   "callouts": [
+    {
+     "x": 1170,
+     "y": 430,
+     "title": "Sign like the provider",
+     "text": "Hex HMAC, hex with timestamp, Stripe, Svix, GitHub or CloudEvents, with the secret and header the app checks."
+    },
+    {
+     "x": 1084,
+     "y": 600,
+     "title": "Break every send",
+     "text": "Wrong signature, old timestamp, no signature, sent twice or out of order, until set back to none."
+    },
+    {
+     "x": 1032,
+     "y": 702,
+     "title": "Idempotency-Key",
+     "text": "The same key gets the first answer again with no webhook; the same key with another body gets 409."
+    },
+    {
+     "x": 1150,
+     "y": 847,
+     "title": "The environment's clock",
+     "text": "Move it 1 h, 1 day or 30 days: waiting webhooks go out and now() follows. Back to real time resets it."
+    }
+   ]
+  }
+ ],
+ "provoke": [
+  {
+   "name": "Any named answer",
+   "what": "The next N calls (or the next 10 minutes) get a declined, expired or not-found answer",
+   "how": "force_answer {answer, count | for, route}"
+  },
+  {
+   "name": "Network failures",
+   "what": "Connection reset, empty reply or a timeout",
+   "how": "force_answer reset | empty | timeout"
+  },
+  {
+   "name": "Server errors",
+   "what": "500 or 503 from the provider",
+   "how": "force_answer 500 | 503"
+  },
+  {
+   "name": "HTML error page",
+   "what": "A 200 whose body is an HTML error page, as a proxy in front of the provider sends",
+   "how": "force_answer html"
+  },
+  {
+   "name": "Expired tokens",
+   "what": "Every token and session cookie becomes invalid; the next call gets 401",
+   "how": "expire_tokens"
+  },
+  {
+   "name": "Rate limit",
+   "what": "Calls above the rate get 429 with Retry-After",
+   "how": "set_service rate=10/s"
+  },
+  {
+   "name": "A share of failures",
+   "what": "A random share of calls fails",
+   "how": "set_service fail_share=25%"
+  },
+  {
+   "name": "Slow provider",
+   "what": "Every answer waits a range of latency",
+   "how": "set_service latency=2s..4s"
+  },
+  {
+   "name": "Broken stream",
+   "what": "Half the parts then a dropped connection, or 2 s more per part",
+   "how": "force_answer cut | slow"
+  },
+  {
+   "name": "MCP session expired",
+   "what": "The next MCP request gets 404 and the client must start a new session",
+   "how": "force_answer session_expired"
+  },
+  {
+   "name": "Bad webhooks",
+   "what": "Wrong signature, old timestamp, unsigned, sent twice or out of order",
+   "how": "set_service webhook_provoke"
+  },
+  {
+   "name": "Person says no",
+   "what": "The authorize page is denied, or the push approval is rejected or times out",
+   "how": "authorize_as deny=true, approve_push answer=reject | timeout"
+  }
+ ],
+ "advantages": [
+  {
+   "title": "Failures the sandbox lacks",
+   "text": "A sandbox rarely times out on the third call or sends a webhook twice. Stuntman does it on the next call, then stops by itself."
+  },
+  {
+   "title": "Days pass in seconds",
+   "text": "A 30-day renewal webhook goes out when you move the environment's clock, not next month."
+  },
+  {
+   "title": "No keys, no quota",
+   "text": "Calls never leave the machine. Billing is a counter that points at retry loops, never real money."
+  },
+  {
+   "title": "Every call explained",
+   "text": "Each call leaves a sentence, the answer name and the steps it took, readable by people and by agents."
+  }
+ ],
+ "agent": {
+  "prompt": "Make sure checkout retries when the payments API times out, and that the retry succeeds.",
+  "steps": [
+   [
+    "tool",
+    "force_answer",
+    "{\"service\": \"example-payments\", \"answer\": \"timeout\", \"count\": 1, \"route\": \"POST /v1/charges\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "the next POST /v1/charges times out"
+   ],
+   [
+    "tool",
+    "wait_for_api_call",
+    "{\"service\": \"example-payments\", \"route\": \"POST /v1/charges\", \"answer\": \"create_charge\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "the app retried: 201 create_charge after the timeout"
+   ]
+  ],
+  "tools": [
+   [
+    "list_api_calls",
+    "Calls any plugin answered, with sentence and answer name"
+   ],
+   [
+    "get_api_call",
+    "What the app sent, what Stuntman answered, steps and webhooks"
+   ],
+   [
+    "wait_for_api_call",
+    "Waits for the next call to a service, route or answer"
+   ],
+   [
+    "force_answer",
+    "The next calls get a named or generic answer"
+   ],
+   [
+    "expire_tokens",
+    "Every token of a service becomes invalid"
+   ],
+   [
+    "set_route",
+    "Creates or replaces a route, validated first"
+   ],
+   [
+    "try_route",
+    "Runs a route on a sample request; nothing is kept"
+   ],
+   [
+    "list_unmatched",
+    "Requests no route took, with the closest route"
+   ],
+   [
+    "authorize_as",
+    "Completes a waiting page as a person"
+   ],
+   [
+    "advance_clock",
+    "Moves the environment's clock forward"
+   ]
+  ],
+  "http": [
+   [
+    "GET",
+    "/api/apis/calls",
+    "list_api_calls"
+   ],
+   [
+    "GET",
+    "/api/apis/calls/wait",
+    "wait_for_api_call"
+   ],
+   [
+    "POST",
+    "/api/apis/{service}/force",
+    "force_answer"
+   ],
+   [
+    "POST",
+    "/api/plugins/{service}/try",
+    "try_route"
+   ],
+   [
+    "GET",
+    "/api/apis/unmatched",
+    "list_unmatched"
+   ],
+   [
+    "POST",
+    "/api/clock/advance",
+    "advance_clock"
+   ]
+  ]
+ },
+ "notes": [
+  "Expressions are a side-effect-free CEL-like subset: a plugin cannot reach the network or the disk unless it declares it.",
+  "The clock belongs to HTTP plugins; tokens, links and the other built-in lines keep real time."
+ ]
+}

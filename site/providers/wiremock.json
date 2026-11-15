@@ -1,0 +1,282 @@
+{
+ "id": "wiremock",
+ "order": 5,
+ "name": "WireMock import",
+ "color": "blue",
+ "tagline": "Turn the WireMock mappings you already keep into plugins: paths, matchers, answers, delays, scenarios, templates and webhooks.",
+ "stands_in_for": [
+  "WireMock mappings (mappings/*.json and __files/)",
+  "WireMock response templates",
+  "WireMock scenarios",
+  "WireMock webhooks (postServeActions)",
+  "Folders of WSDL files"
+ ],
+ "point": [
+  [
+   "Source",
+   "a folder with mappings/ and __files/ on the Stuntman machine"
+  ],
+  [
+   "Import",
+   "import_mocks(source=\"/mocks/partners\", dry=true)"
+  ],
+  [
+   "Base URL",
+   "http://localhost:8028/<service>"
+  ]
+ ],
+ "capabilities": [
+  {
+   "title": "Look before importing",
+   "text": "dry=true lists, per service, the mappings read, routes and answers it would make, faults, scenarios and gaps."
+  },
+  {
+   "title": "Group into services",
+   "text": "One service per subfolder of mappings/ (default), per request host, or everything in one."
+  },
+  {
+   "title": "Matchers become rules",
+   "text": "equalTo, contains, matches, absent, equalToJson, matchesJsonPath, matchesXPath, Basic auth and cookies, in priority order."
+  },
+  {
+   "title": "Regex paths kept",
+   "text": "urlPattern and urlPathPattern become regex routes; named groups are path parameters."
+  },
+  {
+   "title": "Templates keep working",
+   "text": "Handlebars answers with now, randomValue, jsonPath, xPath, regexExtract and math; now follows the environment's clock."
+  },
+  {
+   "title": "Scenarios as a switch",
+   "text": "Mappings with a scenario state become rules on scenario; set_scenario moves a service by hand."
+  },
+  {
+   "title": "Webhooks after answers",
+   "text": "A webhook serve action becomes a send that fires only after that mapping's answer, with its delay."
+  },
+  {
+   "title": "Gaps reported",
+   "text": "Nothing is dropped quietly: matchers and fields it cannot convert are listed file by file."
+  }
+ ],
+ "excerpts": [
+  {
+   "frame": 73401,
+   "crop": [
+    472,
+    280,
+    968,
+    440
+   ],
+   "title": "Import a WireMock folder",
+   "callouts": [
+    {
+     "x": 700,
+     "y": 398,
+     "title": "The folder",
+     "text": "mappings/ and __files/ on the machine that runs Stuntman; a folder of WSDLs works too."
+    },
+    {
+     "x": 1110,
+     "y": 397,
+     "title": "How to group",
+     "text": "One service per folder, per host, or everything in one."
+    },
+    {
+     "x": 560,
+     "y": 439,
+     "title": "Look first",
+     "text": "A dry run: what it would make, with nothing created yet."
+    },
+    {
+     "x": 1000,
+     "y": 526,
+     "title": "Per service",
+     "text": "Routes, faults and scenarios each service gets."
+    },
+    {
+     "x": 1160,
+     "y": 590,
+     "title": "Gaps",
+     "text": "Matchers with no equivalent, to write by hand before you trust the service."
+    }
+   ]
+  },
+  {
+   "frame": 31538,
+   "crop": [
+    240,
+    88,
+    1200,
+    580
+   ],
+   "title": "An imported mapping is a normal route",
+   "callouts": [
+    {
+     "x": 330,
+     "y": 205,
+     "title": "Request patterns",
+     "text": "Each URL pattern becomes a route; imported routes fall through to the next one, as WireMock tries the next mapping."
+    },
+    {
+     "x": 735,
+     "y": 400,
+     "title": "Matchers as rules",
+     "text": "Each mapping is one rule in decide and one named answer, in the mappings' priority."
+    },
+    {
+     "x": 700,
+     "y": 502,
+     "title": "Delays",
+     "text": "fixedDelayMilliseconds and the median of delayDistribution become the answer's latency."
+    },
+    {
+     "x": 1180,
+     "y": 297,
+     "title": "Plain YAML",
+     "text": "Edit what was imported in the editor or the file, like any plugin."
+    }
+   ]
+  }
+ ],
+ "provoke": [
+  {
+   "name": "Imported faults",
+   "what": "EMPTY_RESPONSE answers empty; the other WireMock faults reset the connection",
+   "how": "kept from the mapping, or force_answer empty | reset"
+  },
+  {
+   "name": "Any imported answer",
+   "what": "Any mapping's response on the next N calls, whatever the request",
+   "how": "force_answer"
+  },
+  {
+   "name": "A scenario state",
+   "what": "Jump straight to auth-failure or network instead of replaying the steps",
+   "how": "set_scenario"
+  },
+  {
+   "name": "Not matched",
+   "what": "404 Request was not matched, as WireMock answers",
+   "how": "a request no mapping matches"
+  },
+  {
+   "name": "Server and network failures",
+   "what": "500, 503, timeout or an HTML page, beyond what the mappings had",
+   "how": "force_answer"
+  },
+  {
+   "name": "Slow answers",
+   "what": "More latency than the mapping's fixed delay",
+   "how": "set_service latency"
+  }
+ ],
+ "advantages": [
+  {
+   "title": "Keep the mocks you have",
+   "text": "Years of mappings keep their paths, matchers, answers and scenarios; no rewrite."
+  },
+  {
+   "title": "A timeline, not a journal",
+   "text": "Every call leaves a readable sentence and the rule that picked its answer."
+  },
+  {
+   "title": "Failures beyond the mappings",
+   "text": "Force any answer, a timeout or latency without adding a mapping."
+  },
+  {
+   "title": "Driven by agents",
+   "text": "Every action is an MCP tool: import, switch a scenario, wait for a call."
+  }
+ ],
+ "agent": {
+  "prompt": "Import our WireMock folder and test the tracking client in its auth-failure scenario.",
+  "steps": [
+   [
+    "tool",
+    "import_mocks",
+    "{\"source\": \"/mocks/partners\", \"dry\": true}"
+   ],
+   [
+    "result",
+    "ok",
+    "7 mappings, 2 services: acme-tracking (scenarios auth-failure, network), globex-tolls"
+   ],
+   [
+    "tool",
+    "import_mocks",
+    "{\"source\": \"/mocks/partners\"}"
+   ],
+   [
+    "tool",
+    "set_scenario",
+    "{\"service\": \"acme-tracking\", \"scenario\": \"auth-failure\"}"
+   ],
+   [
+    "tool",
+    "wait_for_api_call",
+    "{\"service\": \"acme-tracking\"}"
+   ]
+  ],
+  "tools": [
+   [
+    "import_mocks",
+    "WireMock mappings or WSDLs become services; dry=true only shows"
+   ],
+   [
+    "set_scenario",
+    "Moves a service to a scenario; Started is the normal one"
+   ],
+   [
+    "get_plugin",
+    "The YAML the import wrote"
+   ],
+   [
+    "list_answers",
+    "Answers made from the mappings' responses"
+   ],
+   [
+    "try_route",
+    "Runs a route on a sample request"
+   ],
+   [
+    "force_answer",
+    "The next calls get a named answer"
+   ],
+   [
+    "list_api_calls",
+    "Calls with the answer each got"
+   ],
+   [
+    "list_unmatched",
+    "Requests no route took"
+   ]
+  ],
+  "http": [
+   [
+    "POST",
+    "/api/plugins/import",
+    "import_mocks"
+   ],
+   [
+    "PUT",
+    "/api/plugins/{service}/scenario",
+    "set_scenario"
+   ],
+   [
+    "GET",
+    "/api/plugins/{service}",
+    "get_plugin"
+   ],
+   [
+    "GET",
+    "/api/apis/calls",
+    "list_api_calls"
+   ]
+  ]
+ },
+ "notes": [
+  "Not imported: proxyBaseUrl (use recording), equalToXml, binaryEqualTo, multipartPatterns, the /__admin API.",
+  "ANY becomes a GET and a POST route; jsonPath in templates takes plain paths, not filters."
+ ]
+}

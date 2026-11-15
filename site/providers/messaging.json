@@ -1,0 +1,357 @@
+{
+ "id": "messaging",
+ "order": 13,
+ "name": "Service Bus and RabbitMQ",
+ "color": "teal",
+ "tagline": "An AMQP broker that answers as Azure Service Bus or RabbitMQ and shows every message with its deliveries, locks and consumers.",
+ "stands_in_for": [
+  "Azure Service Bus (AMQP 1.0)",
+  "RabbitMQ (AMQP)",
+  "RabbitMQ management API"
+ ],
+ "point": [
+  [
+   "Service Bus",
+   "Endpoint=sb://<namespace>.<env base domain>:5673;… (any key)"
+  ],
+  [
+   "RabbitMQ",
+   "localhost:5673, vhost <env>/<namespace> (5671 with TLS)"
+  ],
+  [
+   "Management API",
+   "http://localhost:15672/api"
+  ]
+ ],
+ "capabilities": [
+  {
+   "title": "Every message, every delivery",
+   "text": "Published, delivered, abandoned, completed or dead-lettered: each message keeps its history and properties."
+  },
+  {
+   "title": "Queues, topics, subscriptions",
+   "text": "Namespaces with queues and topics; Service Bus subscriptions or RabbitMQ bindings fan out what is published."
+  },
+  {
+   "title": "Consumers and their locks",
+   "text": "Who is receiving, receive mode, prefetch, the locks held now and what each consumer completed today."
+  },
+  {
+   "title": "Rules for deliveries",
+   "text": "When op, entity and subject match: lose the lock, duplicate, hold, drop or dead-letter, the first N or a share."
+  },
+  {
+   "title": "Dead-letter and resubmit",
+   "text": "See why a message was dead-lettered, move one there by hand, or put them all back on their queue."
+  },
+  {
+   "title": "Publish as a partner",
+   "text": "publish puts a message on a queue or topic with subject, properties, session or schedule; it is marked as yours."
+  },
+  {
+   "title": "RabbitMQ management API",
+   "text": "MassTransit and provisioning scripts create vhosts, queues, exchanges and bindings on :15672 before they connect."
+  },
+  {
+   "title": "Namespace-wide trouble",
+   "text": "Refuse connections, time out, reject the key, answer ServerBusy, cap the throughput or turn off auto-create."
+  }
+ ],
+ "excerpts": [
+  {
+   "frame": 33825,
+   "crop": [
+    233,
+    95,
+    1207,
+    560
+   ],
+   "title": "Messages with their delivery history",
+   "callouts": [
+    {
+     "x": 305,
+     "y": 411,
+     "title": "Both brokers",
+     "text": "Service Bus and RabbitMQ namespaces side by side, with queues, topics and subscriptions."
+    },
+    {
+     "x": 757,
+     "y": 144,
+     "title": "Counts by state",
+     "text": "Active, scheduled, locked and dead-letter for the entity."
+    },
+    {
+     "x": 634,
+     "y": 196,
+     "title": "Next delivery",
+     "text": "Lose the lock, duplicate, hold, drop or dead-letter the next delivery, once."
+    },
+    {
+     "x": 846,
+     "y": 316,
+     "title": "Locked",
+     "text": "Which consumer holds the lock and how long it has left."
+    },
+    {
+     "x": 1165,
+     "y": 621,
+     "title": "Delivery history",
+     "text": "Published, delivered, abandoned with the handler's error, then completed on attempt 2."
+    }
+   ]
+  },
+  {
+   "frame": 8168,
+   "crop": [
+    472,
+    90,
+    968,
+    520
+   ],
+   "title": "Consumers, and how to knock them over",
+   "callouts": [
+    {
+     "x": 560,
+     "y": 221,
+     "title": "Receiving now",
+     "text": "Each connection with prefetch and receive mode; names come from the AMQP client id."
+    },
+    {
+     "x": 701,
+     "y": 335,
+     "title": "Disconnected",
+     "text": "Consumers that left in the last day, and why."
+    },
+    {
+     "x": 1070,
+     "y": 172,
+     "title": "Disconnect it",
+     "text": "A forced detach (or CONNECTION_FORCED on RabbitMQ) tests the app's reconnect logic."
+    },
+    {
+     "x": 1185,
+     "y": 172,
+     "title": "Expire its locks",
+     "text": "Its next complete fails with MessageLockLost and the messages come again."
+    },
+    {
+     "x": 1243,
+     "y": 394,
+     "title": "Locks held",
+     "text": "The messages this consumer has locked and the time left on each."
+    }
+   ]
+  },
+  {
+   "frame": 6369,
+   "crop": [
+    472,
+    90,
+    968,
+    520
+   ],
+   "title": "A rule, tried on real traffic before you save",
+   "callouts": [
+    {
+     "x": 735,
+     "y": 317,
+     "title": "When",
+     "text": "Operation, namespace, entity and subject; more conditions on properties, session, size or sender."
+    },
+    {
+     "x": 658,
+     "y": 443,
+     "title": "Instead",
+     "text": "What happens to the matching delivery: here the lock is lost and the message comes again."
+    },
+    {
+     "x": 645,
+     "y": 491,
+     "title": "How often",
+     "text": "The first N, every time, or a random share of deliveries."
+    },
+    {
+     "x": 1158,
+     "y": 137,
+     "title": "Try it",
+     "text": "How many of the last 50 deliveries would match, and which ones."
+    },
+    {
+     "x": 1218,
+     "y": 404,
+     "title": "What the app will see",
+     "text": "Lock lost after 30 s and redelivered, then back to normal."
+    }
+   ]
+  }
+ ],
+ "provoke": [
+  {
+   "name": "Lost lock",
+   "what": "The next delivery loses its lock and comes again",
+   "how": "set_next_delivery {behavior: lose_lock}"
+  },
+  {
+   "name": "Duplicate delivery",
+   "what": "The same message is delivered twice",
+   "how": "set_next_delivery {behavior: duplicate}"
+  },
+  {
+   "name": "Held, dropped or out of order",
+   "what": "Delivery waits 30 s, never comes, or overtakes another",
+   "how": "set_next_delivery hold | drop | out_of_order"
+  },
+  {
+   "name": "Dead-lettered on arrival",
+   "what": "The message goes straight to the dead-letter queue",
+   "how": "set_next_delivery {behavior: dead_letter}"
+  },
+  {
+   "name": "MessageLockLost on complete",
+   "what": "Locks a consumer holds expire now",
+   "how": "expire_consumer_locks"
+  },
+  {
+   "name": "Forced disconnect",
+   "what": "amqp:link:detach-forced or CONNECTION_FORCED",
+   "how": "disconnect_consumer"
+  },
+  {
+   "name": "Namespace down",
+   "what": "Connections refused, time out, 401 or ServerBusy",
+   "how": "set_namespace_reachability"
+  },
+  {
+   "name": "Throttled",
+   "what": "ServerBusy over N messages a second, or every send",
+   "how": "set_throughput"
+  },
+  {
+   "name": "Rotated key",
+   "what": "Senders still on the old key get 401",
+   "how": "rotate_policy_key"
+  },
+  {
+   "name": "Missing entity",
+   "what": "Queues the app did not declare answer 404",
+   "how": "set_auto_create {on: false}"
+  },
+  {
+   "name": "Rule on deliveries",
+   "what": "Any of the above for matching messages, first N or a share",
+   "how": "create_rule {service: azure-service-bus}"
+  }
+ ],
+ "advantages": [
+  {
+   "title": "No cloud namespace",
+   "text": "No Azure subscription, no RabbitMQ container: one process speaks both, with the same connection strings."
+  },
+  {
+   "title": "See inside the broker",
+   "text": "Every delivery, lock and consumer is visible, which a real broker only gives through metrics."
+  },
+  {
+   "title": "Hard cases on cue",
+   "text": "Lost locks, duplicates and forced detaches happen on the next delivery instead of once a month in production."
+  },
+  {
+   "title": "Rules tried first",
+   "text": "A rule shows which recent deliveries it would hit before you save it, and never touches other environments."
+  }
+ ],
+ "agent": {
+  "prompt": "Make sure the order worker handles a lost lock without processing the order twice.",
+  "steps": [
+   [
+    "tool",
+    "set_next_delivery",
+    "{\"namespace\": \"acme-bus-stg\", \"entity\": \"orders-created\", \"behavior\": \"lose_lock\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "the next message on orders-created loses its lock once"
+   ],
+   [
+    "tool",
+    "get_queue_message",
+    "{\"namespace\": \"acme-bus-stg\", \"entity\": \"orders-created\", \"seq\": 1047}"
+   ],
+   [
+    "result",
+    "ok",
+    "delivered to acme-worker-1, lock lost, redelivered; completed once on attempt 2"
+   ]
+  ],
+  "tools": [
+   [
+    "list_namespaces",
+    "Namespaces, entities, counts per state, connection string"
+   ],
+   [
+    "list_queue_messages",
+    "Messages of a queue, topic or subscription"
+   ],
+   [
+    "get_queue_message",
+    "One message with its delivery history"
+   ],
+   [
+    "publish",
+    "Publish a message as a test"
+   ],
+   [
+    "list_consumers",
+    "Connections receiving from an entity"
+   ],
+   [
+    "expire_consumer_locks",
+    "The consumer's next complete fails with MessageLockLost"
+   ],
+   [
+    "set_namespace_reachability",
+    "Refuse, time out, 401 or busy"
+   ],
+   [
+    "resubmit",
+    "Put dead-lettered messages back on their queue"
+   ],
+   [
+    "create_rule",
+    "Lose locks, duplicate, hold or drop matching deliveries"
+   ]
+  ],
+  "http": [
+   [
+    "GET",
+    "/api/messaging/namespaces",
+    "list_namespaces"
+   ],
+   [
+    "GET",
+    "/api/messaging/{namespace}/{entity}/messages",
+    "list_queue_messages"
+   ],
+   [
+    "POST",
+    "/api/messaging/{namespace}/{entity}/messages",
+    "publish"
+   ],
+   [
+    "POST",
+    "/api/messaging/{namespace}/consumers/{id}/expire-locks",
+    "expire_consumer_locks"
+   ],
+   [
+    "PUT",
+    "/api/messaging/{namespace}/reachability",
+    "set_namespace_reachability"
+   ]
+  ]
+ },
+ "notes": [
+  "Service Bus finds the namespace by host name: give the environment a base domain under a wildcard DNS name.",
+  "The management API's vhosts are the RabbitMQ namespaces of the default environment."
+ ]
+}

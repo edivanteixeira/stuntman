@@ -1,0 +1,302 @@
+{
+ "id": "files",
+ "order": 12,
+ "name": "Files",
+ "color": "brown",
+ "tagline": "FTP, FTPS and SFTP servers where partners drop files and your app picks them up.",
+ "stands_in_for": [
+  "FTP",
+  "FTPS (explicit, AUTH TLS)",
+  "SFTP (SSH)",
+  "EDI and bank file drops"
+ ],
+ "point": [
+  [
+   "FTP / FTPS",
+   "ftp://localhost:2121 (passive mode; FTPS with the Test CA)"
+  ],
+  [
+   "SFTP",
+   "sftp -P 2222 <user>@localhost"
+  ],
+  [
+   "Login",
+   "user or user@server; a user with no password takes any password except wrong"
+  ]
+ ],
+ "capabilities": [
+  {
+   "title": "Three protocols, one folder",
+   "text": "Each server is a folder: FTP, explicit FTPS and SFTP all see the same files, so the app can switch protocol without new fixtures."
+  },
+  {
+   "title": "The commands EDI clients use",
+   "text": "PASV, EPSV, LIST, NLST, MLSD, RETR, STOR, APPE, DELE, MKD, RMD, RNFR/RNTO, SIZE, MDTM and REST."
+  },
+  {
+   "title": "Drop a partner's file",
+   "text": "put_file puts text or binary on a server; the app finds it on its next poll, exactly as if the partner sent it."
+  },
+  {
+   "title": "Wait for the app's upload",
+   "text": "wait_for_file blocks until a file whose path matches a * pattern appears, then returns it."
+  },
+  {
+   "title": "Users and read-only logins",
+   "text": "Each server has its own users; read_only users get permission denied on writes, as a real partner account would."
+  },
+  {
+   "title": "Every login and transfer",
+   "text": "list_transfers shows logins, uploads, downloads, deletes and listings, newest first, with the provoked ones marked."
+  },
+  {
+   "title": "A stable host key",
+   "text": "The SFTP host key is kept on disk, so a client that pinned it keeps trusting it across restarts."
+  },
+  {
+   "title": "Failures on the next session",
+   "text": "Refuse logins, fill the disk, deny permission, cut a transfer after 4 KB, slow to 20 KB/s or change the host key."
+  }
+ ],
+ "excerpts": [
+  {
+   "frame": 73986,
+   "crop": [
+    232,
+    0,
+    1208,
+    600
+   ],
+   "title": "A server, its folders and the next sessions",
+   "callouts": [
+    {
+     "x": 700,
+     "y": 18,
+     "title": "How to connect",
+     "text": "SFTP on :2222, FTP on :2121 and FTPS with AUTH TLS, all on the same server."
+    },
+    {
+     "x": 530,
+     "y": 360,
+     "title": "Folders",
+     "text": "Folders made by set_file_server, such as /in for the app and /out for the partner."
+    },
+    {
+     "x": 1000,
+     "y": 280,
+     "title": "What the app uploaded",
+     "text": "A file's content as text; get_file returns base64 for binary."
+    },
+    {
+     "x": 806,
+     "y": 494,
+     "title": "Put a file",
+     "text": "Drop a file as if the partner did; the app picks it up on its next poll."
+    },
+    {
+     "x": 1060,
+     "y": 563,
+     "title": "Provoke",
+     "text": "Login refused (530), disk full (552), permission denied (550), drop after 4 KB, slow, host key changed."
+    }
+   ]
+  },
+  {
+   "frame": 18823,
+   "crop": [
+    233,
+    90,
+    1207,
+    450
+   ],
+   "title": "Logins and transfers, in order",
+   "callouts": [
+    {
+     "x": 300,
+     "y": 163,
+     "title": "Users and folders",
+     "text": "Each user with its folders: files waiting in /in, files the app wrote to /out."
+    },
+    {
+     "x": 695,
+     "y": 113,
+     "title": "An upload",
+     "text": "Who uploaded, which path, size and how long it took."
+    },
+    {
+     "x": 664,
+     "y": 217,
+     "title": "Refused login",
+     "text": "A provoked login_refused is marked on the row, so it is not taken for a real bug."
+    },
+    {
+     "x": 697,
+     "y": 287,
+     "title": "Did the app retry?",
+     "text": "A provoked disk full is marked on the row, next to what the app did after it."
+    },
+    {
+     "x": 1150,
+     "y": 250,
+     "title": "The file itself",
+     "text": "Fixed-width EDI shown as text; the exact bytes are kept."
+    }
+   ]
+  }
+ ],
+ "provoke": [
+  {
+   "name": "Login refused",
+   "what": "Every login answers 530",
+   "how": "set_file_server provoke login_refused"
+  },
+  {
+   "name": "Disk full",
+   "what": "Uploads answer 552",
+   "how": "set_file_server provoke disk_full"
+  },
+  {
+   "name": "Permission denied",
+   "what": "Writes answer 550",
+   "how": "set_file_server provoke permission_denied"
+  },
+  {
+   "name": "Transfer cut",
+   "what": "The connection breaks after 4 KB",
+   "how": "set_file_server provoke drop_mid"
+  },
+  {
+   "name": "Slow link",
+   "what": "Transfers run at 20 KB/s",
+   "how": "set_file_server provoke slow"
+  },
+  {
+   "name": "Host key changed",
+   "what": "SFTP shows another host key; pinned clients refuse",
+   "how": "set_file_server provoke host_key_changed"
+  },
+  {
+   "name": "Read-only partner",
+   "what": "A user that can read but gets permission denied on writes",
+   "how": "set_file_server users with read_only"
+  },
+  {
+   "name": "Wrong password",
+   "what": "Users with no password take any password except wrong",
+   "how": "log in with password wrong"
+  }
+ ],
+ "advantages": [
+  {
+   "title": "No partner to call",
+   "text": "Real partner servers are shared, slow to change and never fail on request. Here you make the file appear, or the disk fill, now."
+  },
+  {
+   "title": "Proof of what was sent",
+   "text": "Every upload is kept and listed, so a test asserts the exact file the app wrote, not just that it connected."
+  },
+  {
+   "title": "Three protocols for free",
+   "text": "FTP, FTPS and SFTP from one process and one folder, with no SSH daemon or vsftpd to configure."
+  },
+  {
+   "title": "Failures that end",
+   "text": "A provocation lasts until you set none, and every provoked session is marked in the transfer list."
+  }
+ ],
+ "agent": {
+  "prompt": "Drop an orders file on the EDI server, then check that the app answers with a file in /out.",
+  "steps": [
+   [
+    "tool",
+    "set_file_server",
+    "{\"name\": \"edi-acme\", \"users\": [{\"user\": \"edi\", \"password\": \"s3cret\"}], \"folders\": [\"/in\", \"/out\"]}"
+   ],
+   [
+    "result",
+    "ok",
+    "edi-acme on :2121 (FTP/FTPS) and :2222 (SFTP)"
+   ],
+   [
+    "tool",
+    "put_file",
+    "{\"server\": \"edi-acme\", \"path\": \"/in/ORDERS_1042.txt\", \"text\": \"000GLOBEX ORDERS 1042\"}"
+   ],
+   [
+    "tool",
+    "wait_for_file",
+    "{\"server\": \"edi-acme\", \"path\": \"/out/*.txt\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "/out/OCOREN_1042.txt · 5 KB · uploaded by edi"
+   ]
+  ],
+  "tools": [
+   [
+    "list_file_servers",
+    "Servers with users, provocation, how to connect, file counts"
+   ],
+   [
+    "set_file_server",
+    "Create or change a server: users, folders, provoke"
+   ],
+   [
+    "list_files",
+    "Files and folders on a server or under a path"
+   ],
+   [
+    "get_file",
+    "A file's content (text or base64)"
+   ],
+   [
+    "put_file",
+    "Drop a file as the partner would"
+   ],
+   [
+    "delete_file",
+    "Delete a file from a server"
+   ],
+   [
+    "list_transfers",
+    "Logins and transfers, newest first"
+   ],
+   [
+    "wait_for_file",
+    "Wait for a file matching a pattern"
+   ]
+  ],
+  "http": [
+   [
+    "PUT",
+    "/api/files/servers/{name}",
+    "set_file_server"
+   ],
+   [
+    "POST",
+    "/api/files/servers/{server}/put",
+    "put_file"
+   ],
+   [
+    "GET",
+    "/api/files/servers/{server}/wait",
+    "wait_for_file"
+   ],
+   [
+    "GET",
+    "/api/files/servers/{server}/file",
+    "get_file"
+   ],
+   [
+    "GET",
+    "/api/files/transfers",
+    "list_transfers"
+   ]
+  ]
+ },
+ "notes": [
+  "One port serves every environment: logins go to the default one.",
+  "In Docker, FTP passive data uses ports 30000-30009."
+ ]
+}

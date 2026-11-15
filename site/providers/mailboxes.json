@@ -1,0 +1,269 @@
+{
+ "id": "mailboxes",
+ "order": 10,
+ "name": "Mailboxes",
+ "color": "amber",
+ "tagline": "IMAP and POP3 mailboxes your app reads: put a supplier's invoice in, and the app finds it on its next poll.",
+ "stands_in_for": [
+  "IMAP4rev1",
+  "POP3",
+  "XOAUTH2 mail logins"
+ ],
+ "point": [
+  [
+   "IMAP",
+   "localhost:1143 (STARTTLS)"
+  ],
+  [
+   "POP3",
+   "localhost:1110 (STLS)"
+  ],
+  [
+   "Login",
+   "The mailbox address; any password but \"wrong\" unless you set one"
+  ]
+ ],
+ "capabilities": [
+  {
+   "title": "Put mail in",
+   "text": "put_mail drops a message as if someone sent it: from, subject, text or HTML, attachments, or a whole raw RFC 822 message."
+  },
+  {
+   "title": "Real IMAP commands",
+   "text": "SELECT, FETCH with BODYSTRUCTURE and sections, SEARCH, STORE, COPY, MOVE, EXPUNGE, IDLE and the UID commands."
+  },
+  {
+   "title": "POP3 too",
+   "text": "STAT, LIST, UIDL, RETR, TOP and DELE over USER/PASS or AUTH PLAIN, with STLS."
+  },
+  {
+   "title": "See what the app did",
+   "text": "Every command the app sent, with its time and without passwords, next to the messages it touched."
+  },
+  {
+   "title": "Folders and flags",
+   "text": "INBOX first plus any folder; read and deleted flags show whether the app marked or removed what it read."
+  },
+  {
+   "title": "Logins like the real thing",
+   "text": "LOGIN, AUTHENTICATE PLAIN and XOAUTH2 (any token); set a password per mailbox or let any password in."
+  },
+  {
+   "title": "Mailbox trouble on cue",
+   "text": "A refused login, a mailbox in use, a connection dropped during FETCH, TLS required or an expired OAuth token."
+  }
+ ],
+ "excerpts": [
+  {
+   "frame": 74101,
+   "crop": [
+    232,
+    0,
+    1208,
+    440
+   ],
+   "title": "A mailbox the app reads",
+   "callouts": [
+    {
+     "x": 780,
+     "y": 18,
+     "title": "Where to connect",
+     "text": "IMAP on 1143 with STARTTLS, POP3 on 1110 with STLS."
+    },
+    {
+     "x": 330,
+     "y": 100,
+     "title": "Mailboxes",
+     "text": "Each address is a login; the count shows unread messages."
+    },
+    {
+     "x": 513,
+     "y": 138,
+     "title": "Unread",
+     "text": "The dot clears when the app sets \\Seen; a PEEK fetch leaves it."
+    },
+    {
+     "x": 1137,
+     "y": 139,
+     "title": "Attachments",
+     "text": "XML, PDF or images, as a supplier would attach them."
+    },
+    {
+     "x": 556,
+     "y": 420,
+     "title": "Put the message",
+     "text": "From, subject, text and an attachment; the app finds it on its next poll."
+    }
+   ]
+  },
+  {
+   "frame": 74101,
+   "crop": [
+    472,
+    440,
+    968,
+    360
+   ],
+   "title": "What the app did, and what to break",
+   "callouts": [
+    {
+     "x": 690,
+     "y": 503,
+     "title": "Put by you",
+     "text": "Messages you or an agent put in, with their UID."
+    },
+    {
+     "x": 740,
+     "y": 539,
+     "title": "The app's login",
+     "text": "Each command is logged; passwords never are."
+    },
+    {
+     "x": 710,
+     "y": 611,
+     "title": "How it fetched",
+     "text": "BODY.PEEK[] leaves the message unread; the log shows which form the app used."
+    },
+    {
+     "x": 796,
+     "y": 704,
+     "title": "Drop during FETCH",
+     "text": "The connection closes mid-fetch: does the app retry without losing the message?"
+    },
+    {
+     "x": 1055,
+     "y": 704,
+     "title": "XOAUTH2 token expired",
+     "text": "The OAuth login is refused, as when a refresh is due."
+    }
+   ]
+  }
+ ],
+ "provoke": [
+  {
+   "name": "Login refused",
+   "what": "Every login to the mailbox fails",
+   "how": "set_mailbox {provoke: login_refused}"
+  },
+  {
+   "name": "Mailbox in use",
+   "what": "IMAP answers NO [INUSE]",
+   "how": "set_mailbox {provoke: busy}"
+  },
+  {
+   "name": "Drop during fetch",
+   "what": "The connection closes during FETCH or RETR",
+   "how": "set_mailbox {provoke: drop_fetch}"
+  },
+  {
+   "name": "TLS required",
+   "what": "Plain logins are refused before STARTTLS or STLS",
+   "how": "set_mailbox {provoke: tls_required}"
+  },
+  {
+   "name": "Token expired",
+   "what": "XOAUTH2 logins are refused",
+   "how": "set_mailbox {provoke: token_expired}"
+  },
+  {
+   "name": "Wrong password",
+   "what": "A login with the wrong password is refused",
+   "how": "set_mailbox {password} or the password \"wrong\""
+  }
+ ],
+ "advantages": [
+  {
+   "title": "No shared test mailbox",
+   "text": "Nobody else reads or deletes the messages, so a poller test sees exactly what you put in."
+  },
+  {
+   "title": "Messages in a second",
+   "text": "put_mail lands at once; no waiting for a real server to deliver and index."
+  },
+  {
+   "title": "Watch the conversation",
+   "text": "The command log shows whether the app used SEARCH UNSEEN, PEEK or EXPUNGE, which a real server keeps to itself."
+  },
+  {
+   "title": "Failures servers rarely give",
+   "text": "Drops during FETCH, INUSE and expired XOAUTH2 tokens come when you ask, to test retries."
+  }
+ ],
+ "agent": {
+  "prompt": "Check that our invoice importer picks up an XML attached to an e-mail.",
+  "steps": [
+   [
+    "tool",
+    "put_mail",
+    "{\"address\": \"invoices@acme.example\", \"from\": \"billing@globex.example\", \"subject\": \"Invoice 1234\", \"attachments\": [{\"filename\": \"invoice-1234.xml\", \"content_type\": \"application/xml\", \"text\": \"<invoice/>\"}]}"
+   ],
+   [
+    "result",
+    "ok",
+    "uid 3 in INBOX"
+   ],
+   [
+    "tool",
+    "list_mailbox_messages",
+    "{\"address\": \"invoices@acme.example\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "Invoice 1234 read; the app ran LOGIN, SELECT INBOX, SEARCH UNSEEN, FETCH 3"
+   ]
+  ],
+  "tools": [
+   [
+    "list_mailboxes",
+    "Mailboxes with messages, unread counts and how to connect"
+   ],
+   [
+    "set_mailbox",
+    "Create or change a mailbox: password and provocation"
+   ],
+   [
+    "put_mail",
+    "Put a message in as if someone sent it"
+   ],
+   [
+    "list_mailbox_messages",
+    "Messages, flags and the app's commands"
+   ],
+   [
+    "get_environment",
+    "The environment's addresses and settings"
+   ],
+   [
+    "reset_environment",
+    "Every service back to its seeds before a test"
+   ]
+  ],
+  "http": [
+   [
+    "GET",
+    "/api/mailboxes",
+    "list_mailboxes"
+   ],
+   [
+    "PUT",
+    "/api/mailboxes/{address}",
+    "set_mailbox"
+   ],
+   [
+    "POST",
+    "/api/mailboxes/{address}/messages",
+    "put_mail"
+   ],
+   [
+    "GET",
+    "/api/mailboxes/{address}/messages",
+    "list_mailbox_messages"
+   ]
+  ]
+ },
+ "notes": [
+  "One port serves every environment: logins go to the default one.",
+  "STARTTLS and STLS use the same self-signed certificate as SMTP."
+ ]
+}

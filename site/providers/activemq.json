@@ -1,0 +1,348 @@
+{
+ "id": "activemq",
+ "order": 14,
+ "name": "ActiveMQ",
+ "color": "teal",
+ "tagline": "An ActiveMQ Classic broker over OpenWire, with transactions, durable subscriptions, selectors, the scheduler and dead letters.",
+ "stands_in_for": [
+  "ActiveMQ Classic (OpenWire 10)",
+  "Apache.NMS.ActiveMQ 1.8 and 2.x",
+  "Java activemq-client"
+ ],
+ "point": [
+  [
+   "NMS",
+   "activemq:tcp://localhost:61616"
+  ],
+  [
+   "Java",
+   "tcp://localhost:61616"
+  ],
+  [
+   "Login",
+   "The users you set; with none, any user and password"
+  ]
+ ],
+ "capabilities": [
+  {
+   "title": "Every message, with its state",
+   "text": "Scheduled, pending, delivered, acked, dead_letter, expired, rolled_back or discarded, with the redelivery count."
+  },
+  {
+   "title": "Local and XA transactions",
+   "text": "Sends stay invisible until commit; rollback redelivers. XA prepare, two-phase commit and recover from any connection."
+  },
+  {
+   "title": "Durable subscriptions",
+   "text": "A subscription name and client ID keep copies while the consumer is offline; a new topic or selector replaces it."
+  },
+  {
+   "title": "JMS selectors",
+   "text": "The SQL-92 subset on headers and properties: IN, LIKE, BETWEEN, IS NULL, arithmetic. A bad one gets InvalidSelectorException."
+  },
+  {
+   "title": "Scheduler",
+   "text": "AMQ_SCHEDULED_DELAY, PERIOD with REPEAT, and CRON on the environment's clock; BROWSE and REMOVE over JMS work too."
+  },
+  {
+   "title": "Dead letters as ActiveMQ does",
+   "text": "Poisoned, past max_redeliveries or expired persistent messages go to ActiveMQ.DLQ, or one DLQ per destination."
+  },
+  {
+   "title": "Consumers like a real broker",
+   "text": "Prefetch, pull, ack modes, browsers, noLocal, exclusive and priority consumers, wildcards and message groups."
+  },
+  {
+   "title": "Advisories",
+   "text": "Connection, consumer, producer, destination, expired and DLQ advisories with the real payloads, while someone listens."
+  },
+  {
+   "title": "Wire format as asked",
+   "text": "Loose or tight encoding, with or without the marshal cache, compressed bodies and blob messages."
+  }
+ ],
+ "excerpts": [
+  {
+   "frame": 74620,
+   "crop": [
+    472,
+    85,
+    968,
+    360
+   ],
+   "title": "Messages and their states",
+   "callouts": [
+    {
+     "x": 598,
+     "y": 125,
+     "title": "Counts by state",
+     "text": "Scheduled, pending, delivered, acked, dead-letter and expired for the destination."
+    },
+    {
+     "x": 966,
+     "y": 208,
+     "title": "Scheduled by cron",
+     "text": "AMQ_SCHEDULED_CRON on the environment clock; advance_clock brings it forward."
+    },
+    {
+     "x": 940,
+     "y": 272,
+     "title": "Inside a transaction",
+     "text": "Delivered in a transaction that is still open: the ack takes effect only on commit."
+    },
+    {
+     "x": 1141,
+     "y": 369,
+     "title": "Redelivery count",
+     "text": "Redelivered 7 times, past max_redeliveries: the message went to the DLQ."
+    },
+    {
+     "x": 990,
+     "y": 368,
+     "title": "Moved to ActiveMQ.DLQ",
+     "text": "The original keeps its state and points at its copy in the dead-letter queue."
+    }
+   ]
+  },
+  {
+   "frame": 74620,
+   "crop": [
+    472,
+    440,
+    968,
+    370
+   ],
+   "title": "Send as the partner, then break the broker",
+   "callouts": [
+    {
+     "x": 815,
+     "y": 490,
+     "title": "Send a message",
+     "text": "Text, properties and correlation id, dispatched to the app's consumers as the partner would."
+    },
+    {
+     "x": 547,
+     "y": 646,
+     "title": "Refuse login",
+     "text": "Every login fails with a SecurityException."
+    },
+    {
+     "x": 924,
+     "y": 646,
+     "title": "Redeliver next 2",
+     "text": "The next 2 acks are lost; those messages come again with a higher redelivery count."
+    },
+    {
+     "x": 1057,
+     "y": 646,
+     "title": "Fail next commit",
+     "text": "The commit fails with TransactionRolledBackException, or an XAException for XA."
+    },
+    {
+     "x": 657,
+     "y": 719,
+     "title": "Users",
+     "text": "User names and passwords; empty lets anyone log in."
+    }
+   ]
+  },
+  {
+   "frame": 74620,
+   "crop": [
+    472,
+    815,
+    968,
+    420
+   ],
+   "title": "Consumers, durable subscriptions, transactions",
+   "callouts": [
+    {
+     "x": 866,
+     "y": 878,
+     "title": "Selector",
+     "text": "The consumer only gets messages whose properties match region = 'north'."
+    },
+    {
+     "x": 1216,
+     "y": 878,
+     "title": "Wire format",
+     "text": "What the client negotiated: tight encoding with the marshal cache, or loose."
+    },
+    {
+     "x": 984,
+     "y": 1036,
+     "title": "Kept while offline",
+     "text": "A durable subscription holds 12 messages until its client comes back."
+    },
+    {
+     "x": 850,
+     "y": 1128,
+     "title": "Prepared XA",
+     "text": "Phase one done; recover lists it from any connection until commit or rollback."
+    },
+    {
+     "x": 854,
+     "y": 1192,
+     "title": "Committed",
+     "text": "Local transactions with their sends and acks."
+    }
+   ]
+  }
+ ],
+ "provoke": [
+  {
+   "name": "Login refused",
+   "what": "Every login fails with a SecurityException",
+   "how": "set_activemq {refuse_login: true}"
+  },
+  {
+   "name": "Connection dropped",
+   "what": "The broker closes the connection after N dispatched messages",
+   "how": "set_activemq {drop_after: 3}"
+  },
+  {
+   "name": "Slow dispatch",
+   "what": "A delay before each dispatch",
+   "how": "set_activemq {slow_dispatch: \"2s\"}"
+  },
+  {
+   "name": "Lost acks",
+   "what": "The next N acks are lost; those messages come again",
+   "how": "set_activemq {redeliver: 2}"
+  },
+  {
+   "name": "Commit fails",
+   "what": "The next N commits fail and roll back (XAException for XA)",
+   "how": "set_activemq {fail_commits: 1}"
+  },
+  {
+   "name": "Fast dead-lettering",
+   "what": "Messages go to the DLQ after fewer redeliveries",
+   "how": "set_activemq {max_redeliveries: 2}"
+  },
+  {
+   "name": "One DLQ per destination",
+   "what": "ActiveMQ.DLQ.Queue.<name> instead of ActiveMQ.DLQ",
+   "how": "set_activemq {individual_dlq: true}"
+  },
+  {
+   "name": "Expired message",
+   "what": "JMSExpiration passes; persistent ones go to the DLQ",
+   "how": "activemq_send {ttl: \"1m\"} + advance_clock"
+  },
+  {
+   "name": "Scheduled job cancelled",
+   "what": "A delayed, repeating or cron message never goes out",
+   "how": "cancel_activemq_scheduled"
+  }
+ ],
+ "advantages": [
+  {
+   "title": "No broker to run",
+   "text": "No JVM, no activemq.xml: the app connects to 61616 and gets OpenWire 10 as NMS and the Java client expect."
+  },
+  {
+   "title": "See every message's state",
+   "text": "Pending, delivered, in a transaction, rolled back or dead-lettered, which the web console never shows in one place."
+  },
+  {
+   "title": "Failures in the middle",
+   "text": "A failed commit, a lost ack or a dropped connection after N messages, exactly where retries break."
+  },
+  {
+   "title": "Time you control",
+   "text": "Scheduled, cron and expiring messages follow the environment clock, so a nightly job runs in a second."
+  }
+ ],
+ "agent": {
+  "prompt": "Check that our position consumer rolls back cleanly when a commit fails.",
+  "steps": [
+   [
+    "tool",
+    "set_activemq",
+    "{\"fail_commits\": 1}"
+   ],
+   [
+    "result",
+    "ok",
+    "the next commit fails with TransactionRolledBackException"
+   ],
+   [
+    "tool",
+    "activemq_send",
+    "{\"destination\": \"queue://positions\", \"text\": \"{\\\"position\\\": \\\"POS-1043\\\"}\"}"
+   ],
+   [
+    "tool",
+    "wait_for_activemq_ack",
+    "{\"destination\": \"queue://positions\", \"seq\": 51}"
+   ],
+   [
+    "result",
+    "ok",
+    "seq 51 acked on attempt 2: one rollback, redelivered, then committed"
+   ]
+  ],
+  "tools": [
+   [
+    "list_activemq_destinations",
+    "Queues, topics, consumers, durable subscriptions, transactions"
+   ],
+   [
+    "list_activemq_messages",
+    "Messages newest first, with their state"
+   ],
+   [
+    "activemq_send",
+    "Send as the partner: properties, priority, delay, ttl, cron"
+   ],
+   [
+    "set_activemq",
+    "Users and broker behaviour: refuse, drop, redeliver, fail commits"
+   ],
+   [
+    "cancel_activemq_scheduled",
+    "Cancel scheduled messages before they go out"
+   ],
+   [
+    "wait_for_activemq_ack",
+    "Wait until the app acked"
+   ],
+   [
+    "advance_clock",
+    "Move the environment's clock: scheduled and expiring messages follow"
+   ]
+  ],
+  "http": [
+   [
+    "GET",
+    "/api/activemq/destinations",
+    "list_activemq_destinations"
+   ],
+   [
+    "GET",
+    "/api/activemq/messages",
+    "list_activemq_messages"
+   ],
+   [
+    "POST",
+    "/api/activemq/messages",
+    "activemq_send"
+   ],
+   [
+    "PUT",
+    "/api/activemq/settings",
+    "set_activemq"
+   ],
+   [
+    "GET",
+    "/api/activemq/wait-ack",
+    "wait_for_activemq_ack"
+   ]
+  ]
+ },
+ "notes": [
+  "One port serves every environment: the default one answers.",
+  "Not made: network-of-brokers and memory-limit advisories (TempQueue, SlowConsumer, FULL)."
+ ]
+}

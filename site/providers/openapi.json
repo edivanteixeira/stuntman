@@ -1,0 +1,349 @@
+{
+ "id": "openapi",
+ "order": 3,
+ "name": "OpenAPI",
+ "color": "blue",
+ "tagline": "Give Stuntman the provider's OpenAPI or Swagger spec and it answers like the API: routes, answers, schema checks and the token route.",
+ "stands_in_for": [
+  "OpenAPI 3.0 and 3.1",
+  "Swagger 2.0",
+  "JSON or YAML specs with $ref files",
+  "OAuth2 client-credentials token URLs",
+  "OpenAPI webhooks and callbacks"
+ ],
+ "point": [
+  [
+   "Base URL",
+   "http://localhost:8028/example-payments"
+  ],
+  [
+   "The spec",
+   "http://localhost:8028/example-payments/payments.yaml"
+  ],
+  [
+   "Real host",
+   "the spec's server host on :8443, Test CA trusted"
+  ]
+ ],
+ "capabilities": [
+  {
+   "title": "A route per operation",
+   "text": "Each path and method becomes a route with the server's base path in front; the operationId is kept."
+  },
+  {
+   "title": "Answers from the spec",
+   "text": "The lowest 2xx is the default; every other response becomes a named answer like payment_required or not_found."
+  },
+  {
+   "title": "Built when no example",
+   "text": "From the schema: ids that change per call, now() for date-time, and fields that echo what the app sent."
+  },
+  {
+   "title": "Bodies checked",
+   "text": "Types, required, enums, allOf, oneOf, additionalProperties: false and date, date-time, email formats; a bad body gets the spec's 400 or 422."
+  },
+  {
+   "title": "Token route included",
+   "text": "OAuth2 client credentials in the spec add a token route at its tokenUrl; routes using it require a Bearer token."
+  },
+  {
+   "title": "Webhooks ready to send",
+   "text": "3.1 webhooks and 3.0 callbacks become webhook_<name> answers holding their payloads."
+  },
+  {
+   "title": "The spec served back",
+   "text": "Kept with the files its $refs point to, so clients generated from it work unchanged."
+  },
+  {
+   "title": "Re-import keeps edits",
+   "text": "A new version adds routes; your steps, answers, data and settings stay. Routes it lacks are listed in notInSpec."
+  }
+ ],
+ "excerpts": [
+  {
+   "frame": 44077,
+   "crop": [
+    472,
+    90,
+    968,
+    560
+   ],
+   "title": "A new service from a spec",
+   "callouts": [
+    {
+     "x": 660,
+     "y": 162,
+     "title": "Start from a spec",
+     "text": "OpenAPI 3.x, Swagger 2.0 or a WSDL; Stuntman tells which one it is."
+    },
+    {
+     "x": 663,
+     "y": 260,
+     "title": "URL or file",
+     "text": "Files the spec points to with $ref are read too."
+    },
+    {
+     "x": 686,
+     "y": 568,
+     "title": "Check bodies",
+     "text": "A body that breaks the schema gets the provider's 400 error."
+    },
+    {
+     "x": 1200,
+     "y": 290,
+     "title": "What the spec has",
+     "text": "Every route with the responses it declares, before anything is created."
+    },
+    {
+     "x": 1150,
+     "y": 633,
+     "title": "OAuth from securitySchemes",
+     "text": "Client credentials on /oauth/token, any client accepted until you add some."
+    }
+   ]
+  },
+  {
+   "frame": 44220,
+   "crop": [
+    472,
+    90,
+    968,
+    560
+   ],
+   "title": "Routes made from the spec are normal routes",
+   "callouts": [
+    {
+     "x": 590,
+     "y": 150,
+     "title": "Routes from the spec",
+     "text": "One per operation, with calls today."
+    },
+    {
+     "x": 860,
+     "y": 240,
+     "title": "Receive",
+     "text": "Bearer token from /oauth/token; the body is checked against ChargeRequest, else the invalid answer."
+    },
+    {
+     "x": 860,
+     "y": 395,
+     "title": "Decide",
+     "text": "Rules you add pick the spec's other responses: a card ending 0002 gets 402."
+    },
+    {
+     "x": 551,
+     "y": 515,
+     "title": "Re-import the spec",
+     "text": "Reads a new version and keeps your steps; the served spec is one click away."
+    },
+    {
+     "x": 590,
+     "y": 615,
+     "title": "Path it lacks",
+     "text": "A call to a path the spec does not have shows in Unmatched."
+    }
+   ]
+  },
+  {
+   "frame": 44352,
+   "crop": [
+    472,
+    90,
+    968,
+    560
+   ],
+   "title": "Answers from the spec's responses",
+   "callouts": [
+    {
+     "x": 590,
+     "y": 168,
+     "title": "One per response",
+     "text": "Marked example (the spec's example) or schema (built from the schema)."
+    },
+    {
+     "x": 915,
+     "y": 191,
+     "title": "Reset to the spec",
+     "text": "Edit an answer to match the real provider, or go back to what the spec said."
+    },
+    {
+     "x": 865,
+     "y": 462,
+     "title": "Checked against the schema",
+     "text": "The body is a template checked against the response schema."
+    },
+    {
+     "x": 960,
+     "y": 531,
+     "title": "Timeline sentence",
+     "text": "What the call leaves on the timeline, as a template."
+    },
+    {
+     "x": 1320,
+     "y": 300,
+     "title": "What the app gets",
+     "text": "Status, headers and body, filled from the last call."
+    }
+   ]
+  }
+ ],
+ "provoke": [
+  {
+   "name": "Any declared response",
+   "what": "402, 404, 409 or any response the spec declares, on the next calls",
+   "how": "force_answer payment_required"
+  },
+  {
+   "name": "Validation error",
+   "what": "A body that breaks the schema gets the spec's 400 or 422 naming the field",
+   "how": "send a bad body"
+  },
+  {
+   "name": "Expired token",
+   "what": "Every token becomes invalid; the next call gets 401",
+   "how": "expire_tokens"
+  },
+  {
+   "name": "Missing token",
+   "what": "A route that uses the OAuth scheme refuses a call without Bearer",
+   "how": "call without a token"
+  },
+  {
+   "name": "Undeclared response",
+   "what": "An answer the spec does not have",
+   "how": "set_answer"
+  },
+  {
+   "name": "Network and server failures",
+   "what": "Reset, empty, timeout, 500, 503 or an HTML page",
+   "how": "force_answer"
+  },
+  {
+   "name": "Slow or flaky",
+   "what": "Latency on every answer, or a random share of failures",
+   "how": "set_service latency, fail_share"
+  },
+  {
+   "name": "Path not in the spec",
+   "what": "The app calls a version the spec lacks; it answers 404 no route",
+   "how": "list_unmatched"
+  }
+ ],
+ "advantages": [
+  {
+   "title": "Right on the first call",
+   "text": "A 201 that echoes the amount and currency the app sent, without writing a line."
+  },
+  {
+   "title": "Every response reachable",
+   "text": "Responses a sandbox rarely returns come on cue: 402, 409, 422, 503."
+  },
+  {
+   "title": "Contract drift caught",
+   "text": "Bodies that break the schema are refused, and calls to paths the spec lacks are listed."
+  },
+  {
+   "title": "Follows new versions",
+   "text": "Re-import the provider's new spec without losing the rules you added."
+  }
+ ],
+ "agent": {
+  "prompt": "Stand in for the payments API from its OpenAPI spec and test a declined card at checkout.",
+  "steps": [
+   [
+    "tool",
+    "import_spec",
+    "{\"service\": \"example-payments\", \"source\": \"https://api.payments.example.com/openapi.yaml\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "5 routes, 10 answers, 1 webhook"
+   ],
+   [
+    "tool",
+    "force_answer",
+    "{\"service\": \"example-payments\", \"answer\": \"payment_required\", \"route\": \"POST /v1/charges\", \"count\": 1}"
+   ],
+   [
+    "tool",
+    "wait_for_api_call",
+    "{\"service\": \"example-payments\", \"route\": \"POST /v1/charges\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "402 payment_required went to the app"
+   ]
+  ],
+  "tools": [
+   [
+    "import_spec",
+    "A service from OpenAPI 3.x, Swagger 2.0 or a WSDL"
+   ],
+   [
+    "reimport_spec",
+    "Reads the spec again and keeps your steps"
+   ],
+   [
+    "list_answers",
+    "Named answers and which route uses each"
+   ],
+   [
+    "set_answer",
+    "Creates or replaces a named answer"
+   ],
+   [
+    "set_route",
+    "Creates or replaces a route"
+   ],
+   [
+    "try_route",
+    "Runs a route on a sample request"
+   ],
+   [
+    "force_answer",
+    "The next calls get a named answer"
+   ],
+   [
+    "expire_tokens",
+    "Every token becomes invalid"
+   ],
+   [
+    "list_unmatched",
+    "Calls to paths no route takes"
+   ]
+  ],
+  "http": [
+   [
+    "POST",
+    "/api/plugins/spec",
+    "import_spec"
+   ],
+   [
+    "POST",
+    "/api/plugins/{service}/spec",
+    "reimport_spec"
+   ],
+   [
+    "GET",
+    "/api/plugins/{service}/answers",
+    "list_answers"
+   ],
+   [
+    "POST",
+    "/api/plugins/{service}/try",
+    "try_route"
+   ],
+   [
+    "POST",
+    "/api/plugins/{service}/tokens/expire",
+    "expire_tokens"
+   ]
+  ]
+ },
+ "notes": [
+  "Only JSON bodies are checked; pattern, lengths, numeric ranges and discriminator are not. Path, query and headers are not checked.",
+  "API keys and OAuth flows other than client credentials are not checked."
+ ]
+}

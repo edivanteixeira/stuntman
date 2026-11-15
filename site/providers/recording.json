@@ -1,0 +1,333 @@
+{
+ "id": "recording",
+ "order": 4,
+ "name": "Recording",
+ "color": "blue",
+ "tagline": "No spec and no plugin? Record the provider's sandbox through Stuntman and it writes the plugin for you.",
+ "stands_in_for": [
+  "Any HTTP provider with a sandbox",
+  "Undocumented partner APIs",
+  "Unfinished plugins (record only unknown calls)"
+ ],
+ "point": [
+  [
+   "App points at",
+   "http://localhost:8028/globex-shipping"
+  ],
+  [
+   "Upstream",
+   "https://sandbox.shipping.globex.example"
+  ],
+  [
+   "Real host",
+   "the sandbox's host on :8443, Test CA trusted"
+  ]
+ ],
+ "capabilities": [
+  {
+   "title": "Record through the sandbox",
+   "text": "Each call goes to the upstream and back; the app gets the real answer and Stuntman keeps the pair."
+  },
+  {
+   "title": "Secrets never kept",
+   "text": "Auth headers, keys and password fields become secret://; e-mails, card numbers and CPFs become synthetic ones."
+  },
+  {
+   "title": "Every call or only new",
+   "text": "mode=unknown sends only calls no route answers, to finish a plugin that is almost done."
+  },
+  {
+   "title": "Stops by itself",
+   "text": "After stop_after (default 30 min) or max calls (default 500). Pause and resume at any time."
+  },
+  {
+   "title": "Review before writing",
+   "text": "Calls grouped into routes like /v2/shipments/{id}, one answer per status, the most frequent success as default."
+  },
+  {
+   "title": "Ids and dates as templates",
+   "text": "Changing ids become random_id(), dates now(), and values the app sent are echoed back."
+  },
+  {
+   "title": "Rules suggested",
+   "text": "A field only the error calls lacked becomes a rule: when !body.destination.postal_code, answer invalid."
+  },
+  {
+   "title": "Binary answers as files",
+   "text": "A PDF label or an image up to 5 MB is kept next to the plugin and sent as it came."
+  }
+ ],
+ "excerpts": [
+  {
+   "frame": 44469,
+   "crop": [
+    472,
+    100,
+    968,
+    560
+   ],
+   "title": "Start a recording",
+   "callouts": [
+    {
+     "x": 772,
+     "y": 160,
+     "title": "Record the real provider",
+     "text": "One of the ways to start a service, next to a spec or the catalog."
+    },
+    {
+     "x": 723,
+     "y": 261,
+     "title": "The upstream",
+     "text": "The provider's sandbox: Stuntman sends each call there and keeps a copy."
+    },
+    {
+     "x": 608,
+     "y": 480,
+     "title": "Every call or only unknown",
+     "text": "Record from zero, or let the routes answer and send only the rest."
+    },
+    {
+     "x": 690,
+     "y": 582,
+     "title": "Never kept",
+     "text": "Credentials go to secret://; card numbers, CPFs and e-mails are replaced with synthetic ones."
+    },
+    {
+     "x": 1207,
+     "y": 555,
+     "title": "Sandbox keys only",
+     "text": "The key reaches the provider as the app sent it and may use its quota."
+    }
+   ]
+  },
+  {
+   "frame": 44599,
+   "crop": [
+    472,
+    0,
+    968,
+    580
+   ],
+   "title": "While it records",
+   "callouts": [
+    {
+     "x": 1350,
+     "y": 28,
+     "title": "Time left",
+     "text": "The recording stops by itself; Stop and review ends it now."
+    },
+    {
+     "x": 660,
+     "y": 108,
+     "title": "Calls kept, secrets masked",
+     "text": "Pause sends nothing more to the sandbox; calls then get the routes' answers or 404."
+    },
+    {
+     "x": 740,
+     "y": 432,
+     "title": "A PDF kept as a file",
+     "text": "Binary answers up to 5 MB are saved next to the plugin."
+    },
+    {
+     "x": 740,
+     "y": 535,
+     "title": "No answer from the sandbox",
+     "text": "A timeout gives the app a 502 and is left out of the review."
+    },
+    {
+     "x": 1200,
+     "y": 350,
+     "title": "What was kept",
+     "text": "authorization stored as secret://globex-token, never the real value."
+    }
+   ]
+  },
+  {
+   "frame": 44726,
+   "crop": [
+    472,
+    90,
+    968,
+    560
+   ],
+   "title": "The review becomes a plugin",
+   "callouts": [
+    {
+     "x": 504,
+     "y": 200,
+     "title": "Routes found",
+     "text": "Uncheck what the plugin should not have, such as a health check."
+    },
+    {
+     "x": 665,
+     "y": 490,
+     "title": "How paths were grouped",
+     "text": "Ids in paths became {id}; split them back if they are different routes."
+    },
+    {
+     "x": 610,
+     "y": 555,
+     "title": "Create the plugin",
+     "text": "Writes routes and answers; Record more adds to the same recording."
+    },
+    {
+     "x": 1220,
+     "y": 360,
+     "title": "Default answer as a template",
+     "text": "Ids and dates became templates; fields equal to the request echo it."
+    },
+    {
+     "x": 1220,
+     "y": 577,
+     "title": "Rule suggested",
+     "text": "Tells the invalid answer apart from created by the field its calls lacked."
+    }
+   ]
+  }
+ ],
+ "provoke": [
+  {
+   "name": "A recorded error",
+   "what": "The provider's own 422 or 404, on the next calls",
+   "how": "force_answer invalid | not_found"
+  },
+  {
+   "name": "Answers no rule reaches",
+   "what": "A recorded answer kept without a rule, given only on demand",
+   "how": "force_answer"
+  },
+  {
+   "name": "The timeout the sandbox gave",
+   "what": "The upstream that never answered, now on cue",
+   "how": "force_answer timeout"
+  },
+  {
+   "name": "Network and server failures",
+   "what": "Reset, empty reply, 500, 503 or an HTML page",
+   "how": "force_answer"
+  },
+  {
+   "name": "Slow provider",
+   "what": "Latency on every answer of the recorded service",
+   "how": "set_service latency"
+  },
+  {
+   "name": "No route",
+   "what": "While paused or after the limit, unknown calls get 404 no route",
+   "how": "pause_recording, list_unmatched"
+  }
+ ],
+ "advantages": [
+  {
+   "title": "Sandbox needed once",
+   "text": "After make_plugin the provider is no longer called; tests run offline and in CI."
+  },
+  {
+   "title": "Real shapes, no secrets",
+   "text": "Answers are the provider's own, with credentials and personal data masked before saving."
+  },
+  {
+   "title": "Failures the sandbox hides",
+   "text": "The recorded plugin takes force_answer, latency and expired tokens like any other."
+  },
+  {
+   "title": "A plugin you can read",
+   "text": "Routes, answers and rules in plain YAML, edited in the route editor."
+  }
+ ],
+ "agent": {
+  "prompt": "Record the shipping sandbox while our integration tests run, then turn it into a plugin.",
+  "steps": [
+   [
+    "tool",
+    "start_recording",
+    "{\"service\": \"globex-shipping\", \"upstream\": \"https://sandbox.shipping.globex.example\", \"stop_after\": \"30m\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "recording; point the app at http://localhost:8028/globex-shipping"
+   ],
+   [
+    "tool",
+    "stop_recording",
+    "{\"service\": \"globex-shipping\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "3 routes, 5 answers, 1 rule suggested"
+   ],
+   [
+    "tool",
+    "make_plugin",
+    "{\"service\": \"globex-shipping\"}"
+   ]
+  ],
+  "tools": [
+   [
+    "start_recording",
+    "Sends the service's calls to the sandbox and keeps each pair"
+   ],
+   [
+    "recording_status",
+    "State, calls kept, time left; review=true shows the review"
+   ],
+   [
+    "pause_recording",
+    "Pauses, or resumes with resume=true"
+   ],
+   [
+    "stop_recording",
+    "Stops and returns the review"
+   ],
+   [
+    "make_plugin",
+    "Writes the plugin from the review"
+   ],
+   [
+    "get_plugin",
+    "The plugin YAML it wrote"
+   ],
+   [
+    "list_api_calls",
+    "Recorded calls, newest first"
+   ],
+   [
+    "force_answer",
+    "Gives any recorded answer on the next calls"
+   ]
+  ],
+  "http": [
+   [
+    "POST",
+    "/api/plugins/{service}/recording",
+    "start_recording"
+   ],
+   [
+    "GET",
+    "/api/plugins/{service}/recording",
+    "recording_status"
+   ],
+   [
+    "POST",
+    "/api/plugins/{service}/recording/pause",
+    "pause_recording"
+   ],
+   [
+    "DELETE",
+    "/api/plugins/{service}/recording",
+    "stop_recording"
+   ],
+   [
+    "POST",
+    "/api/plugins/{service}/recording/plugin",
+    "make_plugin"
+   ]
+  ]
+ },
+ "notes": [
+  "HTTP only: no WebSockets or server-sent events. One recording per service; the provider has 30 s to answer.",
+  "State is not inferred: add keep and lookup by hand when a read must return what was created."
+ ]
+}

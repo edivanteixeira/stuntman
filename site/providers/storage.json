@@ -1,0 +1,371 @@
+{
+ "id": "storage",
+ "order": 11,
+ "name": "Storage",
+ "color": "brown",
+ "tagline": "Azure Blob and Amazon S3 that keep every object, link and event, and fail exactly when you ask.",
+ "stands_in_for": [
+  "Azure Blob Storage",
+  "Amazon S3",
+  "Cloudflare R2",
+  "Event Grid",
+  "S3 event notifications"
+ ],
+ "point": [
+  [
+   "Azure Blob",
+   "BlobEndpoint=http://127.0.0.1:10000/<account> in the connection string"
+  ],
+  [
+   "Amazon S3",
+   "endpoint http://127.0.0.1:9000 (SigV4, path style)"
+  ],
+  [
+   "Auth",
+   "SharedKey and SAS for Blob; SigV4 and presigned URLs for S3"
+  ]
+ ],
+ "capabilities": [
+  {
+   "title": "Objects with their history",
+   "text": "Accounts, containers, block and multipart uploads. Each object shows versions, metadata and who wrote it: the app, you, the seed or an agent."
+  },
+  {
+   "title": "Wait for the upload",
+   "text": "wait_for_object returns the first new object under a prefix, so a test acts in the app and then waits for the file instead of sleeping."
+  },
+  {
+   "title": "Rules per operation",
+   "text": "When put, get, delete, list or link matches account, container and path glob: answer 503, 403, timeout or truncate. First N, every time or a share."
+  },
+  {
+   "title": "Try a rule first",
+   "text": "test_rule replays the last requests and shows what each attempt would get, before anything is saved."
+  },
+  {
+   "title": "Links you can break",
+   "text": "Every SAS or presigned URL is listed with what it allows, validity and uses. Make its next use expired, badly signed, IP-denied or gone."
+  },
+  {
+   "title": "Events like the cloud",
+   "text": "BlobCreated and BlobDeleted in Event Grid or S3 format, to a webhook or a queue, with the Event Grid validation handshake first."
+  },
+  {
+   "title": "Break event delivery",
+   "text": "Hold, duplicate, reorder, drop or strip a field from the next event, then resend it to check the app's handler is idempotent."
+  },
+  {
+   "title": "Keys and reachability",
+   "text": "rotate_key makes apps that sign with the old key get 403. set_account_reachability makes the whole account time out, 503 or 401."
+  },
+  {
+   "title": "Back to the seed",
+   "text": "reset_to_seed puts every account back to its seed folder and says what changed since it was loaded."
+  }
+ ],
+ "excerpts": [
+  {
+   "frame": 34048,
+   "crop": [
+    473,
+    90,
+    967,
+    560
+   ],
+   "title": "Objects, the next read and the history",
+   "callouts": [
+    {
+     "x": 600,
+     "y": 229,
+     "title": "Written by the app",
+     "text": "Uploaded by acme-api over the real Blob API: size, type, reads and who wrote it."
+    },
+    {
+     "x": 557,
+     "y": 351,
+     "title": "A read armed to fail",
+     "text": "set_next_read makes the next read answer 403, 404, 503, slow, truncated or with a bad MD5."
+    },
+    {
+     "x": 620,
+     "y": 404,
+     "title": "Added by you",
+     "text": "put_object can store a truncated file on purpose; it is never shown as sent by the app."
+    },
+    {
+     "x": 1150,
+     "y": 421,
+     "title": "Next read, per object",
+     "text": "Normal by default; pick a failure once, then it goes back to normal by itself."
+    },
+    {
+     "x": 1240,
+     "y": 557,
+     "title": "Versions",
+     "text": "Every version is kept, with ETag and Content-MD5, so you can compare what the app overwrote."
+    }
+   ]
+  },
+  {
+   "frame": 32034,
+   "crop": [
+    233,
+    90,
+    1207,
+    520
+   ],
+   "title": "A rule, tried before it is saved",
+   "callouts": [
+    {
+     "x": 370,
+     "y": 137,
+     "title": "Rules in order",
+     "text": "The first rule that matches answers. Each shows its hits today and switches off with one click."
+    },
+    {
+     "x": 735,
+     "y": 317,
+     "title": "Path glob",
+     "text": "Operation, account, container and a glob: * is one level, ** any depth."
+    },
+    {
+     "x": 668,
+     "y": 443,
+     "title": "The answer",
+     "text": "503, 403, 404, 409, 412, 413, timeout, reset, empty, slow, truncate or bad_md5."
+    },
+    {
+     "x": 780,
+     "y": 491,
+     "title": "How often",
+     "text": "The first N attempts, every time, or a random share of the requests."
+    },
+    {
+     "x": 1170,
+     "y": 430,
+     "title": "What the app will see",
+     "text": "Each attempt against the last 50 real requests: 503, 503, then 201."
+    }
+   ]
+  },
+  {
+   "frame": 5547,
+   "crop": [
+    233,
+    90,
+    1207,
+    560
+   ],
+   "title": "Every SAS and presigned link",
+   "callouts": [
+    {
+     "x": 290,
+     "y": 193,
+     "title": "By state",
+     "text": "Valid, expired or revoked; filter by who issued the link and by kind (Azure SAS or S3 presigned)."
+    },
+    {
+     "x": 935,
+     "y": 249,
+     "title": "Refused uses",
+     "text": "A late use of an expired link still shows up, with the answer the app's user got."
+    },
+    {
+     "x": 840,
+     "y": 355,
+     "title": "Revoked",
+     "text": "revoke_link: the next use answers 403 AuthenticationFailed, like Azure after a key rotation."
+    },
+    {
+     "x": 1130,
+     "y": 289,
+     "title": "Next use",
+     "text": "set_next_use: expired, bad_signature, ip_denied, permission, not_yet_valid or gone."
+    },
+    {
+     "x": 1150,
+     "y": 515,
+     "title": "Uses",
+     "text": "Each download with method, status and address, so you see who used the link and when."
+    }
+   ]
+  }
+ ],
+ "provoke": [
+  {
+   "name": "Uploads fail twice",
+   "what": "503 on the first 2 PUTs to contracts/**, then 201",
+   "how": "create_rule with how_often {\"first\": 2}"
+  },
+  {
+   "name": "Reads fail at random",
+   "what": "A share of GETs answer 503 or time out",
+   "how": "create_rule with how_often {\"random\": 25}"
+  },
+  {
+   "name": "One bad read",
+   "what": "The next read is 403, 404, 503, slow, truncated or bad MD5",
+   "how": "set_next_read"
+  },
+  {
+   "name": "Link expired early",
+   "what": "The next use of a link answers as expired or badly signed",
+   "how": "set_next_use"
+  },
+  {
+   "name": "Link revoked",
+   "what": "403 AuthenticationFailed; the app is not told",
+   "how": "revoke_link"
+  },
+  {
+   "name": "Old key",
+   "what": "Apps signing with the previous key get 403",
+   "how": "rotate_key"
+  },
+  {
+   "name": "Account down",
+   "what": "The whole account times out, answers 503 or 401",
+   "how": "set_account_reachability"
+  },
+  {
+   "name": "Event duplicated",
+   "what": "The next BlobCreated arrives twice",
+   "how": "set_next_delivery duplicate"
+  },
+  {
+   "name": "Events out of order",
+   "what": "Reorder, hold for 30 s or drop the next event",
+   "how": "set_next_delivery reorder | hold:30s | drop"
+  },
+  {
+   "name": "Event missing a field",
+   "what": "The payload lacks a field the handler expects",
+   "how": "set_next_delivery missing_field"
+  }
+ ],
+ "advantages": [
+  {
+   "title": "Failures the cloud won't give",
+   "text": "Azure and S3 do not fail on demand. Here a 503 on the second upload, a truncated read or a late event happens on the next call."
+  },
+  {
+   "title": "Links you can inspect",
+   "text": "Every SAS and presigned URL the app makes is listed with its uses and refusals, which the real portal never shows."
+  },
+  {
+   "title": "No account, no bill",
+   "text": "No subscription, no keys to protect and no egress cost. Each environment has its own accounts and resets to a seed."
+  },
+  {
+   "title": "Proof of who wrote what",
+   "text": "Objects remember whether the app, a test, an agent or the seed wrote them, so a test can prove the app did the upload."
+  }
+ ],
+ "agent": {
+  "prompt": "Make the contract upload fail twice with 503 and check that the app retries and the object ends up in storage.",
+  "steps": [
+   [
+    "tool",
+    "create_rule",
+    "{\"service\": \"azure-blob\", \"name\": \"Contract uploads fail twice\", \"when\": {\"op\": \"put\", \"container\": \"documents\", \"path\": \"contracts/**\"}, \"then\": {\"respond\": \"503\"}, \"how_often\": {\"first\": 2}}"
+   ],
+   [
+    "result",
+    "ok",
+    "rule saved, first in order"
+   ],
+   [
+    "tool",
+    "wait_for_object",
+    "{\"account\": \"acme-docs-stg\", \"container\": \"documents\", \"prefix\": \"contracts/\", \"timeout\": \"60s\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "contracts/2026/11/nda-acme.pdf · 248 KB · by acme-api · 3rd attempt 201"
+   ],
+   [
+    "tool",
+    "wait_for_storage_delivery",
+    "{\"type\": \"created\", \"path\": \"documents/contracts/2026/11/nda-acme.pdf\"}"
+   ]
+  ],
+  "tools": [
+   [
+    "list_objects",
+    "Objects under a prefix, newest first, with who wrote them"
+   ],
+   [
+    "get_object",
+    "Properties, versions and history of one object"
+   ],
+   [
+    "wait_for_object",
+    "Wait for the first new object under a prefix"
+   ],
+   [
+    "set_next_read",
+    "Arm the next read: 403, 404, 503, slow, truncate, bad_md5"
+   ],
+   [
+    "create_rule",
+    "Fail matching requests: first N, every time or a share"
+   ],
+   [
+    "test_rule",
+    "See what a rule would do to recent traffic"
+   ],
+   [
+    "list_links",
+    "SAS and presigned links with uses and refusals"
+   ],
+   [
+    "set_next_use",
+    "Make a link's next use expired, badly signed or gone"
+   ],
+   [
+    "set_next_delivery",
+    "Hold, duplicate, reorder or drop the next event"
+   ],
+   [
+    "wait_for_storage_delivery",
+    "Wait for an event delivery and the app's answer"
+   ]
+  ],
+  "http": [
+   [
+    "GET",
+    "/api/storage/{account}/{container}/objects",
+    "list_objects"
+   ],
+   [
+    "GET",
+    "/api/storage/{account}/{container}/wait",
+    "wait_for_object"
+   ],
+   [
+    "PUT",
+    "/api/storage/{account}/{container}/next-read/{*path}",
+    "set_next_read"
+   ],
+   [
+    "POST",
+    "/api/services/{name}/rules",
+    "create_rule"
+   ],
+   [
+    "PUT",
+    "/api/storage/links/{id}/next-use",
+    "set_next_use"
+   ],
+   [
+    "GET",
+    "/api/storage/events/wait",
+    "wait_for_storage_delivery"
+   ]
+  ]
+ },
+ "notes": [
+  "Blob on :10000, S3 on :9000; rules live in storage/rules/<service>.yaml per environment."
+ ]
+}

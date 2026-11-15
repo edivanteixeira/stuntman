@@ -1,0 +1,278 @@
+{
+ "id": "events",
+ "order": 20,
+ "name": "Product events",
+ "color": "red",
+ "tagline": "The analytics your app sends, kept per user and checked against a tracking plan.",
+ "stands_in_for": [
+  "PostHog",
+  "Segment",
+  "Mixpanel",
+  "GA4 Measurement Protocol"
+ ],
+ "point": [
+  [
+   "PostHog",
+   "http://localhost:8025/posthog"
+  ],
+  [
+   "Segment",
+   "http://localhost:8025/segment"
+  ],
+  [
+   "Mixpanel",
+   "http://localhost:8025/mixpanel"
+  ],
+  [
+   "GA4",
+   "http://localhost:8025/ga4 (/mp/collect and /debug/mp/collect)"
+  ]
+ ],
+ "capabilities": [
+  {
+   "title": "Four SDKs, unchanged",
+   "text": "PostHog capture, batch, e, decide and flags; Segment track, identify, page, screen, group, alias and batch; Mixpanel track, import, engage; GA4."
+  },
+  {
+   "title": "Bodies as SDKs send them",
+   "text": "JSON, gzip or form-encoded bodies are all read, so the app's real SDK is used as is."
+  },
+  {
+   "title": "Events per user",
+   "text": "Every event with its user and properties; event_people lists the users events arrived for, with counts."
+  },
+  {
+   "title": "Tracking plans",
+   "text": "A plan lists the events a flow must send and the properties each needs, as {event, props, min}."
+  },
+  {
+   "title": "Fail CI on gaps",
+   "text": "check_events answers ok: false with the missing events and properties, so a test run can fail on it."
+  },
+  {
+   "title": "Personal data flagged",
+   "text": "E-mail addresses, CPFs and card numbers found in properties are flagged on the event, before they reach a real tool."
+  },
+  {
+   "title": "Wait for an event",
+   "text": "wait_for_event returns the event once the app sends it, optionally with a property value."
+  },
+  {
+   "title": "A collector that fails",
+   "text": "The next answers are 400, 413, 429 with Retry-After, slow, or half the events silently lost."
+  }
+ ],
+ "excerpts": [
+  {
+   "frame": 73781,
+   "crop": [
+    232,
+    0,
+    1208,
+    420
+   ],
+   "title": "A plan, checked against what arrived",
+   "callouts": [
+    {
+     "x": 278,
+     "y": 93,
+     "title": "Per source",
+     "text": "PostHog, Segment, Mixpanel and GA4, each with the calls it accepts and its count."
+    },
+    {
+     "x": 340,
+     "y": 340,
+     "title": "SDK hosts",
+     "text": "Point each SDK at its path on :8025; nothing else in the app changes."
+    },
+    {
+     "x": 922,
+     "y": 268,
+     "title": "Missing property",
+     "text": "workspace_created arrived without plan, which the plan requires."
+    },
+    {
+     "x": 513,
+     "y": 396,
+     "title": "Missing event",
+     "text": "trial_started never arrived: check_events answers ok: false."
+    }
+   ]
+  },
+  {
+   "frame": 73781,
+   "crop": [
+    472,
+    90,
+    968,
+    520
+   ],
+   "title": "Writing a plan",
+   "callouts": [
+    {
+     "x": 526,
+     "y": 118,
+     "title": "Plans",
+     "text": "One plan per flow, such as signup and invite."
+    },
+    {
+     "x": 580,
+     "y": 154,
+     "title": "4 of 7 arrived",
+     "text": "How much of the plan the app really sent in the window."
+    },
+    {
+     "x": 745,
+     "y": 530,
+     "title": "One event a line",
+     "text": "Properties after a colon; the same plan works from set_event_plan."
+    },
+    {
+     "x": 549,
+     "y": 582,
+     "title": "Save the plan",
+     "text": "Saved in events/plans.yaml, so tests and CI read the same plan."
+    }
+   ]
+  }
+ ],
+ "provoke": [
+  {
+   "name": "Bad request",
+   "what": "The collector answers 400",
+   "how": "force_events_failure 400"
+  },
+  {
+   "name": "Payload too large",
+   "what": "The collector answers 413",
+   "how": "force_events_failure 413"
+  },
+  {
+   "name": "Rate limited",
+   "what": "429 with Retry-After",
+   "how": "force_events_failure 429"
+  },
+  {
+   "name": "Slow collector",
+   "what": "Each answer takes 3 s",
+   "how": "force_events_failure slow"
+  },
+  {
+   "name": "Half lost",
+   "what": "Half the events dropped, 200 anyway",
+   "how": "force_events_failure drop_half"
+  }
+ ],
+ "advantages": [
+  {
+   "title": "Tracking is tested",
+   "text": "Analytics breaks silently in production. A plan in CI fails the build when an event or property goes missing."
+  },
+  {
+   "title": "No real project polluted",
+   "text": "Test runs do not pollute a real PostHog, Segment, Mixpanel or GA4 project, and cost nothing."
+  },
+  {
+   "title": "Personal data caught early",
+   "text": "E-mails, CPFs and card numbers in properties are flagged before the app sends them to a real tool."
+  },
+  {
+   "title": "One place, four SDKs",
+   "text": "Apps that use several analytics tools are checked in one list and one plan."
+  }
+ ],
+ "agent": {
+  "prompt": "Run the signup flow and tell me which tracking events are missing.",
+  "steps": [
+   [
+    "tool",
+    "set_event_plan",
+    "{\"name\": \"signup\", \"events\": [\"signup_completed\", {\"event\": \"workspace_created\", \"props\": [\"plan\"]}]}"
+   ],
+   [
+    "tool",
+    "wait_for_event",
+    "{\"name\": \"signup_completed\", \"timeout\": \"60s\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "signup_completed · user emma.carter@example.com · PostHog"
+   ],
+   [
+    "tool",
+    "check_events",
+    "{\"plan\": \"signup\", \"within\": \"10m\"}"
+   ],
+   [
+    "result",
+    "ok: false",
+    "missing: [\"workspace_created\"]"
+   ]
+  ],
+  "tools": [
+   [
+    "list_product_events",
+    "Events, newest first, with user, properties and personal data"
+   ],
+   [
+    "event_people",
+    "The users events arrived for"
+   ],
+   [
+    "wait_for_event",
+    "Wait until the app sends an event"
+   ],
+   [
+    "check_events",
+    "Compare what arrived with a plan"
+   ],
+   [
+    "list_event_plans",
+    "The plans and their events"
+   ],
+   [
+    "set_event_plan",
+    "Add or replace a plan"
+   ],
+   [
+    "delete_event_plan",
+    "Remove a plan"
+   ],
+   [
+    "force_events_failure",
+    "Make the collector's next answers fail"
+   ]
+  ],
+  "http": [
+   [
+    "GET",
+    "/api/events",
+    "list_product_events"
+   ],
+   [
+    "GET",
+    "/api/events/wait",
+    "wait_for_event"
+   ],
+   [
+    "POST",
+    "/api/events/check",
+    "check_events"
+   ],
+   [
+    "PUT",
+    "/api/events/plans",
+    "set_event_plan"
+   ],
+   [
+    "POST",
+    "/api/events/force",
+    "force_events_failure"
+   ]
+  ]
+ },
+ "notes": [
+  "Plans live in events/plans.yaml."
+ ]
+}

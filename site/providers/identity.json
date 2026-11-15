@@ -1,0 +1,387 @@
+{
+ "id": "identity",
+ "order": 17,
+ "name": "Identity",
+ "color": "green",
+ "tagline": "An identity provider with synthetic people: OIDC and OAuth2, SAML, LDAP, password grant and Bot Framework.",
+ "stands_in_for": [
+  "Microsoft Entra ID (v2)",
+  "Google",
+  "Okta",
+  "Generic OIDC",
+  "SAML 2.0",
+  "LDAP / Active Directory",
+  "Bot Framework (Teams)"
+ ],
+ "point": [
+  [
+   "Authority",
+   "http://localhost:8025/login/<tenant>/v2.0 (discovery, JWKS and token per environment)"
+  ],
+  [
+   "SAML",
+   "metadata /login/<tenant>/saml/metadata · SSO /login/<tenant>/saml/sso"
+  ],
+  [
+   "LDAP",
+   "ldap://localhost:3389"
+  ],
+  [
+   "Bot Framework",
+   "/botframework/v1/.well-known/openidconfiguration"
+  ]
+ ],
+ "capabilities": [
+  {
+   "title": "Four flavours of OIDC",
+   "text": "Entra ID v2, Google, Okta or generic OIDC: discovery, JWKS, authorize, token, userinfo and logout, with the provider's error codes."
+  },
+  {
+   "title": "A sign-in page",
+   "text": "Stuntman serves the login page: a person, a test or an agent picks the simulated user, then MFA and consent follow."
+  },
+  {
+   "title": "Synthetic people",
+   "text": "Users with tenant, groups, roles, MFA, guest, extra claims, locked or disabled. The next tokens carry the change."
+  },
+  {
+   "title": "App registrations",
+   "text": "Web, SPA, daemon or API apps with exact redirect URIs, secrets, permissions, optional claims and admin consent."
+  },
+  {
+   "title": "SAML 2.0 IdP",
+   "text": "Metadata, SSO by Redirect or POST, a signed assertion posted to the app's ACS; name ID from email, oid or upn."
+  },
+  {
+   "title": "LDAP directory",
+   "text": "Simple bind, search, compare and whoami on :3389. Wrong passwords, locked and disabled accounts answer as Active Directory."
+  },
+  {
+   "title": "Password grant",
+   "text": "grant_type=password with AADSTS50126 for a wrong password, AADSTS50076 for MFA and AADSTS50053 for a locked user."
+  },
+  {
+   "title": "Bot Framework",
+   "text": "send_bot_activity posts a Teams message or card action to the bot, signed by the Bot Connector; replies land in list_bot_messages."
+  },
+  {
+   "title": "OAuth client checks",
+   "text": "Stuntman acts as the client of the app's MCP server and runs ten authorization checks against it."
+  }
+ ],
+ "excerpts": [
+  {
+   "frame": 34269,
+   "crop": [
+    440,
+    90,
+    960,
+    600
+   ],
+   "title": "The sign-in page Stuntman serves",
+   "callouts": [
+    {
+     "x": 568,
+     "y": 223,
+     "title": "Pick who signs in",
+     "text": "Each synthetic user with groups and MFA. Agents skip the page with sign_in_as."
+    },
+    {
+     "x": 832,
+     "y": 288,
+     "title": "Another tenant",
+     "text": "A user from another tenant, for apps that must refuse or accept guests."
+    },
+    {
+     "x": 820,
+     "y": 480,
+     "title": "MFA, phone lost",
+     "text": "A user whose MFA cannot complete, to test the app's error page."
+    },
+    {
+     "x": 1120,
+     "y": 197,
+     "title": "What the app asked for",
+     "text": "Client, redirect, scopes, prompt, PKCE and state, checked against the app registration."
+    },
+    {
+     "x": 835,
+     "y": 650,
+     "title": "Cancel",
+     "text": "The person cancels: the app gets error=access_denied."
+    }
+   ]
+  },
+  {
+   "frame": 13546,
+   "crop": [
+    233,
+    90,
+    1207,
+    480
+   ],
+   "title": "Users and the claims they carry",
+   "callouts": [
+    {
+     "x": 295,
+     "y": 139,
+     "title": "Users",
+     "text": "Synthetic people of the tenant: MFA, guest, another tenant, disabled."
+    },
+    {
+     "x": 650,
+     "y": 296,
+     "title": "Groups and roles",
+     "text": "Set groups or a number of them: 210 groups takes the app down the overage path."
+    },
+    {
+     "x": 578,
+     "y": 427,
+     "title": "MFA required",
+     "text": "The next sign-in asks for a code; provoke mfa_fails to make it fail."
+    },
+    {
+     "x": 1200,
+     "y": 250,
+     "title": "The token",
+     "text": "The ID token the app will get, with the claims of this user."
+    },
+    {
+     "x": 660,
+     "y": 488,
+     "title": "Revoke consent",
+     "text": "The next sign-in asks again and refresh tokens stop working."
+    }
+   ]
+  },
+  {
+   "frame": 73893,
+   "crop": [
+    232,
+    90,
+    1208,
+    580
+   ],
+   "title": "Older protocols on the same users",
+   "callouts": [
+    {
+     "x": 450,
+     "y": 179,
+     "title": "SAML 2.0",
+     "text": "Metadata, SSO and entity ID per tenant, with signed assertions (RSA-SHA256)."
+    },
+    {
+     "x": 362,
+     "y": 328,
+     "title": "LDAP provocations",
+     "text": "busy (51), unavailable (52) or timeout; normal stops it."
+    },
+    {
+     "x": 450,
+     "y": 407,
+     "title": "Password grant",
+     "text": "Off by default; on, it answers with the provider's AADSTS errors."
+    },
+    {
+     "x": 375,
+     "y": 648,
+     "title": "Bot twists",
+     "text": "Send an activity with a bad signature, expired, wrong audience or no token."
+    },
+    {
+     "x": 918,
+     "y": 648,
+     "title": "Send to the bot",
+     "text": "Posts the activity to the bot's endpoint as Teams would, signed by the connector."
+    }
+   ]
+  }
+ ],
+ "provoke": [
+  {
+   "name": "MFA required or failing",
+   "what": "The next sign-ins ask for MFA, or the code fails",
+   "how": "provoke_sign_in mfa_required | mfa_fails"
+  },
+  {
+   "name": "Consent required",
+   "what": "The user must consent again",
+   "how": "provoke_sign_in consent_required"
+  },
+  {
+   "name": "User cancels",
+   "what": "The app gets error=access_denied",
+   "how": "provoke_sign_in user_cancels or cancel_login"
+  },
+  {
+   "name": "Wrong tenant",
+   "what": "A user from another tenant signs in",
+   "how": "provoke_sign_in wrong_tenant"
+  },
+  {
+   "name": "Expired tokens",
+   "what": "Tokens arrive already expired",
+   "how": "provoke_sign_in expired"
+  },
+  {
+   "name": "Bad signature",
+   "what": "Tokens or SAML assertions signed wrongly",
+   "how": "provoke_sign_in bad_signature"
+  },
+  {
+   "name": "IdP down",
+   "what": "The sign-in fails because the provider is down",
+   "how": "provoke_sign_in idp_down"
+  },
+  {
+   "name": "Discovery or JWKS broken",
+   "what": "Discovery 500, wrong issuer, kid missing, token invalid_grant",
+   "how": "provoke_idp"
+  },
+  {
+   "name": "Signing key rotated",
+   "what": "Apps that cached the JWKS at start-up reject new tokens",
+   "how": "rotate_signing_key"
+  },
+  {
+   "name": "Disabled user",
+   "what": "Sign-ins stop with AADSTS50057; refresh tokens refused",
+   "how": "set_user_state"
+  },
+  {
+   "name": "LDAP busy",
+   "what": "Binds answer 51, 52 or time out",
+   "how": "set_provider ldap_provoke"
+  },
+  {
+   "name": "Bad bot activity",
+   "what": "bad_signature, expired, wrong_audience, no_token",
+   "how": "send_bot_activity twist"
+  }
+ ],
+ "advantages": [
+  {
+   "title": "No test tenant to manage",
+   "text": "No Entra, Google or Okta tenant, no test accounts with real MFA, no admin to grant consent. Users are synthetic and made in one call."
+  },
+  {
+   "title": "Every edge case on demand",
+   "text": "Expired tokens, rotated keys, group overage and cancelled logins, which a real tenant almost never shows you."
+  },
+  {
+   "title": "Agents can sign in",
+   "text": "sign_in_as completes the login, MFA and consent, so a coding agent tests flows behind SSO without a person."
+  },
+  {
+   "title": "One directory, every protocol",
+   "text": "OIDC, SAML, LDAP and the password grant answer for the same people, so legacy and new code paths are tested together."
+  }
+ ],
+ "agent": {
+  "prompt": "Check that the app handles an Entra key rotation without logging everyone out.",
+  "steps": [
+   [
+    "tool",
+    "sign_in_as",
+    "{\"provider\": \"entra\", \"user\": \"emma.carter\", \"app\": \"acme-app\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "callback http://localhost:3000/signin-oidc?code=… to follow"
+   ],
+   [
+    "tool",
+    "rotate_signing_key",
+    "{\"provider\": \"entra\"}"
+   ],
+   [
+    "tool",
+    "list_sign_ins",
+    "{\"provider\": \"entra\", \"since\": \"5m\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "2 sign-ins · last token signed with the new key · JWKS fetched again"
+   ]
+  ],
+  "tools": [
+   [
+    "set_provider",
+    "Create a provider: flavour, tenant, SAML, LDAP, password grant"
+   ],
+   [
+    "set_user",
+    "Create or change a synthetic user and its claims"
+   ],
+   [
+    "set_app",
+    "Register an app: type, redirect URIs, secret, permissions"
+   ],
+   [
+    "sign_in_as",
+    "Complete the login page as a user, through MFA and consent"
+   ],
+   [
+    "provoke_sign_in",
+    "Make the next sign-ins fail"
+   ],
+   [
+    "provoke_idp",
+    "Break discovery, JWKS or the token endpoint"
+   ],
+   [
+    "rotate_signing_key",
+    "Rotate the token signing key"
+   ],
+   [
+    "list_sign_ins",
+    "Sign-ins and tokens, with AADSTS codes"
+   ],
+   [
+    "send_bot_activity",
+    "Send the bot a Teams activity, signed"
+   ],
+   [
+    "list_bot_messages",
+    "Both sides of the bot conversation"
+   ]
+  ],
+  "http": [
+   [
+    "PUT",
+    "/api/identity/providers/{name}",
+    "set_provider"
+   ],
+   [
+    "PUT",
+    "/api/identity/{provider}/users/{user}",
+    "set_user"
+   ],
+   [
+    "POST",
+    "/api/identity/{provider}/sign-in-as",
+    "sign_in_as"
+   ],
+   [
+    "POST",
+    "/api/identity/{provider}/provoke",
+    "provoke_sign_in"
+   ],
+   [
+    "POST",
+    "/api/identity/{provider}/keys/rotate",
+    "rotate_signing_key"
+   ],
+   [
+    "GET",
+    "/api/identity/sign-ins",
+    "list_sign_ins"
+   ]
+  ]
+ },
+ "notes": [
+  "LDAP uses one port for every environment: binds go to the default one."
+ ]
+}

@@ -1,0 +1,304 @@
+{
+ "id": "streams",
+ "order": 16,
+ "name": "Streams",
+ "color": "teal",
+ "tagline": "A Kafka broker and a Confluent Schema Registry that decode every Avro message and break on cue.",
+ "stands_in_for": [
+  "Apache Kafka",
+  "Confluent Schema Registry",
+  "Avro"
+ ],
+ "point": [
+  [
+   "Kafka",
+   "bootstrap.servers=localhost:9092"
+  ],
+  [
+   "Schema Registry",
+   "schema.registry.url=http://localhost:8081"
+  ],
+  [
+   "In Docker",
+   "STUNTMAN_KAFKA_ADVERTISED_HOST=<the name the app reaches>"
+  ]
+ ],
+ "capabilities": [
+  {
+   "title": "The real Kafka protocol",
+   "text": "Produce, Fetch, ListOffsets, Metadata, CreateTopics and consumer groups with JoinGroup, SyncGroup, Heartbeat and offset commits."
+  },
+  {
+   "title": "Avro, decoded",
+   "text": "Values in Confluent framing are decoded with their registry schema, so you read JSON, not bytes. JSON and text values too."
+  },
+  {
+   "title": "A Schema Registry",
+   "text": "Confluent-compatible subjects and versions; register Avro, JSON or Protobuf schemas. The same schema keeps its id."
+  },
+  {
+   "title": "Produce as the partner",
+   "text": "produce sends a key, value, headers and partition; with a subject the value is Avro-encoded with that schema."
+  },
+  {
+   "title": "Consumer groups and lag",
+   "text": "Members, assigned partitions and the lag of each partition: committed offset against the high watermark."
+  },
+  {
+   "title": "Force a rebalance",
+   "text": "rebalance makes members get REBALANCE_IN_PROGRESS on their next heartbeat, so they must join again."
+  },
+  {
+   "title": "SASL logins",
+   "text": "PLAIN and SCRAM-SHA-256/512. With sasl_required and no users listed, any user works and any password except wrong."
+  },
+  {
+   "title": "Broker-level failures",
+   "text": "Leader not available, SASL refused, slow fetch, duplicated records and a Schema Registry that answers 503."
+  }
+ ],
+ "excerpts": [
+  {
+   "frame": 74210,
+   "crop": [
+    232,
+    0,
+    1208,
+    360
+   ],
+   "title": "Topics and decoded messages",
+   "callouts": [
+    {
+     "x": 310,
+     "y": 147,
+     "title": "Topics",
+     "text": "Each topic with its partitions and message count; made when a client asks, unless auto_create is off."
+    },
+    {
+     "x": 700,
+     "y": 18,
+     "title": "How to connect",
+     "text": "Kafka on localhost:9092 and the Schema Registry on :8081."
+    },
+    {
+     "x": 560,
+     "y": 139,
+     "title": "Partition and offset",
+     "text": "Where each record landed, to check keys go to the partition the app expects."
+    },
+    {
+     "x": 900,
+     "y": 139,
+     "title": "Avro, readable",
+     "text": "The value decoded with schema 3 from the registry, not raw bytes."
+    }
+   ]
+  },
+  {
+   "frame": 74210,
+   "crop": [
+    472,
+    230,
+    968,
+    370
+   ],
+   "title": "Produce and provoke",
+   "callouts": [
+    {
+     "x": 650,
+     "y": 286,
+     "title": "Key",
+     "text": "The record key, which picks the partition as a real producer would."
+    },
+    {
+     "x": 978,
+     "y": 286,
+     "title": "Registry subject",
+     "text": "With a subject, the value is Avro-encoded with that schema in Confluent framing."
+    },
+    {
+     "x": 529,
+     "y": 386,
+     "title": "Produce",
+     "text": "Sends the record as the partner would; the app's consumer reads it on its next fetch."
+    },
+    {
+     "x": 573,
+     "y": 460,
+     "title": "Leader not available",
+     "text": "Producers and consumers get LEADER_NOT_AVAILABLE until you set Normal."
+    },
+    {
+     "x": 1094,
+     "y": 460,
+     "title": "Registry down",
+     "text": "The Schema Registry answers 503: does the app retry or drop the record?"
+    }
+   ]
+  }
+ ],
+ "provoke": [
+  {
+   "name": "Leader not available",
+   "what": "Clients get LEADER_NOT_AVAILABLE",
+   "how": "set_streams provoke leader_not_available"
+  },
+  {
+   "name": "SASL refused",
+   "what": "Logins are refused",
+   "how": "set_streams provoke sasl_refused"
+  },
+  {
+   "name": "Slow fetch",
+   "what": "Each fetch takes 3 s",
+   "how": "set_streams provoke slow_fetch"
+  },
+  {
+   "name": "Duplicated records",
+   "what": "Each record is kept twice: is the consumer idempotent?",
+   "how": "set_streams provoke duplicate"
+  },
+  {
+   "name": "Registry down",
+   "what": "The Schema Registry answers 503",
+   "how": "set_streams provoke registry_down"
+  },
+  {
+   "name": "Rebalance",
+   "what": "Members get REBALANCE_IN_PROGRESS and must rejoin",
+   "how": "rebalance"
+  },
+  {
+   "name": "Unknown schema id",
+   "what": "A record the consumer cannot decode",
+   "how": "produce with bad_schema=true"
+  },
+  {
+   "name": "No such topic",
+   "what": "Topics are not created on demand",
+   "how": "set_streams auto_create false"
+  }
+ ],
+ "advantages": [
+  {
+   "title": "One process, not a cluster",
+   "text": "No ZooKeeper, KRaft or registry containers. Kafka and the Schema Registry start with Stuntman in seconds."
+  },
+  {
+   "title": "Messages you can read",
+   "text": "Avro values are shown decoded with their schema, so a test checks fields, not bytes."
+  },
+  {
+   "title": "Failures a cluster hides",
+   "text": "Duplicates, rebalances and a missing leader happen on request, so consumer code is tested where it breaks."
+  },
+  {
+   "title": "Act as the partner",
+   "text": "Produce the partner's records with the right schema, or a bad one, without access to their cluster."
+  }
+ ],
+ "agent": {
+  "prompt": "Send a shipment event twice and check the app's consumer does not create a duplicate.",
+  "steps": [
+   [
+    "tool",
+    "register_schema",
+    "{\"subject\": \"shipments-value\", \"schema\": \"{\\\"type\\\": \\\"record\\\", \\\"name\\\": \\\"Shipment\\\", \\\"fields\\\": [{\\\"name\\\": \\\"id\\\", \\\"type\\\": \\\"string\\\"}]}\"}"
+   ],
+   [
+    "tool",
+    "set_streams",
+    "{\"provoke\": \"duplicate\"}"
+   ],
+   [
+    "tool",
+    "produce",
+    "{\"topic\": \"shipments\", \"key\": \"SH-1042\", \"value\": {\"id\": \"SH-1042\"}, \"subject\": \"shipments-value\"}"
+   ],
+   [
+    "tool",
+    "list_consumer_groups",
+    "{}"
+   ],
+   [
+    "result",
+    "ok",
+    "shipments-worker · lag 0 on 3 partitions · 2 records read"
+   ]
+  ],
+  "tools": [
+   [
+    "list_topics",
+    "Topics with partitions, messages, high watermarks"
+   ],
+   [
+    "create_topic",
+    "Create a topic with N partitions"
+   ],
+   [
+    "list_stream_messages",
+    "Newest messages, values decoded"
+   ],
+   [
+    "produce",
+    "Produce a record, Avro-encoded with a subject"
+   ],
+   [
+    "list_consumer_groups",
+    "Groups, members, assignments and lag"
+   ],
+   [
+    "rebalance",
+    "Force a consumer-group rebalance"
+   ],
+   [
+    "set_streams",
+    "Broker settings, SASL and provocations"
+   ],
+   [
+    "list_schemas",
+    "Registry subjects, versions and ids"
+   ],
+   [
+    "register_schema",
+    "Register a schema under a subject"
+   ]
+  ],
+  "http": [
+   [
+    "GET",
+    "/api/streams/topics",
+    "list_topics"
+   ],
+   [
+    "GET",
+    "/api/streams/topics/{topic}/messages",
+    "list_stream_messages"
+   ],
+   [
+    "POST",
+    "/api/streams/topics/{topic}/produce",
+    "produce"
+   ],
+   [
+    "GET",
+    "/api/streams/groups",
+    "list_consumer_groups"
+   ],
+   [
+    "PUT",
+    "/api/streams/config",
+    "set_streams"
+   ],
+   [
+    "POST",
+    "/api/streams/schemas",
+    "register_schema"
+   ]
+  ]
+ },
+ "notes": [
+  "One broker node; batches uncompressed or gzip (snappy, lz4, zstd refused); compatibility checks always answer compatible.",
+  "One port serves every environment: the default one answers."
+ ]
+}

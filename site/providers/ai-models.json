@@ -1,0 +1,307 @@
+{
+ "id": "ai-models",
+ "order": 6,
+ "name": "AI models",
+ "color": "orange",
+ "tagline": "The model APIs your app calls, answered without a model: rules shape the reply, failures come on cue, spend is counted.",
+ "stands_in_for": [
+  "OpenAI (chat completions, Responses, embeddings, models)",
+  "Azure OpenAI (deployments and v1)",
+  "Anthropic Messages (count_tokens, streaming)",
+  "Google Gemini (generateContent, embedContent, countTokens)",
+  "OpenRouter",
+  "DeepSeek"
+ ],
+ "point": [
+  [
+   "OpenAI",
+   "http://localhost:8025/openai/v1"
+  ],
+  [
+   "Anthropic",
+   "http://localhost:8025/anthropic"
+  ],
+  [
+   "Azure OpenAI",
+   "http://localhost:8025/azure-openai"
+  ],
+  [
+   "Others",
+   "http://localhost:8025/gemini, /openrouter, /deepseek"
+  ]
+ ],
+ "capabilities": [
+  {
+   "title": "Six APIs, your SDK",
+   "text": "Change only the SDK's base URL. Any key is accepted and never sent anywhere."
+  },
+  {
+   "title": "Rules shape answers",
+   "text": "First match wins on provider, API, model prefix, the last user message, the system prompt or a tool offered."
+  },
+  {
+   "title": "Tool calls on cue",
+   "text": "The model calls your tool first with the arguments you set, then answers the text once the result comes back."
+  },
+  {
+   "title": "JSON and long answers",
+   "text": "Answer a JSON object, pad to about N tokens, or stop by length as max_tokens would."
+  },
+  {
+   "title": "Streamed or not",
+   "text": "Each provider's own response and error shapes, streamed or in one piece."
+  },
+  {
+   "title": "Every call kept",
+   "text": "Prompt, answer, model, tokens in and out, cached tokens, cost and why it got that answer."
+  },
+  {
+   "title": "Spend you can read",
+   "text": "ai_spend per provider; prices per million tokens are editable with set_ai_price."
+  },
+  {
+   "title": "Stable embeddings",
+   "text": "Embeddings are deterministic: the same text always gives the same vector."
+  }
+ ],
+ "excerpts": [
+  {
+   "frame": 73530,
+   "crop": [
+    240,
+    0,
+    1200,
+    560
+   ],
+   "title": "Every model call, with why",
+   "callouts": [
+    {
+     "x": 330,
+     "y": 100,
+     "title": "Six providers",
+     "text": "OpenAI, Azure OpenAI, Anthropic, Gemini, OpenRouter and DeepSeek, each with its calls."
+    },
+    {
+     "x": 340,
+     "y": 428,
+     "title": "Point the SDK here",
+     "text": "Any key is accepted; it is never sent anywhere."
+    },
+    {
+     "x": 1110,
+     "y": 171,
+     "title": "Why this answer",
+     "text": "The rule that matched, the default answer, or a failure someone forced."
+    },
+    {
+     "x": 900,
+     "y": 400,
+     "title": "The prompt",
+     "text": "System, user and the tools the app offered, as the app sent them."
+    },
+    {
+     "x": 680,
+     "y": 543,
+     "title": "Tokens and cost",
+     "text": "Tokens in and out, cached tokens and the cost from your prices."
+    }
+   ]
+  },
+  {
+   "frame": 73651,
+   "crop": [
+    472,
+    95,
+    968,
+    600
+   ],
+   "title": "Rules and failures",
+   "callouts": [
+    {
+     "x": 740,
+     "y": 162,
+     "title": "A rule with a tool call",
+     "text": "When the message contains refund: call lookup_order, then answer the text."
+    },
+    {
+     "x": 580,
+     "y": 228,
+     "title": "JSON on a system prompt",
+     "text": "A system prompt that asks to classify gets a JSON object."
+    },
+    {
+     "x": 683,
+     "y": 426,
+     "title": "Add a rule",
+     "text": "Name, condition, answer text, and an optional tool with its arguments."
+    },
+    {
+     "x": 580,
+     "y": 562,
+     "title": "Failures on the next calls",
+     "text": "429 with Retry-After, 500, 529, filter, length, bad_json, slow and cut."
+    },
+    {
+     "x": 697,
+     "y": 686,
+     "title": "How many",
+     "text": "Bound the failure to the next N calls; kind=none clears it."
+    }
+   ]
+  }
+ ],
+ "provoke": [
+  {
+   "name": "Rate limit",
+   "what": "429 with Retry-After, in the provider's error shape",
+   "how": "force_ai_failure kind=429"
+  },
+  {
+   "name": "Server error",
+   "what": "500 from the provider",
+   "how": "force_ai_failure kind=500"
+  },
+  {
+   "name": "Overloaded",
+   "what": "529 overloaded",
+   "how": "force_ai_failure kind=529"
+  },
+  {
+   "name": "Content filtered",
+   "what": "The answer is blocked by the content filter",
+   "how": "force_ai_failure kind=filter"
+  },
+  {
+   "name": "Cut by max_tokens",
+   "what": "The answer stops with a length finish reason",
+   "how": "force_ai_failure kind=length"
+  },
+  {
+   "name": "Broken tool arguments",
+   "what": "A tool call whose JSON arguments do not parse",
+   "how": "force_ai_failure kind=bad_json"
+  },
+  {
+   "name": "Slow model",
+   "what": "40 ms per token",
+   "how": "force_ai_failure kind=slow"
+  },
+  {
+   "name": "Stream cut",
+   "what": "The stream stops halfway",
+   "how": "force_ai_failure kind=cut"
+  }
+ ],
+ "advantages": [
+  {
+   "title": "No tokens billed",
+   "text": "Test suites and agents call the models all day; the spend counter counts, nobody pays."
+  },
+  {
+   "title": "Deterministic answers",
+   "text": "The same prompt gets the same reply, so tests that depend on a model stop flaking."
+  },
+  {
+   "title": "Failures on demand",
+   "text": "A 529, a filtered answer or a cut stream on the next call, not when the provider has a bad day."
+  },
+  {
+   "title": "Prompts you can inspect",
+   "text": "Every prompt the app sent, with the tools it offered and the tokens it cost."
+  }
+ ],
+ "agent": {
+  "prompt": "Make our support bot retry when Anthropic is overloaded and still call lookup_order for refunds.",
+  "steps": [
+   [
+    "tool",
+    "set_ai_rule",
+    "{\"name\": \"refund\", \"contains\": \"refund\", \"text\": \"The refund takes 5 days.\", \"tool_call\": {\"name\": \"lookup_order\", \"arguments\": {\"order_id\": \"A-1042\"}}}"
+   ],
+   [
+    "tool",
+    "force_ai_failure",
+    "{\"provider\": \"anthropic\", \"kind\": \"529\", \"count\": 1}"
+   ],
+   [
+    "tool",
+    "wait_for_ai_call",
+    "{\"provider\": \"anthropic\", \"contains\": \"refund\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "529 once, then 200: rule refund, tool call lookup_order"
+   ]
+  ],
+  "tools": [
+   [
+    "list_ai_calls",
+    "Calls with provider, model, tokens, cost and why"
+   ],
+   [
+    "get_ai_call",
+    "One call with the whole request and response"
+   ],
+   [
+    "wait_for_ai_call",
+    "Waits until the app calls a model"
+   ],
+   [
+    "list_ai_rules",
+    "Rules, the default answer and prices"
+   ],
+   [
+    "set_ai_rule",
+    "Adds or changes a rule"
+   ],
+   [
+    "delete_ai_rule",
+    "Removes a rule"
+   ],
+   [
+    "force_ai_failure",
+    "The next calls fail on purpose"
+   ],
+   [
+    "ai_spend",
+    "Calls, tokens and cost per provider"
+   ],
+   [
+    "set_ai_price",
+    "Price per million tokens, and the default answer"
+   ]
+  ],
+  "http": [
+   [
+    "GET",
+    "/api/ai/calls",
+    "list_ai_calls"
+   ],
+   [
+    "GET",
+    "/api/ai/calls/wait",
+    "wait_for_ai_call"
+   ],
+   [
+    "PUT",
+    "/api/ai/rules",
+    "set_ai_rule"
+   ],
+   [
+    "POST",
+    "/api/ai/force",
+    "force_ai_failure"
+   ],
+   [
+    "GET",
+    "/api/ai/spend",
+    "ai_spend"
+   ]
+  ]
+ },
+ "notes": [
+  "With no rule the answer is \"This is a simulated answer from Stuntman.\"; set_ai_price default_text changes it.",
+  "Rules and prices live in ai/config.yaml; the screen, the API and agents edit the same file."
+ ]
+}

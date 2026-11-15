@@ -1,0 +1,343 @@
+{
+ "id": "email",
+ "order": 9,
+ "name": "E-mail",
+ "color": "amber",
+ "tagline": "An SMTP server and a SendGrid v3 API that catch every message, extract codes and links, and play the recipient.",
+ "stands_in_for": [
+  "SMTP with STARTTLS",
+  "SendGrid v3 mail/send",
+  "SendGrid Event Webhook"
+ ],
+ "point": [
+  [
+   "SMTP",
+   "localhost:2525 (STARTTLS, any login)"
+  ],
+  [
+   "SendGrid base URL",
+   "http://localhost:8025/sendgrid (any key)"
+  ]
+ ],
+ "capabilities": [
+  {
+   "title": "Every message, kept",
+   "text": "HTML, text, headers and attachments of every message, filtered by recipient, subject, kind, language or inbox."
+  },
+  {
+   "title": "Codes and links extracted",
+   "text": "Built-in code, links and attachments extractors, plus your own regex, CSS selector or header rules."
+  },
+  {
+   "title": "Inboxes that decide",
+   "text": "An inbox accepts, bounces, defers N times, holds or drops what lands in it; temporary inboxes expire by themselves."
+  },
+  {
+   "title": "Steps after delivery",
+   "text": "Inbox steps open the message or click a link after a wait, with jitter, so tests never wait for a person."
+  },
+  {
+   "title": "Act as the recipient",
+   "text": "Open, click, spam report or unsubscribe sends SendGrid's Event Webhook, signed with ECDSA, to your app."
+  },
+  {
+   "title": "Hold and decide",
+   "text": "A held message waits for you: deliver, defer, bounce hard or soft, or drop; the app gets the matching event."
+  },
+  {
+   "title": "Strict or unreachable intake",
+   "text": "Validate keys (401, or 535 on SMTP), drop STARTTLS, refuse recipients with 550 or 451, or time out."
+  },
+  {
+   "title": "Wait, or expect none",
+   "text": "wait_for_message returns the extracted value; expect_no_message passes only if nothing arrives in time."
+  }
+ ],
+ "excerpts": [
+  {
+   "frame": 33645,
+   "crop": [
+    233,
+    95,
+    1207,
+    560
+   ],
+   "title": "The message, and what was pulled out of it",
+   "callouts": [
+    {
+     "x": 528,
+     "y": 223,
+     "title": "Temporary inbox",
+     "text": "A test made this address; it expires by itself in 18 min."
+    },
+    {
+     "x": 1136,
+     "y": 146,
+     "title": "How it came in",
+     "text": "Via the SendGrid API or SMTP, with sender, recipient, time and trace."
+    },
+    {
+     "x": 740,
+     "y": 240,
+     "title": "Extracted code",
+     "text": "Your extractor found the OTP; wait_for_message with extract returns it."
+    },
+    {
+     "x": 1060,
+     "y": 240,
+     "title": "Links",
+     "text": "Every link is detected; short links can be followed to the final URL."
+    },
+    {
+     "x": 899,
+     "y": 313,
+     "title": "Events",
+     "text": "Delivery and recipient events sent to the app's Event Webhook."
+    }
+   ]
+  },
+  {
+   "frame": 1142,
+   "crop": [
+    233,
+    95,
+    1207,
+    540
+   ],
+   "title": "An inbox decides what happens on arrival",
+   "callouts": [
+    {
+     "x": 900,
+     "y": 146,
+     "title": "Temporary",
+     "text": "Made by a test over the API; extend it or keep it with the environment."
+    },
+    {
+     "x": 762,
+     "y": 252,
+     "title": "Bounce it",
+     "text": "Hard bounce, 550 mailbox unavailable, as the provider's event."
+    },
+    {
+     "x": 790,
+     "y": 282,
+     "title": "Defer N times",
+     "text": "Defer 3 times, then accept: tests the app's retry."
+    },
+    {
+     "x": 737,
+     "y": 312,
+     "title": "Hold it",
+     "text": "Decide by hand with decide_held, or let the steps decide."
+    },
+    {
+     "x": 780,
+     "y": 515,
+     "title": "Automatic steps",
+     "text": "Delivered, opened 30 s later with 5 s of jitter, click signLink: no person needed."
+    }
+   ]
+  },
+  {
+   "frame": 1204,
+   "crop": [
+    472,
+    90,
+    968,
+    560
+   ],
+   "title": "Extractors, tried before you save",
+   "callouts": [
+    {
+     "x": 773,
+     "y": 281,
+     "title": "Take it from",
+     "text": "Subject, text, HTML, link, header or attachment."
+    },
+    {
+     "x": 735,
+     "y": 353,
+     "title": "Rule",
+     "text": "A regex, CSS selector or header name; a capture group becomes the value."
+    },
+    {
+     "x": 520,
+     "y": 421,
+     "title": "Follow redirects",
+     "text": "For short links: the value is the final URL."
+    },
+    {
+     "x": 1128,
+     "y": 437,
+     "title": "Against the last 50",
+     "text": "test_extractor runs the rule on recent mail: matched, skipped, no such link."
+    },
+    {
+     "x": 1067,
+     "y": 519,
+     "title": "Why not",
+     "text": "Messages where the rule found nothing, with the reason and a suggested fix."
+    }
+   ]
+  }
+ ],
+ "provoke": [
+  {
+   "name": "Bounce",
+   "what": "Hard or soft; the app gets the bounce event",
+   "how": "decide_held {action: bounce, kind: hard}"
+  },
+  {
+   "name": "Defer, then accept",
+   "what": "The message is deferred N times before delivery",
+   "how": "create_inbox {on_arrival: defer, defer_times: 3}"
+  },
+  {
+   "name": "Dropped",
+   "what": "The provider refuses to send it",
+   "how": "decide_held {action: drop}"
+  },
+  {
+   "name": "Spam report",
+   "what": "The recipient marks it as spam; signed event to the app",
+   "how": "simulate_recipient {action: spamreport}"
+  },
+  {
+   "name": "Unsubscribe",
+   "what": "The recipient unsubscribes; signed event to the app",
+   "how": "simulate_recipient {action: unsubscribe}"
+  },
+  {
+   "name": "Provider unreachable",
+   "what": "The intake times out, refuses, or answers 503 or 429",
+   "how": "set_access {how: timeout}"
+  },
+  {
+   "name": "TLS trouble",
+   "what": "SMTP without STARTTLS, or a TLS failure",
+   "how": "set_access starttls / how: tls"
+  },
+  {
+   "name": "Recipients refused",
+   "what": "SMTP answers 550 or 451 to RCPT TO",
+   "how": "set_access {refuse_recipients: 550}"
+  },
+  {
+   "name": "Revoked key",
+   "what": "Sends get 401, or 535 on SMTP, while keys are validated",
+   "how": "revoke_key"
+  }
+ ],
+ "advantages": [
+  {
+   "title": "Nothing leaves the machine",
+   "text": "Mail to any domain is caught and never reaches a real inbox, so tests can use any address."
+  },
+  {
+   "title": "Bounces on demand",
+   "text": "Hard and soft bounces, defers and drops happen when the test asks, not when a real server feels like it."
+  },
+  {
+   "title": "Values, not HTML scraping",
+   "text": "Tests ask for extract=otp or a link and get the value; the extractor shows why a message did not match."
+  },
+  {
+   "title": "Throwaway inboxes",
+   "text": "Each test makes its own inbox that expires on its own, so parallel runs never read each other's mail."
+  }
+ ],
+ "agent": {
+  "prompt": "Test the password reset e-mail end to end and get me the reset link.",
+  "steps": [
+   [
+    "tool",
+    "create_inbox",
+    "{\"prefix\": \"reset-test\", \"ttl\": \"2h\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "reset-test-a83f@stg-a.inbox.stuntman.dev, expires in 2 h"
+   ],
+   [
+    "tool",
+    "wait_for_message",
+    "{\"to\": \"reset-test-a83f@stg-a.inbox.stuntman.dev\", \"extract\": \"resetLink\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "https://acme-app.stg.example.com/reset/3f2c9e1a…"
+   ]
+  ],
+  "tools": [
+   [
+    "list_messages",
+    "Messages with filters, or grouped by kind"
+   ],
+   [
+    "get_message",
+    "Headers, text, HTML, extracted values, events"
+   ],
+   [
+    "wait_for_message",
+    "Wait for a message; with extract, return the value"
+   ],
+   [
+    "expect_no_message",
+    "Pass only if nothing arrives in time"
+   ],
+   [
+    "create_inbox",
+    "A temporary or kept inbox with its rule and steps"
+   ],
+   [
+    "decide_held",
+    "Deliver, defer, bounce or drop a held message"
+   ],
+   [
+    "simulate_recipient",
+    "Open, click, spam report or unsubscribe"
+   ],
+   [
+    "test_extractor",
+    "Run a rule on one message or the last N"
+   ],
+   [
+    "set_access",
+    "Make the intake strict or unreachable"
+   ]
+  ],
+  "http": [
+   [
+    "GET",
+    "/api/messages",
+    "list_messages"
+   ],
+   [
+    "GET",
+    "/api/messages/wait",
+    "wait_for_message"
+   ],
+   [
+    "POST",
+    "/api/inboxes",
+    "create_inbox"
+   ],
+   [
+    "POST",
+    "/api/messages/{id}/decide",
+    "decide_held"
+   ],
+   [
+    "POST",
+    "/api/messages/{id}/events",
+    "simulate_recipient"
+   ]
+  ]
+ },
+ "notes": [
+  "SMTP uses a self-signed certificate for STARTTLS; SendGrid is served on 8025.",
+  "Extractors live in email/extractors.yaml and also work for SMS."
+ ]
+}

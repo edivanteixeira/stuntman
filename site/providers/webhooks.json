@@ -1,0 +1,310 @@
+{
+ "id": "webhooks",
+ "order": 19,
+ "name": "Webhook inboxes",
+ "color": "orange",
+ "tagline": "Endpoints your app sends its own webhooks to, answering however you need to test its retries.",
+ "stands_in_for": [
+  "Your customers' webhook endpoints",
+  "HMAC-signed webhooks (t=…,v1=… and plain hex or base64)"
+ ],
+ "point": [
+  [
+   "Inbox URL",
+   "http://localhost:8027/in/<inbox>"
+  ],
+  [
+   "Port",
+   "its own port, so resets, hangs and empty replies are real"
+  ]
+ ],
+ "capabilities": [
+  {
+   "title": "Every delivery kept",
+   "text": "Headers, body, signature check, the answer given and every attempt of the same event, newest first."
+  },
+  {
+   "title": "Answer as you choose",
+   "text": "Always 200, accept with 202, always an error, fail N times then succeed, fail a share, hang, reset or an empty reply."
+  },
+  {
+   "title": "Retries per event",
+   "text": "fail_then counts per event id or per inbox, so each event fails 3 times and the attempts show the app's backoff."
+  },
+  {
+   "title": "Delays and hangs",
+   "text": "Add a delay before answering, or hold the request: 35 s tests a 30 s client timeout."
+  },
+  {
+   "title": "Signature checks",
+   "text": "t-v1-hmac-sha256, hmac-sha256-hex or hmac-sha256-base64, with a timestamp tolerance and a replay check on the event id."
+  },
+  {
+   "title": "Secret rotation",
+   "text": "Set previous_secret: a delivery signed with the old secret is marked as such. reject_bad answers 401 like a strict customer."
+  },
+  {
+   "title": "Traps for the client",
+   "text": "A redirect to a private address (SSRF), a 50 MB answer, or one byte a second: each recorded as passed or failed."
+  },
+  {
+   "title": "Ephemeral inboxes",
+   "text": "A test or an agent makes an inbox that expires by itself (1 h by default); kept ones live in webhooks/inboxes.yaml."
+  }
+ ],
+ "excerpts": [
+  {
+   "frame": 34548,
+   "crop": [
+    233,
+    90,
+    1207,
+    560
+   ],
+   "title": "Deliveries and their checks",
+   "callouts": [
+    {
+     "x": 320,
+     "y": 320,
+     "title": "Ephemeral inboxes",
+     "text": "Made by a test or an agent; each shows when it expires and who made it."
+    },
+    {
+     "x": 625,
+     "y": 289,
+     "title": "Old secret",
+     "text": "Signed with the previous secret: the app is still using it after rotation."
+    },
+    {
+     "x": 672,
+     "y": 341,
+     "title": "Duplicate",
+     "text": "The same event id seen before: the app sent it twice."
+    },
+    {
+     "x": 672,
+     "y": 393,
+     "title": "Old timestamp",
+     "text": "Signed, but the timestamp is outside the tolerance (5 min by default)."
+    },
+    {
+     "x": 1130,
+     "y": 196,
+     "title": "Signature",
+     "text": "Which scheme, which secret, the timestamp age and whether the id is new."
+    }
+   ]
+  },
+  {
+   "frame": 34697,
+   "crop": [
+    233,
+    90,
+    1207,
+    500
+   ],
+   "title": "How an inbox answers",
+   "callouts": [
+    {
+     "x": 708,
+     "y": 176,
+     "title": "Mode",
+     "text": "Fail N times then succeed; also always 200, 202, error, a share, hang, reset or empty."
+    },
+    {
+     "x": 510,
+     "y": 279,
+     "title": "Count per event id",
+     "text": "Each event fails 3 times, not the inbox as a whole."
+    },
+    {
+     "x": 655,
+     "y": 396,
+     "title": "Hang",
+     "text": "Hold the request: 35 s tests a client that gives up at 30 s."
+    },
+    {
+     "x": 510,
+     "y": 476,
+     "title": "Traps",
+     "text": "Private redirect, huge answer, slow answer: the app should not follow, should cap and give up."
+    },
+    {
+     "x": 1180,
+     "y": 175,
+     "title": "Attempts",
+     "text": "Each attempt of the last event and the gap before it: the app's backoff, measured."
+    }
+   ]
+  }
+ ],
+ "provoke": [
+  {
+   "name": "Fail then succeed",
+   "what": "Each event gets 500 three times, then 200",
+   "how": "set_inbox mode fail_then, times 3"
+  },
+  {
+   "name": "Fail a share",
+   "what": "A percentage of deliveries fail",
+   "how": "set_inbox mode fail_share, share 50"
+  },
+  {
+   "name": "Always an error",
+   "what": "Every delivery gets the status you pick",
+   "how": "set_inbox mode error, status 503"
+  },
+  {
+   "name": "Hang",
+   "what": "No answer until the app gives up",
+   "how": "set_inbox mode hang"
+  },
+  {
+   "name": "Reset",
+   "what": "The connection is reset",
+   "how": "set_inbox mode reset"
+  },
+  {
+   "name": "Empty reply",
+   "what": "The connection closes without a byte",
+   "how": "set_inbox mode empty"
+  },
+  {
+   "name": "Slow answer",
+   "what": "A delay before every answer",
+   "how": "set_inbox delay"
+  },
+  {
+   "name": "Private redirect",
+   "what": "302 to a loopback address: does the app follow?",
+   "how": "set_inbox traps redirect_private"
+  },
+  {
+   "name": "Huge answer",
+   "what": "A 50 MB body: does the app stop reading?",
+   "how": "set_inbox traps huge"
+  },
+  {
+   "name": "One byte a second",
+   "what": "Does the app give up on a slow answer?",
+   "how": "set_inbox traps slow"
+  },
+  {
+   "name": "Strict customer",
+   "what": "Bad signatures get 401",
+   "how": "set_inbox reject_bad true"
+  },
+  {
+   "name": "Inbox gone",
+   "what": "Later deliveries get 410 Gone",
+   "how": "remove_inbox"
+  }
+ ],
+ "advantages": [
+  {
+   "title": "Retries you can measure",
+   "text": "Request bins show the request; here every attempt of an event is grouped, so the backoff is visible."
+  },
+  {
+   "title": "Failures beyond 500",
+   "text": "Hangs, resets, empty replies and traps need a real socket; the inbox has its own port for that."
+  },
+  {
+   "title": "Signatures checked for you",
+   "text": "Scheme, secret, rotation, timestamp and replay are checked on every delivery, not by hand."
+  },
+  {
+   "title": "Nothing left behind",
+   "text": "Ephemeral inboxes delete themselves, so parallel tests and agents never share a URL."
+  }
+ ],
+ "agent": {
+  "prompt": "Check that the app retries an order.completed webhook three times with backoff and signs it correctly.",
+  "steps": [
+   [
+    "tool",
+    "create_webhook_inbox",
+    "{\"name\": \"globex\", \"fail\": 3, \"then\": 200, \"secret\": \"whsec_test\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "http://localhost:8027/in/globex · expires in 1h"
+   ],
+   [
+    "tool",
+    "wait_for_delivery",
+    "{\"inbox\": \"globex\", \"event\": \"order.completed\", \"timeout\": \"15m\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "4 attempts: 500, 500, 500, 200 · gaps 1, 3, 9 min · signature valid"
+   ]
+  ],
+  "tools": [
+   [
+    "create_webhook_inbox",
+    "An inbox, ephemeral by default"
+   ],
+   [
+    "set_inbox",
+    "How it answers, traps and signature settings"
+   ],
+   [
+    "list_webhook_inboxes",
+    "Kept and ephemeral inboxes with their URL"
+   ],
+   [
+    "get_webhook_inbox",
+    "Behaviour, signature and the last event's attempts"
+   ],
+   [
+    "list_deliveries",
+    "Deliveries with signature result and answer"
+   ],
+   [
+    "get_delivery",
+    "Headers, body, checks and all attempts"
+   ],
+   [
+    "wait_for_delivery",
+    "Wait until a delivery is answered"
+   ],
+   [
+    "remove_inbox",
+    "Remove an inbox; later deliveries get 410"
+   ]
+  ],
+  "http": [
+   [
+    "POST",
+    "/api/webhooks/inboxes",
+    "create_webhook_inbox"
+   ],
+   [
+    "PUT",
+    "/api/webhooks/inboxes/{name}",
+    "set_inbox"
+   ],
+   [
+    "GET",
+    "/api/webhooks/deliveries",
+    "list_deliveries"
+   ],
+   [
+    "GET",
+    "/api/webhooks/deliveries/wait",
+    "wait_for_delivery"
+   ],
+   [
+    "DELETE",
+    "/api/webhooks/inboxes/{name}",
+    "remove_inbox"
+   ]
+  ]
+ },
+ "notes": [
+  "A removed inbox keeps its history for 24 h."
+ ]
+}

@@ -1,0 +1,356 @@
+{
+ "id": "whatsapp",
+ "order": 8,
+ "name": "WhatsApp",
+ "color": "green",
+ "tagline": "Meta's WhatsApp Cloud API with templates, the 24-hour window, simulated people and signed webhooks.",
+ "stands_in_for": [
+  "Meta WhatsApp Cloud API (Graph)",
+  "WhatsApp Business webhooks"
+ ],
+ "point": [
+  [
+   "Graph base URL",
+   "http://localhost:8025/whatsapp"
+  ],
+  [
+   "Send",
+   "POST /whatsapp/v21.0/{phone_number_id}/messages"
+  ],
+  [
+   "Token",
+   "Any bearer token (any_token is on by default)"
+  ]
+ ],
+ "capabilities": [
+  {
+   "title": "Conversations per number",
+   "text": "One row per number with the last message, the person's profile name and whether the 24 h window is open."
+  },
+  {
+   "title": "The 24-hour window",
+   "text": "Outside the window only templates are delivered; a free text fails with 131047, as Meta reports it."
+  },
+  {
+   "title": "Templates with review states",
+   "text": "Approved, pending, rejected, paused or disabled; each change sends message_template_status_update to the app."
+  },
+  {
+   "title": "Parameters checked",
+   "text": "A wrong parameter count answers 132000; an undeclared template 132001, and it is listed so you can add it."
+  },
+  {
+   "title": "People who reply",
+   "text": "reply_as_user sends a text, a template button tap, an image or a location as Meta's messages webhook."
+  },
+  {
+   "title": "Signed webhooks",
+   "text": "Status and message webhooks carry X-Hub-Signature-256 with your app secret; the verification GET runs on demand."
+  },
+  {
+   "title": "Tier, throughput, quality",
+   "text": "Over the throughput: 130429. Over the tier: 131056. A restricted number: 131048. Low template quality pauses it."
+  },
+  {
+   "title": "Recipients per number",
+   "text": "Whether a number has WhatsApp, its profile name and the steps each message goes through: sent, delivered, read, failed."
+  }
+ ],
+ "excerpts": [
+  {
+   "frame": 33392,
+   "crop": [
+    233,
+    90,
+    1207,
+    560
+   ],
+   "title": "A conversation, as Meta would report it",
+   "callouts": [
+    {
+     "x": 713,
+     "y": 171,
+     "title": "Customer service window",
+     "text": "Open for 24 h after the person's last message; outside it only templates go out."
+    },
+    {
+     "x": 299,
+     "y": 458,
+     "title": "Failed 131047",
+     "text": "A free text sent outside the window fails, and the status webhook says so."
+    },
+    {
+     "x": 900,
+     "y": 414,
+     "title": "Template with buttons",
+     "text": "The template as the person sees it, with its URL and quick-reply buttons."
+    },
+    {
+     "x": 1186,
+     "y": 240,
+     "title": "Status, as the app saw it",
+     "text": "accepted, sent, delivered, read: each webhook with what your app answered."
+    },
+    {
+     "x": 1127,
+     "y": 504,
+     "title": "Provoke on this message",
+     "text": "Fail it with a Meta error code, or send the read webhook again."
+    }
+   ]
+  },
+  {
+   "frame": 8525,
+   "crop": [
+    233,
+    90,
+    1207,
+    600
+   ],
+   "title": "Templates and their review state",
+   "callouts": [
+    {
+     "x": 550,
+     "y": 393,
+     "title": "Rejected and paused",
+     "text": "Sends follow the status: a paused template answers 132015, a disabled one 132016."
+    },
+    {
+     "x": 310,
+     "y": 540,
+     "title": "Asked for, not declared",
+     "text": "The app used a template that does not exist; Stuntman answered 132001."
+    },
+    {
+     "x": 1141,
+     "y": 140,
+     "title": "Status",
+     "text": "Change it and Stuntman sends message_template_status_update to the app."
+    },
+    {
+     "x": 1127,
+     "y": 256,
+     "title": "Quality",
+     "text": "Low quality pauses the template, as Meta does."
+    },
+    {
+     "x": 700,
+     "y": 553,
+     "title": "Variables checked",
+     "text": "The values the app sent last; a wrong count is answered 132000."
+    }
+   ]
+  },
+  {
+   "frame": 8531,
+   "crop": [
+    233,
+    90,
+    1207,
+    600
+   ],
+   "title": "Number, access and webhook",
+   "callouts": [
+    {
+     "x": 305,
+     "y": 332,
+     "title": "Expire tokens now",
+     "text": "Every Graph call gets 190 OAuthException until tokens are restored."
+    },
+    {
+     "x": 368,
+     "y": 483,
+     "title": "Signed with the app secret",
+     "text": "Webhooks carry X-Hub-Signature-256, so the app's check is tested."
+    },
+    {
+     "x": 344,
+     "y": 556,
+     "title": "Verification request",
+     "text": "Sends Meta's hub.challenge GET and checks the app echoes it."
+    },
+    {
+     "x": 487,
+     "y": 642,
+     "title": "Messaging tier",
+     "text": "Unique numbers a day; over it the send fails with 131056."
+    },
+    {
+     "x": 1200,
+     "y": 300,
+     "title": "number.yaml",
+     "text": "The same settings as a file: ids, access, webhook, limits and quality."
+    }
+   ]
+  }
+ ],
+ "provoke": [
+  {
+   "name": "500 on the next send",
+   "what": "Graph error #131000, for count sends",
+   "how": "force_whatsapp_failure {answer: 500}"
+  },
+  {
+   "name": "400 invalid parameter",
+   "what": "Graph error #100",
+   "how": "force_whatsapp_failure {answer: 400}"
+  },
+  {
+   "name": "Broken connection",
+   "what": "The connection resets, answers nothing, or hangs",
+   "how": "force_whatsapp_failure reset | empty | timeout"
+  },
+  {
+   "name": "Expired token",
+   "what": "Every Graph call gets 190 \"Session has expired\"",
+   "how": "expire_whatsapp_tokens"
+  },
+  {
+   "name": "Not on WhatsApp",
+   "what": "The status webhook reports 131026",
+   "how": "set_recipient {whatsapp: false}"
+  },
+  {
+   "name": "Outside the window",
+   "what": "A free text after 24 h without a reply fails 131047",
+   "how": "send a text while get_window says closed"
+  },
+  {
+   "name": "Template paused",
+   "what": "Sends with it fail 132015; disabled gives 132016",
+   "how": "set_template_status paused"
+  },
+  {
+   "name": "Failed with a code",
+   "what": "A sent message turns failed with the Meta error you pick",
+   "how": "set_message_status {status: failed}"
+  },
+  {
+   "name": "Duplicate status webhook",
+   "what": "The same status webhook arrives again",
+   "how": "resend_status"
+  },
+  {
+   "name": "Bad webhook signature",
+   "what": "Wrong, missing or old secret, or a replay; returns your status",
+   "how": "send_bad_webhook"
+  },
+  {
+   "name": "Rate limit",
+   "what": "Sends over the throughput get 130429",
+   "how": "set_whatsapp_number {throughput}"
+  }
+ ],
+ "advantages": [
+  {
+   "title": "No template review wait",
+   "text": "Templates are approved, rejected or paused when you say, not after Meta's review queue."
+  },
+  {
+   "title": "Real error codes",
+   "text": "131047, 132000, 131026 and 190 come with Meta's titles, so the app's error handling is tested for real."
+  },
+  {
+   "title": "Someone on the other side",
+   "text": "Replies, button taps, images and locations without a test phone or a second WhatsApp account."
+  },
+  {
+   "title": "Webhooks you can break",
+   "text": "A wrong signature, an old secret or a replay shows whether the app really checks X-Hub-Signature-256."
+  }
+ ],
+ "agent": {
+  "prompt": "Make sure the order confirmation flow works when the customer taps \"Talk to us\".",
+  "steps": [
+   [
+    "tool",
+    "wait_for_whatsapp",
+    "{\"number\": \"+1 415 555 0142\", \"template\": \"order_confirmation\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "wamid.HBgL…A1E0 sent by acme-api, 4 parameters"
+   ],
+   [
+    "tool",
+    "reply_as_user",
+    "{\"number\": \"+1 415 555 0142\", \"button\": \"Talk to us\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "messages webhook signed, acme-api answered 200; window open for 24 h"
+   ]
+  ],
+  "tools": [
+   [
+    "list_whatsapp_messages",
+    "Messages both ways, with status history and the window"
+   ],
+   [
+    "wait_for_whatsapp",
+    "Wait for the app to send to a number; returns it"
+   ],
+   [
+    "reply_as_user",
+    "The person replies: text, button, image or location"
+   ],
+   [
+    "set_message_status",
+    "Move a message to sent, delivered, read or failed"
+   ],
+   [
+    "get_window",
+    "Is the 24 h window open for a number, and until when"
+   ],
+   [
+    "set_template_status",
+    "Approve, reject, pause or disable a template"
+   ],
+   [
+    "force_whatsapp_failure",
+    "The next sends fail: 500, 400, reset, empty, timeout"
+   ],
+   [
+    "send_bad_webhook",
+    "A webhook the app must reject"
+   ],
+   [
+    "expire_whatsapp_tokens",
+    "Every Graph call gets 190 until restored"
+   ]
+  ],
+  "http": [
+   [
+    "GET",
+    "/api/whatsapp/messages",
+    "list_whatsapp_messages"
+   ],
+   [
+    "GET",
+    "/api/whatsapp/wait",
+    "wait_for_whatsapp"
+   ],
+   [
+    "POST",
+    "/api/whatsapp/numbers/{number}/reply",
+    "reply_as_user"
+   ],
+   [
+    "POST",
+    "/api/whatsapp/force",
+    "force_whatsapp_failure"
+   ],
+   [
+    "POST",
+    "/api/whatsapp/number/webhook/bad",
+    "send_bad_webhook"
+   ]
+  ]
+ },
+ "notes": [
+  "Templates live in whatsapp/templates.yaml; no review by Meta happens here.",
+  "Port 8025 serves WhatsApp together with the screen, /api and /mcp."
+ ]
+}

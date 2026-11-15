@@ -1,0 +1,355 @@
+{
+ "id": "telemetry",
+ "order": 21,
+ "name": "Telemetry",
+ "color": "amber",
+ "tagline": "An OpenTelemetry receiver that joins your app's spans to the provider calls Stuntman answered.",
+ "stands_in_for": [
+  "OpenTelemetry Collector (OTLP)",
+  "Graylog (GELF)",
+  "StatsD and DogStatsD",
+  "An APM backend"
+ ],
+ "point": [
+  [
+   "OTLP",
+   "OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 (gRPC on :4317)"
+  ],
+  [
+   "GELF",
+   "UDP localhost:12201, or HTTP POST /gelf on :8025"
+  ],
+  [
+   "StatsD",
+   "UDP localhost:8125"
+  ]
+ ],
+ "capabilities": [
+  {
+   "title": "Traces, logs and metrics",
+   "text": "OTLP over HTTP (protobuf or JSON) and gRPC. GELF and StatsD land in the same logs and metrics."
+  },
+  {
+   "title": "Spans meet provider calls",
+   "text": "Stuntman reads the trace ID on the way in, so a span to Azure Blob opens the call and the rule that answered it."
+  },
+  {
+   "title": "Wait instead of sleeping",
+   "text": "wait_for_trace and wait_for_log return the first match after the agent acts in the app."
+  },
+  {
+   "title": "Where the time went",
+   "text": "find_slow_spans lists spans over a threshold, provider spans first."
+  },
+  {
+   "title": "Logs of one trace",
+   "text": "logs_of_trace gives every line the app wrote while serving a request; lines_around shows the context across services."
+  },
+  {
+   "title": "Did the fix work?",
+   "text": "count_logs and compare_windows say whether an error stopped or a metric moved after a change."
+  },
+  {
+   "title": "Why a metric jumped",
+   "text": "why_it_jumped finds the steps over twice the median and the breakdown value and Stuntman answer behind them."
+  },
+  {
+   "title": "Calls that escaped",
+   "text": "real_provider_calls lists hosts the app still calls directly, from its own spans."
+  },
+  {
+   "title": "Forward to a real APM",
+   "text": "Copy everything to a real backend; the API key is a Secrets reference, never a value."
+  }
+ ],
+ "excerpts": [
+  {
+   "frame": 34882,
+   "crop": [
+    233,
+    90,
+    1207,
+    600
+   ],
+   "title": "A trace joined to the provider calls",
+   "callouts": [
+    {
+     "x": 300,
+     "y": 319,
+     "title": "Touching a provider",
+     "text": "Traces with spans that reached Stuntman, drawn in the provider's colour."
+    },
+    {
+     "x": 580,
+     "y": 160,
+     "title": "Failed request",
+     "text": "POST /orders: error 500 after 2 retries."
+    },
+    {
+     "x": 1180,
+     "y": 327,
+     "title": "Provoked spans",
+     "text": "Two Azure Blob PUTs answered 503 by a Stuntman rule."
+    },
+    {
+     "x": 1278,
+     "y": 403,
+     "title": "The app gave up",
+     "text": "No third attempt: the retry policy is visible in the span tree."
+    },
+    {
+     "x": 1240,
+     "y": 642,
+     "title": "Answered by",
+     "text": "The rule that answered the span, and a link to the object in Files."
+    }
+   ]
+  },
+  {
+   "frame": 7094,
+   "crop": [
+    233,
+    90,
+    1207,
+    520
+   ],
+   "title": "Logs with their trace",
+   "callouts": [
+    {
+     "x": 300,
+     "y": 137,
+     "title": "Level and service",
+     "text": "Counts per level and service; filter with list_logs or count_logs."
+    },
+    {
+     "x": 790,
+     "y": 140,
+     "title": "The error",
+     "text": "The line the app wrote when the order failed."
+    },
+    {
+     "x": 760,
+     "y": 211,
+     "title": "Retries",
+     "text": "Warnings for each 503 the app got, with the attempt number."
+    },
+    {
+     "x": 1193,
+     "y": 271,
+     "title": "Trace id",
+     "text": "Every line keeps the trace id the app sent, so it opens its trace."
+    },
+    {
+     "x": 1185,
+     "y": 563,
+     "title": "Stuntman's side",
+     "text": "Which rule made the uploads fail and why the app gave up."
+    }
+   ]
+  },
+  {
+   "frame": 7615,
+   "crop": [
+    233,
+    90,
+    1207,
+    560
+   ],
+   "title": "Metrics and why they jumped",
+   "callouts": [
+    {
+     "x": 348,
+     "y": 137,
+     "title": "Semantic names",
+     "text": "Metrics grouped by provider calls, the app, runtime and custom."
+    },
+    {
+     "x": 748,
+     "y": 240,
+     "title": "Rule on",
+     "text": "p95 jumps while a Stuntman rule was failing uploads."
+    },
+    {
+     "x": 718,
+     "y": 545,
+     "title": "5xx",
+     "text": "Errors the app answered while the rule was on."
+    },
+    {
+     "x": 1090,
+     "y": 399,
+     "title": "Not Stuntman",
+     "text": "A host the app still calls directly: a forgotten base URL."
+    },
+    {
+     "x": 1185,
+     "y": 494,
+     "title": "Why it jumped",
+     "text": "The step, the breakdown value that drove it and what Stuntman answered."
+    }
+   ]
+  }
+ ],
+ "provoke": [
+  {
+   "name": "Unauthorized",
+   "what": "The collector answers 401 or 403",
+   "how": "provoke_collector 401 | 403"
+  },
+  {
+   "name": "Throttled",
+   "what": "The collector answers 429",
+   "how": "provoke_collector 429"
+  },
+  {
+   "name": "Unavailable",
+   "what": "The collector answers 503",
+   "how": "provoke_collector 503"
+  },
+  {
+   "name": "Refused",
+   "what": "Connections to the collector are refused",
+   "how": "provoke_collector refused"
+  },
+  {
+   "name": "Slow collector",
+   "what": "Exports take longer: does the app block?",
+   "how": "provoke_collector slow"
+  },
+  {
+   "name": "Half dropped",
+   "what": "Half of the batches are dropped",
+   "how": "provoke_collector drop_half"
+  },
+  {
+   "name": "Signal off",
+   "what": "Traces, logs or metrics answered 200 and dropped",
+   "how": "set_signal on false"
+  }
+ ],
+ "advantages": [
+  {
+   "title": "No APM bill",
+   "text": "Traces, logs and metrics stay local per environment; nothing goes to a paid backend unless you turn forwarding on."
+  },
+  {
+   "title": "Cause and effect together",
+   "text": "A span shows the provider call and the rule that failed it, which no real APM can see."
+  },
+  {
+   "title": "Built for agents",
+   "text": "wait_for_trace, why_it_jumped and count_logs answer a question in one call instead of a dashboard."
+  },
+  {
+   "title": "Leaks become visible",
+   "text": "Calls that bypass Stuntman show up from the app's own spans, so a test cannot quietly hit a real provider."
+  }
+ ],
+ "agent": {
+  "prompt": "After the order fails, find out why and whether the app really retried the upload.",
+  "steps": [
+   [
+    "tool",
+    "wait_for_trace",
+    "{\"route\": \"POST /orders\", \"status\": \"error\", \"timeout\": \"30s\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "trace 4bf92f35…a1e0 · 842 ms · error 500 · 14 spans"
+   ],
+   [
+    "tool",
+    "find_slow_spans",
+    "{\"trace_id\": \"4bf92f35a1e0\", \"over_ms\": 100}"
+   ],
+   [
+    "result",
+    "ok",
+    "Azure Blob PUT × 2 · 503 · rule \"Contract uploads fail twice\" · no third attempt"
+   ],
+   [
+    "tool",
+    "real_provider_calls",
+    "{\"since\": \"15m\"}"
+   ]
+  ],
+  "tools": [
+   [
+    "telemetry_overview",
+    "Services, counts, refused batches, endpoints"
+   ],
+   [
+    "list_traces",
+    "Traces by service, status, slowness or provider"
+   ],
+   [
+    "get_trace",
+    "The span tree with provider trips"
+   ],
+   [
+    "wait_for_trace",
+    "Wait for the first matching trace"
+   ],
+   [
+    "find_slow_spans",
+    "Spans over a threshold, provider spans first"
+   ],
+   [
+    "logs_of_trace",
+    "Every line of one trace"
+   ],
+   [
+    "count_logs",
+    "Check an error stopped after a fix"
+   ],
+   [
+    "why_it_jumped",
+    "Find what drove a metric jump"
+   ],
+   [
+    "provoke_collector",
+    "Make the collector fail"
+   ],
+   [
+    "real_provider_calls",
+    "Hosts the app called directly"
+   ]
+  ],
+  "http": [
+   [
+    "GET",
+    "/api/telemetry/traces/wait",
+    "wait_for_trace"
+   ],
+   [
+    "GET",
+    "/api/telemetry/traces/{trace_id}",
+    "get_trace"
+   ],
+   [
+    "GET",
+    "/api/telemetry/traces/{trace_id}/logs",
+    "logs_of_trace"
+   ],
+   [
+    "GET",
+    "/api/telemetry/metrics/{name}/why",
+    "why_it_jumped"
+   ],
+   [
+    "POST",
+    "/api/telemetry/collector/provoke",
+    "provoke_collector"
+   ],
+   [
+    "GET",
+    "/api/apis/real-provider-calls",
+    "real_provider_calls"
+   ]
+  ]
+ },
+ "notes": [
+  "UDP has no host name: GELF and StatsD go to the default environment, or the one a _stuntman_env field or stuntman_env tag names."
+ ]
+}

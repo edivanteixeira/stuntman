@@ -1,0 +1,342 @@
+{
+ "id": "sms",
+ "order": 7,
+ "name": "SMS",
+ "color": "red",
+ "tagline": "A Zenvia SMS gateway that keeps every text, walks it through delivery steps and lets the person text back.",
+ "stands_in_for": [
+  "Zenvia API v2",
+  "Zenvia status and message webhooks"
+ ],
+ "point": [
+  [
+   "Send",
+   "POST http://localhost:8025/zenvia/v2/channels/sms/messages"
+  ],
+  [
+   "Token",
+   "X-API-TOKEN: any value (any_token is on by default)"
+  ],
+  [
+   "Callbacks",
+   "MESSAGE_STATUS and MESSAGE go to the URLs in sms/service.yaml"
+  ]
+ ],
+ "capabilities": [
+  {
+   "title": "See every text",
+   "text": "Every send, refusal and reply, newest first, with its encoding (GSM-7 or UCS-2), segment count and the code found in it."
+  },
+  {
+   "title": "Delivery steps per number",
+   "text": "Recipients decide what happens: delivered after 3 s, not delivered with a reason, never delivered, or a reply after a delay."
+  },
+  {
+   "title": "The person texts back",
+   "text": "reply_sms_as_user sends Zenvia's MESSAGE webhook to the app. STOP-like words opt the number out; START opts it back in."
+  },
+  {
+   "title": "Opt-outs enforced",
+   "text": "A send to an opted-out number gets 400 VALIDATION_ERROR, as Zenvia answers. Add or remove numbers by hand too."
+  },
+  {
+   "title": "Status callbacks on demand",
+   "text": "Move a text to SENT, DELIVERED or NOT_DELIVERED with a reason, or send the same callback again to test duplicates."
+  },
+  {
+   "title": "Callbacks with your answers",
+   "text": "Every MESSAGE_STATUS and MESSAGE callback is kept with the status your app returned; retry the ones it did not take."
+  },
+  {
+   "title": "Limits like the gateway",
+   "text": "Over the throughput limit gets 429; over max segments gets 400 \"message too long\". Strict senders and templates refuse unknown ids."
+  },
+  {
+   "title": "Wait for the code",
+   "text": "wait_for_sms blocks until the app texts a number and returns the OTP it found, so a sign-in test needs no phone."
+  }
+ ],
+ "excerpts": [
+  {
+   "frame": 9856,
+   "crop": [
+    233,
+    90,
+    1207,
+    560
+   ],
+   "title": "Every text, with what the app saw",
+   "callouts": [
+    {
+     "x": 290,
+     "y": 382,
+     "title": "Opted out",
+     "text": "The person texted STOP; the next send to this number is refused 400, as Zenvia does."
+    },
+    {
+     "x": 672,
+     "y": 296,
+     "title": "Code extracted",
+     "text": "The OTP is pulled out of the text; wait_for_sms returns it to the test."
+    },
+    {
+     "x": 716,
+     "y": 448,
+     "title": "Encoding and segments",
+     "text": "GSM-7 or UCS-2, characters per segment and the segment count billing would use."
+    },
+    {
+     "x": 1186,
+     "y": 240,
+     "title": "Status, as the app saw it",
+     "text": "Accepted, SENT, DELIVERED: each callback with the status your app answered."
+    },
+    {
+     "x": 1148,
+     "y": 460,
+     "title": "Provoke on this message",
+     "text": "Not delivered with a reason, or the same DELIVERED callback again."
+    }
+   ]
+  },
+  {
+   "frame": 9859,
+   "crop": [
+    233,
+    90,
+    1207,
+    490
+   ],
+   "title": "The simulated people behind numbers",
+   "callouts": [
+    {
+     "x": 330,
+     "y": 251,
+     "title": "Pattern match",
+     "text": "A number pattern with a trailing *: phone off, the text expires after 48 h."
+    },
+    {
+     "x": 698,
+     "y": 271,
+     "title": "Delivered after",
+     "text": "Each text is delivered after the wait you set, and the status callback follows."
+    },
+    {
+     "x": 800,
+     "y": 376,
+     "title": "Answer a question",
+     "text": "When the text asks something, the person replies with this text after 30 s."
+    },
+    {
+     "x": 740,
+     "y": 450,
+     "title": "Nth text",
+     "text": "On the third text in a day the person replies STOP and opts out."
+    },
+    {
+     "x": 1250,
+     "y": 390,
+     "title": "Saved as YAML",
+     "text": "Recipients live in sms/recipients.yaml; first match wins, * is everyone else."
+    }
+   ]
+  },
+  {
+   "frame": 9862,
+   "crop": [
+    233,
+    250,
+    1207,
+    540
+   ],
+   "title": "Senders, callbacks, opt-out and limits",
+   "callouts": [
+    {
+     "x": 290,
+     "y": 320,
+     "title": "Senders",
+     "text": "Alphanumeric, short code and long number; with strict_senders an unknown from gets 400."
+    },
+    {
+     "x": 600,
+     "y": 456,
+     "title": "Callbacks to the app",
+     "text": "Where MESSAGE_STATUS and MESSAGE (replies) are posted."
+    },
+    {
+     "x": 520,
+     "y": 609,
+     "title": "Opt-out keywords",
+     "text": "STOP, CANCEL, UNSUBSCRIBE opt out; START opts back in. Numbers on the list are shown."
+    },
+    {
+     "x": 480,
+     "y": 717,
+     "title": "Throughput",
+     "text": "Messages a second before the gateway answers 429."
+    },
+    {
+     "x": 473,
+     "y": 753,
+     "title": "Body size",
+     "text": "More segments than this gets 400 \"message too long\"."
+    }
+   ]
+  }
+ ],
+ "provoke": [
+  {
+   "name": "500 on the next send",
+   "what": "Zenvia's INTERNAL_ERROR body; count sets how many sends fail",
+   "how": "force_sms_failure {answer: 500}"
+  },
+  {
+   "name": "400 validation error",
+   "what": "A VALIDATION_ERROR body, as Zenvia sends for bad input",
+   "how": "force_sms_failure {answer: 400}"
+  },
+  {
+   "name": "Broken connection",
+   "what": "The connection resets, answers nothing, or hangs",
+   "how": "force_sms_failure reset | empty | timeout"
+  },
+  {
+   "name": "Not delivered",
+   "what": "invalid, carrier_rejected, phone_off, blocked or not_covered",
+   "how": "set_sms_status NOT_DELIVERED"
+  },
+  {
+   "name": "Never delivered",
+   "what": "The text stays SENT and expires after 48 h",
+   "how": "set_sms_recipient steps never_delivered"
+  },
+  {
+   "name": "Duplicate callback",
+   "what": "The same MESSAGE_STATUS arrives again",
+   "how": "resend_sms_status"
+  },
+  {
+   "name": "The person texts STOP",
+   "what": "The number opts out; the next send is refused 400",
+   "how": "reply_sms_as_user {text: STOP}"
+  },
+  {
+   "name": "Rate limit",
+   "what": "Sends over the messages-a-second limit get 429",
+   "how": "set_sms_service limits.throughput"
+  },
+  {
+   "name": "Message too long",
+   "what": "More segments than allowed gets 400",
+   "how": "set_sms_service limits.max_segments"
+  }
+ ],
+ "advantages": [
+  {
+   "title": "No real phone needed",
+   "text": "Codes, replies and STOPs happen on the screen or from a tool; nobody waits for a handset or pays for a text."
+  },
+  {
+   "title": "Failures on the next call",
+   "text": "500, timeout or a carrier refusal comes exactly when the test asks, then stops by itself."
+  },
+  {
+   "title": "Callbacks you can replay",
+   "text": "Resend or retry any status callback and see what your app answered, which a real gateway never shows."
+  },
+  {
+   "title": "Behaviour per number",
+   "text": "Each number has its own steps: one delivers, one is switched off, one answers yes in 30 s."
+  }
+ ],
+ "agent": {
+  "prompt": "Check that our app stops texting a customer after they reply STOP.",
+  "steps": [
+   [
+    "tool",
+    "reply_sms_as_user",
+    "{\"number\": \"+1 646 555 0187\", \"text\": \"STOP\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "MESSAGE webhook sent, acme-api answered 200; number opted out"
+   ],
+   [
+    "tool",
+    "list_sms",
+    "{\"number\": \"+1 646 555 0187\"}"
+   ],
+   [
+    "result",
+    "ok",
+    "next reminder refused 400 VALIDATION_ERROR: opted out (texted STOP)"
+   ]
+  ],
+  "tools": [
+   [
+    "list_sms",
+    "Every text both ways, with status history and the code found"
+   ],
+   [
+    "wait_for_sms",
+    "Wait for the app to text a number; returns the OTP"
+   ],
+   [
+    "reply_sms_as_user",
+    "The person texts back; STOP opts out"
+   ],
+   [
+    "set_sms_status",
+    "Move a text to SENT, DELIVERED or NOT_DELIVERED"
+   ],
+   [
+    "resend_sms_status",
+    "Send the same status callback again"
+   ],
+   [
+    "force_sms_failure",
+    "The next sends fail: 500, 400, reset, empty, timeout"
+   ],
+   [
+    "set_sms_recipient",
+    "Steps for a number: delays, refusals, replies"
+   ],
+   [
+    "list_sms_callbacks",
+    "Callbacks sent to the app, with its answers"
+   ]
+  ],
+  "http": [
+   [
+    "GET",
+    "/api/sms/messages",
+    "list_sms"
+   ],
+   [
+    "GET",
+    "/api/sms/wait",
+    "wait_for_sms"
+   ],
+   [
+    "POST",
+    "/api/sms/numbers/{number}/reply",
+    "reply_sms_as_user"
+   ],
+   [
+    "POST",
+    "/api/sms/force",
+    "force_sms_failure"
+   ],
+   [
+    "PUT",
+    "/api/sms/recipients",
+    "set_sms_recipient"
+   ]
+  ]
+ },
+ "notes": [
+  "Port 8025 serves SMS together with the screen, /api and /mcp.",
+  "Settings live in sms/service.yaml and sms/recipients.yaml per environment."
+ ]
+}

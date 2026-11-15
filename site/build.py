@@ -1,6 +1,6 @@
 """Builds the Stuntman site into site/dist: plain HTML, one shared stylesheet, no JavaScript.
 Run: python3 site/build.py   (the GitHub Pages workflow runs the same command)."""
-import html, pathlib, shutil
+import html, json, pathlib, shutil
 
 HERE = pathlib.Path(__file__).resolve().parent
 OUT = HERE / "dist"
@@ -24,18 +24,21 @@ DESC = {"index": "Stuntman stands in for SMS, WhatsApp, email, mailboxes, storag
 e = html.escape
 
 
+def up(page):  # "providers/sms" is two folders deep
+    return "" if page == "index" else "../" * (page.count("/") + 1)
+
+
 def rel(page, target):
-    up = "" if page == "index" else "../"
-    return up + ("" if target == "index" else target + "/")
+    return up(page) + ("" if target == "index" else target + "/")
 
 
 def asset(page, path):
-    return ("" if page == "index" else "../") + "assets/" + path
+    return up(page) + "assets/" + path
 
 
 def nav(page):
     links = "".join(
-        f'<a href="{rel(page, s)}"{" aria-current=\"page\"" if s == page else ""}>{label}</a>'
+        f'<a href="{rel(page, s)}"{" aria-current=\"page\"" if s == page.split("/")[0] else ""}>{label}</a>'
         for s, label in PAGES[1:-1])
     return (f'<header class="nav"><div class="wrap nav__in">'
             f'<a class="wordmark" href="{rel(page, "index")}">Stuntman</a>'
@@ -58,17 +61,18 @@ def next_link(page):
             f'<span class="display" style="font-size:var(--text-xl)">{TITLES[nxt]} →</span></a></div>')
 
 
-def doc(page, body):
-    title = TITLES[page] if page == "index" else f"{TITLES[page]} · Stuntman"
+def doc(page, body, title=None, desc=None):
+    title = title or (TITLES[page] if page == "index" else f"{TITLES[page]} · Stuntman")
+    desc = desc or DESC[page]
     return f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{e(title)}</title>
-<meta name="description" content="{e(DESC[page])}">
+<meta name="description" content="{e(desc)}">
 <meta property="og:title" content="{e(title)}">
-<meta property="og:description" content="{e(DESC[page])}">
+<meta property="og:description" content="{e(desc)}">
 <meta property="og:image" content="{asset(page, 'og.png')}">
 <meta name="theme-color" content="#FAFAF8">
 <link rel="icon" href="{asset(page, 'favicon.svg')}" type="image/svg+xml">
@@ -222,10 +226,16 @@ SIMULATED = [
 ]
 
 
+ROSTER_PAGE = {"AI models": "ai-models", "SMS, chat and push": "sms", "Email": "email", "Payments": "catalog", "Storage and files": "storage",
+               "Queues and streams": "messaging", "Identity and secrets": "identity", "Brazil: signatures and tax": "catalog",
+               "Maps and documents": "catalog", "Workplace and dev tools": "catalog", "Analytics and observability": "events",
+               "Any other API": "http-apis"}
+
+
 def roster(page):
     """Right after the home hero: every provider Stuntman simulates, by area."""
     total = sum(len(n) for _, area, _, n in SIMULATED if area != "Any other API")
-    areas = "".join(f'<li style="--c:var(--line-{c})"><h3><a href="{rel(page, "providers")}#{a}">{area}</a></h3>'
+    areas = "".join(f'<li style="--c:var(--line-{c})"><h3><a href="{rel(page, "providers/" + ROSTER_PAGE.get(area, ""))}">{area}</a></h3>'
                     f'<ul class="roster__names">{"".join(f"<li>{n}</li>" for n in names)}</ul></li>' for c, area, a, names in SIMULATED)
     return (f'<section class="wrap section roster" aria-labelledby="roster-h">'
             f'<div class="roster__head"><p class="roster__count display" aria-hidden="true">{total}</p>'
@@ -429,6 +439,14 @@ def provider_list():
           "A collector that refuses, rejects, throttles, slows or drops half; hosts still called directly.", "traces", "<code>OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318</code> · GELF <code>:12201/udp</code> · StatsD <code>:8125/udp</code>.")]
 
 
+DETAIL = {"HTTP APIs": [("http-apis", "HTTP APIs")], "SOAP services": [("soap", "SOAP")], "OpenAPI specs": [("openapi", "OpenAPI")],
+          "Recording": [("recording", "recording")], "WireMock mocks": [("wiremock", "the WireMock import")], "AI models": [("ai-models", "AI models")],
+          "SMS": [("sms", "SMS")], "WhatsApp": [("whatsapp", "WhatsApp")], "Email": [("email", "e-mail")], "Mailboxes": [("mailboxes", "Mailboxes")],
+          "Storage": [("storage", "Storage")], "Files": [("files", "Files")], "Messaging": [("messaging", "Service Bus and RabbitMQ"), ("activemq", "ActiveMQ")],
+          "Pub/Sub": [("pubsub", "Pub/Sub")], "Streams": [("streams", "Streams")], "Identity": [("identity", "Identity")], "Secrets": [("secrets", "Key Vault")],
+          "Webhook inboxes": [("webhooks", "Webhook inboxes")], "Product events": [("events", "Product events")], "Telemetry": [("telemetry", "Telemetry")]}
+
+
 def providers():
     p = "providers"
     L = provider_list()
@@ -438,12 +456,14 @@ def providers():
                f'<p class="mono" style="color:var(--text-{c if c not in ("graphite",) else "red"});font-size:var(--text-sm)">{flav}</p>'
                f'<p class="body"><b style="color:var(--color-ink)">It keeps.</b> {keeps}</p>'
                f'<p class="body"><b style="color:var(--color-ink)">You can provoke.</b> {prov}</p><p class="note">{point}</p></div>')
+        more = "".join(f'<p class="pmore"><a href="{rel(p, "providers/" + i)}">Everything {e(t)} does →</a></p>' for i, t in DETAIL.get(name, []))
+        txt = txt[:-len("</div>")] + more + "</div>"
         img = shot(p, sc, f"The {name} screen") if sc else ""
         secs.append(f'<section class="wrap section"><div class="split">{txt}{img}</div></section>')
     return doc(p, hero(p, "Every provider your app calls. None of them real.",
                        "Each line is one kind of provider, such as SMS, storage or identity; a flavor or a plugin is one vendor's version of it. Stuntman "
                        "answers like the provider, keeps its state and sends its callbacks back.", actions=False)
-               + "".join(secs) + next_link(p))
+               + provider_index(p) + "".join(secs) + next_link(p))
 
 
 def failures():
@@ -643,6 +663,66 @@ def start():
 {next_link(p)}""")
 
 
+# ------------------------------------------------------------------ one page per provider (data: site/providers/*.json)
+PROVIDERS = sorted((json.loads(f.read_text()) for f in (HERE / "providers").glob("*.json")), key=lambda d: d["order"])
+
+
+def provider_page(d):
+    p = "providers/" + d["id"]
+    i = [x["id"] for x in PROVIDERS].index(d["id"])
+    prev_, next_ = PROVIDERS[i - 1], PROVIDERS[(i + 1) % len(PROVIDERS)]
+    col = d["color"]
+    chips = "".join(f"<li>{e(x)}</li>" for x in d["stands_in_for"])
+    point = "".join(f"<dt>{e(k)}</dt><dd><code>{e(v)}</code></dd>" for k, v in d.get("point", []))
+    caps = "".join(f'<li><span class="pcard__n">{n + 1:02d}</span><h3>{e(c["title"])}</h3><p>{e(c["text"])}</p></li>'
+                   for n, c in enumerate(d["capabilities"]))
+    shots = []
+    for k, x in enumerate(d["excerpts"]):
+        cx, cy, cw, ch = x["crop"]
+        pins = "".join(f'<span class="num" style="--x:{(c["x"] - cx) / cw * 100:.2f}%;--y:{(c["y"] - cy) / ch * 100:.2f}%" aria-hidden="true">{n + 1}</span>'
+                       for n, c in enumerate(x["callouts"]))
+        sc = min(1, 1248 / cw)
+        notes = "".join(f'<li><span class="num" aria-hidden="true">{n + 1}</span><div><b>{e(c["title"])}</b><p>{e(c["text"])}</p></div></li>'
+                        for n, c in enumerate(x["callouts"]))
+        shots.append(f'<div class="pshot"><h3 class="display">{e(x["title"])}</h3>'
+                     f'<figure class="shot"><img src="{asset(p, "providers/" + d["id"] + "-" + str(k + 1) + ".webp")}" width="{round(cw * sc)}" height="{round(ch * sc)}" '
+                     f'alt="{e(x["title"])}: the {e(d["name"])} screen in Stuntman" loading="lazy" decoding="async">{pins}</figure>'
+                     f'<ol class="callouts">{notes}</ol></div>')
+    prov = "".join(f'<li><code>{e(x["name"])}</code><p>{e(x["what"])}</p>{f"<small>{e(x.get("how", ""))}</small>" if x.get("how") else ""}</li>' for x in d["provoke"])
+    adv = "".join(f'<li><h3>{e(a["title"])}</h3><p>{e(a["text"])}</p></li>' for a in d["advantages"])
+    ag = d["agent"]
+    rows = [("say", "you", ag["prompt"])] + [("tool", a, b) if k == "tool" else ("res", "ok", (a + "  " + b).strip()) for k, a, b in ag["steps"]]
+    tools = "".join(f"<li><code>{e(n)}</code><span>{e(w)}</span></li>" for n, w in ag["tools"])
+    http = "".join(f'<li><span class="m">{e(m)}</span><code>{e(path)}</code></li>' for m, path, _ in ag["http"])
+    notes = "".join(f"<li>{e(n)}</li>" for n in d.get("notes", []))
+    body = f"""
+<section class="wrap hero phero" style="--c:var(--line-{col})">
+  <div><p class="crumb"><a href="{rel(p, "index")}">stuntman</a> / <a href="{rel(p, "providers")}">providers</a> / {e(d["name"].lower())}</p>
+  <h1 class="display">{e(d["name"])}</h1><p class="lead">{e(d["tagline"])}</p>
+  <p class="plabel">Stands in for</p><ul class="roster__names">{chips}</ul></div>
+  <aside class="ppoint"><p class="plabel">Point your app at it</p><dl>{point}</dl>
+  <p class="plabel">Your AI agent drives it</p><p class="endpoint"><span><b>MCP</b>/mcp</span><span><b>HTTP</b>/api</span></p>
+  <p class="note">Every tool is both: same names, same arguments.</p></aside>
+</section>
+<section class="wrap section" style="--c:var(--line-{col})">{head(2, f"Everything {e(d['name'])} gives you")}<ol class="pcards">{caps}</ol></section>
+<section class="wrap section" style="--c:var(--line-{col})">{head(2, "The screens", "Each number is a control or a reading on the real screen. Everything you can click there, your agent can do with a tool.")}{"".join(shots)}</section>
+<section class="pband" style="--c:var(--line-{col})"><div class="wrap">{head(2, "Break it on purpose", "The failures you need to test, exactly when you ask: from the screen or by a tool call, each one shown on the timeline with who caused it.")}<ul class="pprov">{prov}</ul></div></section>
+<section class="wrap section">{head(2, "Why not the real sandbox")}<ul class="padv">{adv}</ul></section>
+<section class="wrap section" style="--c:var(--line-{col})">{head(2, "Your AI agent drives it", "Claude Code, Codex or any MCP client connects to /mcp (or calls /api over plain HTTP), sets the stand-in up, breaks it on cue and reads what your app did.")}
+  <div class="pagent">{session(rows)}<div><p class="plabel">MCP tools</p><ul class="ptools">{tools}</ul><p class="plabel">The same over HTTP</p><ul class="phttp">{http}</ul></div></div>
+  {f'<ul class="pnotes">{notes}</ul>' if notes else ""}
+</section>
+<nav class="wrap pnext" aria-label="Other providers"><a href="{rel(p, "providers/" + prev_["id"])}"><small>Previous</small>{e(prev_["name"])}</a>
+  <a href="{rel(p, "providers")}"><small>All</small>Providers</a><a href="{rel(p, "providers/" + next_["id"])}"><small>Next</small>{e(next_["name"])} →</a></nav>"""
+    return doc(p, body, title=f'{d["name"]} · Stuntman providers', desc=d["tagline"])
+
+
+def provider_index(page):
+    items = "".join(f'<li style="--c:var(--line-{d["color"]})"><a href="{rel(page, "providers/" + d["id"])}"><b>{e(d["name"])}</b>'
+                    f'<span>{e(d["tagline"])}</span></a></li>' for d in PROVIDERS)
+    return f'<section class="wrap section">{head(2, "Every provider, in detail", "What each stand-in does, its screens, what you can break and how your agent drives it.")}<ul class="pindex">{items}</ul></section>'
+
+
 BUILD = {"index": home, "agents": agents, "providers": providers, "failures": failures, "timeline": timeline,
          "plugins": plugins, "environments": environments, "start": start}
 
@@ -652,6 +732,8 @@ if __name__ == "__main__":
     shutil.copytree(HERE / "assets", OUT / "assets")
     for f in (HERE / "static").iterdir():   # agent-setup.md, llms.txt: served from the site root
         shutil.copy(f, OUT / f.name)
+    for d in PROVIDERS:
+        BUILD["providers/" + d["id"]] = (lambda d=d: provider_page(d))
     for name, fn in BUILD.items():
         target = OUT / ("index.html" if name == "index" else f"{name}/index.html")
         target.parent.mkdir(parents=True, exist_ok=True)

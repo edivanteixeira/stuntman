@@ -78,7 +78,7 @@ Each route reads top to bottom: **receive → let → keep → wait → decide �
 | `route` | `METHOD /path`; `{name}` segments are path parameters |
 | `receive.auth` | `none`, `bearer` (a token from this service's token route), `basic`, `session` |
 | `receive.body` | required body fields (dotted paths); a missing one answers 400, or the answer named by `missing` |
-| `receive.schema`, `receive.invalid` | the body is checked against this schema of `spec.schemas`; a body that breaks it gets the answer named by `invalid`, or 400 naming the field (see [OpenAPI](openapi.md)) |
+| `receive.schema`, `receive.invalid` | the body is checked against this schema of `spec.schemas`; a body that does not match it gets the answer named by `invalid`, or 400 naming the field (see [OpenAPI](openapi.md)) |
 | `operation` | the spec's `operationId`, kept for reference |
 | `lets` | named values computed first, e.g. `person: lookup('people', 'id', body.document_id)` |
 | `keep` | `state` (a collection) and `key` (an expression): what the provider remembers between calls |

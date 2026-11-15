@@ -337,7 +337,7 @@ def providers():
           f"Create it with <code>import_wsdl</code> or <b>+ New service</b>, then point your app at <code>http://localhost:8028/&lt;service&gt;&lt;endpoint&gt;</code>. <a href='{DOCS}/soap.md'>SOAP guide</a>."),
          ("blue", "OpenAPI specs", "OpenAPI 3.0 and 3.1 · Swagger 2.0 · JSON or YAML",
           "Routes from the paths; answers from the examples, or built from the schemas and echoing what the app sent; the spec served back.",
-          "Any response the spec declares, the provider's 400 or 422 for a body that breaks the schema, expired tokens, slow or failed calls.", "openapi",
+          "Any response the spec declares, the provider's 400 or 422 for a body that does not match the schema, expired tokens, slow or failed calls.", "openapi",
           f"Create it with <code>import_spec</code> or <b>+ New service</b>, then point your app at <code>http://localhost:8028/&lt;service&gt;</code>. <a href='{DOCS}/openapi.md'>OpenAPI guide</a>."),
          ("blue", "Recording", "Your provider's sandbox · any HTTP API with no spec",
           "Each call goes to the sandbox and back, with secrets, cards, CPFs and e-mails masked; the review groups calls into routes, answers and rules.",

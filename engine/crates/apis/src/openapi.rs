@@ -401,7 +401,8 @@ pub async fn import(http: &reqwest::Client, service: &str, source: &str, text: O
             }
             match fetch(http, &full).await.map_err(|e| e).and_then(|t| parse(&t).map(|v| (t, v))) {
                 Ok((t, v)) => {
-                    files.push((base_name(&f), t));
+                    let rel = f.trim_start_matches("./");
+                    files.push((if f.contains("://") || rel.contains("..") || rel.starts_with('/') { base_name(&f) } else { rel.to_string() }, t));
                     queue.push((full, v));
                 }
                 Err(e) => {
@@ -515,6 +516,9 @@ pub async fn import(http: &reqwest::Client, service: &str, source: &str, text: O
                     }
                 };
                 let json = ctype.contains("json");
+                if !json && from == "schema" {
+                    body = Value::Null;
+                }
                 if from == "schema" && (200..300).contains(&status) {
                     mark_echo(&mut body, &req_props);
                 }
@@ -640,7 +644,13 @@ pub fn save(ctx: &Ctx, mut im: Imported, merge: Option<Plugin>) -> Result<Value,
             }
             im.plugin.routes.push(r);
         }
-        removed = old.routes.iter().filter(|o| !im.plugin.routes.iter().any(|n| n.route.eq_ignore_ascii_case(&o.route))).map(|o| o.route.clone()).collect();
+        // Routes the new spec does not have stay (hand-made ones too); they are listed.
+        for o in &old.routes {
+            if !im.plugin.routes.iter().any(|n| n.route.eq_ignore_ascii_case(&o.route)) {
+                removed.push(o.route.clone());
+                im.plugin.routes.push(o.clone());
+            }
+        }
         let fresh = std::mem::take(&mut im.plugin.answers);
         im.plugin.answers = old.answers.clone();
         for a in fresh {
@@ -650,6 +660,9 @@ pub fn save(ctx: &Ctx, mut im: Imported, merge: Option<Plugin>) -> Result<Value,
         }
         if let (Some(n), Some(o)) = (im.plugin.spec.as_mut(), old.spec.as_ref()) {
             n.validate = o.validate;
+            for (k, v) in &o.schemas {
+                n.schemas.entry(k.clone()).or_insert_with(|| v.clone());
+            }
         }
         im.plugin.service = old.service.clone();
         im.plugin.data = old.data.clone();
@@ -659,6 +672,9 @@ pub fn save(ctx: &Ctx, mut im: Imported, merge: Option<Plugin>) -> Result<Value,
     let dir = folder(ctx, &name);
     std::fs::create_dir_all(&dir).map_err(|e| ApiError::internal(e.to_string()))?;
     for (f, t) in &im.files {
+        if let Some(parent) = dir.join(f).parent() {
+            std::fs::create_dir_all(parent).map_err(|e| ApiError::internal(e.to_string()))?;
+        }
         std::fs::write(dir.join(f), t).map_err(|e| ApiError::internal(e.to_string()))?;
     }
     let v = plugin::save(ctx, &im.plugin)?;
@@ -666,7 +682,7 @@ pub fn save(ctx: &Ctx, mut im: Imported, merge: Option<Plugin>) -> Result<Value,
     Ok(json!({"service": name, "kind": "openapi", "version": v, "spec": p.spec.as_ref().map(|s| json!({"version": s.version, "file": s.openapi, "apiVersion": s.api_version})),
         "routes": p.routes.iter().map(|r| json!({"route": r.route, "operation": r.operation, "schema": r.receive.schema, "answer": r.decide.first().map(|d| d.answer.clone()), "token": r.token})).collect::<Vec<_>>(),
         "answers": p.answers.iter().map(|a| json!({"name": a.name, "status": a.status})).collect::<Vec<_>>(),
-        "webhooks": im.webhooks, "warnings": im.warnings, "added": added, "removed": removed, "file": plugin::rel(&name)}))
+        "webhooks": im.webhooks, "warnings": im.warnings, "added": added, "notInSpec": removed, "file": plugin::rel(&name)}))
 }
 
 /// GET /<spec file> on a service made from a spec: the spec, and the files it points to.
@@ -674,7 +690,7 @@ pub fn serve_file(ctx: &Ctx, p: &Plugin, inner: &str) -> Option<axum::response::
     use axum::response::IntoResponse;
     let sp = p.spec.as_ref()?;
     let name = inner.trim_start_matches('/');
-    if name.is_empty() || name.contains('/') || name.contains("..") {
+    if name.is_empty() || name.contains("..") || name.contains('\\') {
         return None;
     }
     let t = std::fs::read_to_string(folder(ctx, &p.service.name).join(name)).ok()?;

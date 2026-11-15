@@ -232,7 +232,7 @@ pub fn Routes() -> impl IntoView {
                                 spec_busy.set(true);
                                 leptos::task::spawn_local(async move {
                                     match api::send("POST", &format!("/plugins/{}/spec", enc(&sv)), json!({})).await {
-                                        Ok(v) => { let (a, r) = (v["added"].as_array().map(|x| x.len()).unwrap_or(0), v["removed"].as_array().map(|x| x.len()).unwrap_or(0)); ui::toast(if a + r == 0 { "The spec has the same routes".to_string() } else { format!("{a} route(s) added, {r} no longer in the spec") }); load(None); }
+                                        Ok(v) => { let (a, r) = (v["added"].as_array().map(|x| x.len()).unwrap_or(0), v["notInSpec"].as_array().map(|x| x.len()).unwrap_or(0)); ui::toast(if a + r == 0 { "The spec has the same routes".to_string() } else { format!("{a} route(s) added; {r} not in the spec, kept") }); load(None); }
                                         Err(e) => ui::toast_err(e),
                                     }
                                     spec_busy.set(false);

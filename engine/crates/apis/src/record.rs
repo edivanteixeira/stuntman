@@ -229,7 +229,9 @@ pub async fn forward(ctx: &Ctx, p: &Plugin, rc: &Record, method: &str, path: &st
 
 fn idlike(seg: &str) -> bool {
     let version = seg.len() <= 4 && seg.starts_with('v') && seg[1..].chars().all(|c| c.is_ascii_digit() || c == '.');
-    !version && (seg.chars().any(|c| c.is_ascii_digit()) || seg.len() >= 24)
+    let digits = seg.chars().filter(|c| c.is_ascii_digit()).count();
+    // "oauth2", "v2beta" stay; "42", "SHP-88229", "a1b2c3", long tokens become parameters.
+    !version && (digits == seg.len() || digits >= 2 || seg.len() >= 24)
 }
 
 fn template_path(path: &str) -> (String, Vec<(String, String)>) {
@@ -606,6 +608,7 @@ mod t {
             call("GET", "/v2/shipments/SHP-00000", json!(null), 404, json!({"error": "not found"})),
             call("GET", "/v2/shipments/SHP-88231", json!(null), 200, json!({"id": "SHP-88231", "status": "created"})),
         ];
+        assert!(!idlike("oauth2") && !idlike("v2beta") && !idlike("v2") && idlike("42") && idlike("SHP-88229"));
         let a = analyse(&calls, &Plugin::default());
         let routes: Vec<&str> = a.plugin_routes.iter().map(|r| r.route.as_str()).collect();
         assert_eq!(routes, vec!["POST /v2/shipments", "GET /v2/shipments/{id}"]);

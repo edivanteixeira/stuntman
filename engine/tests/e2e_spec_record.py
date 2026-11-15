@@ -122,7 +122,7 @@ def openapi():
     # The spec served back, with the file its $ref points to.
     st, body, h = api("GET", "/example-payments/payments.yaml")
     assert st == 200 and b"openapi: 3.1.0" in body and "yaml" in h["content-type"], (st, h)
-    st, body, _ = api("GET", "/example-payments/errors.yaml")
+    st, body, _ = api("GET", "/example-payments/common/errors.yaml")
     assert st == 200 and b"Error:" in body, st
 
     # A token, then charges: the success answer echoes the amount; the schema refuses wrong bodies.
@@ -155,8 +155,11 @@ def openapi():
     st, v, _ = api("POST", "/example-payments/v1/charges", {"amount": 4500, "currency": "eur", "card": {"number": "4000000000000002"}}, auth)
     assert st == 402, (st, v)
     spec2 = open(os.path.join(SPECS, "payments.yaml")).read().replace("  /oauth/token:", "  /v1/payouts:\n    post:\n      operationId: createPayout\n      responses:\n        \"201\": {description: ok, content: {application/json: {example: {id: po_1}}}}\n  /oauth/token:")
+    call("PUT", "/plugins/example-payments/routes", {"service": "example-payments", "method": "GET", "path": "/v1/balance", "steps": {"decide": [{"answer": "get_charge"}]}})
     re_ = call("POST", "/plugins/example-payments/spec", {"service": "example-payments", "spec": spec2, "source": url})
-    assert re_["added"] == ["POST /v1/payouts"] and re_["removed"] == [], re_
+    assert re_["added"] == ["POST /v1/payouts"] and re_["notInSpec"] == ["GET /v1/balance"], re_
+    st, v, _ = api("GET", "/example-payments/v1/balance", headers=auth)
+    assert st == 200, "a route made by hand survives the re-import"
     st, v, _ = api("POST", "/example-payments/v1/charges", {"amount": 4500, "currency": "eur", "card": {"number": "4000000000000002"}}, auth)
     assert st == 402, "the rule survived the re-import"
     st, v, _ = api("POST", "/example-payments/v1/payouts", {}, auth)

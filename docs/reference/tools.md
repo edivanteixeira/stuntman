@@ -5,9 +5,9 @@ Every action in Stuntman is one tool. Each tool is an **MCP tool** (same name) a
 
 _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit by hand._
 
-**376 tools** in 16 areas.
+**389 tools** in 17 areas.
 
-- [Environments and timeline](#environments-and-timeline) · 12 tools
+- [Environments and timeline](#environments-and-timeline) · 13 tools
 - [Email and mailboxes](#email-and-mailboxes) · 39 tools
 - [SMS](#sms) · 17 tools
 - [WhatsApp](#whatsapp) · 28 tools
@@ -15,11 +15,12 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 - [AI models](#ai-models) · 9 tools
 - [Product events](#product-events) · 8 tools
 - [Storage (Azure Blob, S3)](#storage-azure-blob-s3) · 45 tools
-- [Messaging (Service Bus, RabbitMQ, ActiveMQ)](#messaging-service-bus-rabbitmq-activemq) · 25 tools
+- [Messaging (Service Bus, RabbitMQ, ActiveMQ, Event Hubs)](#messaging-service-bus-rabbitmq-activemq-event-hubs) · 31 tools
 - [Identity (OIDC, OAuth2, SAML, LDAP, Bot Framework)](#identity-oidc-oauth2-saml-ldap-bot-framework) · 28 tools
 - [Files (FTP, SFTP)](#files-ftp-sftp) · 8 tools
 - [Streams (Kafka, Schema Registry)](#streams-kafka-schema-registry) · 10 tools
 - [Pub/Sub (Google Cloud)](#pub-sub-google-cloud) · 14 tools
+- [Kinesis (Amazon Kinesis Data Streams)](#kinesis-amazon-kinesis-data-streams) · 6 tools
 - [Secrets (Key Vault)](#secrets-key-vault) · 31 tools
 - [Webhook inboxes](#webhook-inboxes) · 9 tools
 - [Telemetry (OpenTelemetry)](#telemetry-opentelemetry) · 25 tools
@@ -40,6 +41,7 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `timeline` | `GET /api/timeline` | — | range, to, from, sel_from, sel_to, service, who, show, q, limit, buckets | Everything that reached this environment's services in a window: rows (newest first), counts per service and per actor, activity lanes, and offline gaps. |
 | `get_timeline_row` | `GET /api/timeline/{id}` | id | — | One Timeline row and the rest of its journey (rows with the same trace id). |
 | `wait_for_timeline` | `POST /api/timeline/wait` | — | service, who, show, q, since, timeout | Waits until a row that matches appears (after `since`, default now) and returns it; 408 after the timeout. |
+| `usage` | `GET /api/usage` | — | — | Which services this environment's apps use: per service kind (email, whatsapp, sms, storage, queues, streams, pubsub, kinesis, files, keyvault, identity, apis, ai, events, webhooks, telemetry) the calls today and in the last 7 days, the last call, and live (a call in the last 5 minutes). Your own tool calls do not count. |
 
 ## Email and mailboxes
 
@@ -290,7 +292,7 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `remove_container` | `DELETE /api/services/{name}/accounts/{account}/containers/{container}` | service, account, container | — | Removes a container and its objects; says how many went with it. The seed is not changed, so a reset brings them back. |
 | `delete_account` | `DELETE /api/services/{name}/accounts/{account}` | service, account | — | Deletes an account, its objects and links (people confirm on the screen; agents do not). Also for messaging: service = azure-service-bus \| rabbitmq (accounts are namespaces). |
 
-## Messaging (Service Bus, RabbitMQ, ActiveMQ)
+## Messaging (Service Bus, RabbitMQ, ActiveMQ, Event Hubs)
 
 | Tool | HTTP | Required | Optional | What it does |
 |---|---|---|---|---|
@@ -319,6 +321,12 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `set_activemq` | `PUT /api/activemq/settings` | — | users, refuse_login, drop_after, slow_dispatch, redeliver, fail_commits, max_redeliveries, individual_dlq, advisory_delivered, advisory_consumed, reset | ActiveMQ broker behaviour: users (name → password; empty: anyone logs in), refuse_login (every login fails with a SecurityException), drop_after (close the connection after N dispatched messages), slow_dispatch (wait before each dispatch), redeliver (the next N acks are lost: those messages come again with a higher redelivery count), fail_commits (the next N transaction commits fail with a TransactionRolledBackException, or an XAException for XA, and roll back), max_redeliveries (past it a message goes to the dead-letter queue; default 6), individual_dlq (one DLQ per destination instead of ActiveMQ.DLQ), advisory_delivered / advisory_consumed (the MessageDelivered / MessageConsumed advisory topics, off by default as in ActiveMQ). Only what you pass changes; reset=true goes back to defaults. |
 | `cancel_activemq_scheduled` | `POST /api/activemq/scheduled/cancel` | — | seq, destination | Cancels scheduled ActiveMQ messages (AMQ_SCHEDULED_DELAY, _PERIOD/_REPEAT, _CRON) before they go out: one (seq) or all of a destination. They are kept as discarded. |
 | `wait_for_activemq_ack` | `GET /api/activemq/wait-ack` | destination | seq, count, timeout | Waits until the app acked: one message (seq), at least `count` messages of the destination, or (neither) everything sent to it: nothing pending or delivered and at least one acked. 408 after the timeout. |
+| `list_eventhubs` | `GET /api/eventhubs` | — | — | Azure Event Hubs namespaces (AMQP port, the SDKs in emulator mode): each event hub with its partitions (begin and last sequence number, last offset, last enqueued time, how many events it keeps), its consumer groups with the receivers reading each partition now (owner level/epoch, position) and the checkpoints the app wrote with BlobCheckpointStore, retention, the connection string (EntityPath per hub), the Kafka endpoint and what set_eventhubs provokes. |
+| `create_eventhub` | `POST /api/eventhubs/{namespace}/hubs` | namespace, hub | partitions, consumer_groups, retention | Creates an event hub (and its namespace when new) with partitions (default 4, can only grow), consumer groups ($Default is always there) and retention (default 24h, on the environment clock). Again on an existing hub: adds partitions and consumer groups, changes retention. |
+| `list_eventhub_events` | `GET /api/eventhubs/{namespace}/{hub}/events` | namespace, hub | partition, last | Events of an event hub, newest first, with partition, sequence number, offset, enqueued time (environment clock), partition key, properties, body and who sent it (the app over AMQP or Kafka, you, an agent). |
+| `eventhub_send` | `POST /api/eventhubs/{namespace}/{hub}/events` | namespace, hub | body, properties, partition_key, partition, events | Sends events to an event hub as another producer would; the app's receivers get them. One event (body) or a batch (events: [{body, properties, partition_key}]). partition_key is hashed to a partition as the service does; partition picks one. |
+| `set_eventhubs` | `PUT /api/eventhubs/{namespace}/settings` | namespace | server_busy, quota_exceeded, slow_sends, not_found, steal_owner, drop_connections, any_key, reset | Event Hubs provocations for a namespace: server_busy (the next N sends get ServerBusy, which the SDKs retry), quota_exceeded (the next N sends get QuotaExceeded), slow_sends (wait before each send is accepted), not_found (hubs that answer 'entity not found' while listed), steal_owner (the receivers of a hub, or all with true, are disconnected as by a higher epoch: OwnershipLost / link stolen), drop_connections (closes every AMQP connection of the namespace now; the SDKs reconnect), any_key. Only what you pass changes; reset=true goes back to normal. |
+| `wait_for_eventhub_event` | `GET /api/eventhubs/{namespace}/{hub}/wait` | namespace, hub | where, text, partition, since, timeout | Waits for the first event the app sent (over AMQP or Kafka, not you or an agent) to an event hub that matches: properties or JSON body fields in `where`, text in the body, a partition. 408 after the timeout. |
 
 ## Identity (OIDC, OAuth2, SAML, LDAP, Bot Framework)
 
@@ -395,10 +403,21 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `list_pubsub_bigtable_rows` | `GET /api/pubsub/bigtable` | — | table, subscription, limit | The rows Bigtable subscriptions wrote (Stuntman keeps the tables): row key subscription#salt#message_id (or the delimited key), the data in family data (qualifier ""), and with write_metadata the pubsub_metadata family (subscription_name, message_id, publish_time, attributes, ordering_key). |
 | `set_pubsub_bigtable_table` | `PUT /api/pubsub/bigtable/tables/{table}` | table, row_key_schema | — | Defines a Bigtable table's row key schema for Bigtable subscriptions with row_key_schema: fields [{name, type STRING \| INT64 \| BYTES}] taken from the message's JSON, encoding singleton, delimited_bytes (delimiter, default #) or ordered_code_bytes. |
 | `set_pubsub_bigquery_table` | `PUT /api/pubsub/bigquery/tables/{table}` | table, schema | — | Defines a BigQuery table's schema for BigQuery subscriptions: columns [{name, type, mode}] (STRING, BYTES, INTEGER, FLOAT, NUMERIC, BOOLEAN, TIMESTAMP, DATE, JSON, RECORD; NULLABLE, REQUIRED, REPEATED). With it, use_table_schema maps the message's JSON fields to columns, drop_unknown_fields drops extras, and a row that does not fit is not written (retried, then dead-lettered). |
-| `set_pubsub_topic` | `PUT /api/pubsub/topics/{topic}` | topic | ingestion, udf_code, udf_function, project | Sets a topic's ingestion source (kind aws_kinesis, cloud_storage, azure_event_hubs, aws_msk, confluent_cloud with that source's fields) and/or a JavaScript UDF transform (udf_code, udf_function), making the topic when missing. Cloud Storage reads a Stuntman storage container of the bucket's name; MSK and Confluent read the Streams (Kafka) topic. |
+| `set_pubsub_topic` | `PUT /api/pubsub/topics/{topic}` | topic | ingestion, udf_code, udf_function, project | Sets a topic's ingestion source (kind aws_kinesis, cloud_storage, azure_event_hubs, aws_msk, confluent_cloud with that source's fields) and/or a JavaScript UDF transform (udf_code, udf_function), making the topic when missing. Cloud Storage reads a Stuntman storage container of the bucket's name; MSK and Confluent read the Streams (Kafka) topic; Kinesis reads the Stuntman Kinesis stream its stream_arn names, from TRIM_HORIZON. |
 | `pubsub_ingest` | `POST /api/pubsub/topics/{topic}/ingest` | topic, records | project | Feeds records into an import topic as its source would: records [{data, key, attributes}] — Kafka (MSK, Confluent): value → data, key → ordering key, headers → attributes; Kinesis: partition key → ordering key; Event Hubs: partition key → ordering key, properties → attributes; Cloud Storage: each record one text line. They go through the topic's transforms and schema. |
 | `wait_for_pubsub_message` | `GET /api/pubsub/topics/{topic}/wait` | topic | contains, attributes, ordering_key, since, timeout, project | Waits for the first message the app published (not you or an agent) on a topic that matches: text in the data, attributes, ordering key. Looks back 15 s by default; 408 after the timeout. |
-| `set_pubsub` | `PUT /api/pubsub/config` | — | project, provoke, times, topic, delay_ms | Pub/Sub settings: project (for short names) and a provocation on Publish: unavailable, deadline_exceeded, resource_exhausted, not_found, slow_publish (delay_ms), duplicate (each message delivered again after its first ack); times = for the next N publishes (0 = until cleared), topic = only that topic; none clears. |
+| `set_pubsub` | `PUT /api/pubsub/config` | — | project, provoke, times, topic, delay_ms | Pub/Sub settings: project (for short names) and a provocation on Publish: unavailable, deadline_exceeded, resource_exhausted, not_found, slow_publish (delay_ms), duplicate (each message delivered again after its first ack), ack_transient (exactly-once acks fail with a transient error the client retries), kms_disabled (publishes to topics with a KMS key fail with FAILED_PRECONDITION); times = for the next N publishes (0 = until cleared), topic = only that topic; none clears. |
+
+## Kinesis (Amazon Kinesis Data Streams)
+
+| Tool | HTTP | Required | Optional | What it does |
+|---|---|---|---|---|
+| `list_kinesis_streams` | `GET /api/kinesis/streams` | — | — | The Kinesis streams of this environment: mode, retention, shards (hash key range, sequence range, parent shards, open or closed, records), enhanced fan-out consumers, tags; how to connect; the provocation. |
+| `create_kinesis_stream` | `PUT /api/kinesis/streams/{name}` | name | shards, mode | Creates a stream: shards = N for provisioned mode (hash key space split evenly), or mode = on_demand (4 shards). |
+| `list_kinesis_records` | `GET /api/kinesis/streams/{stream}/records` | stream | shard, limit, since | The newest records of a stream (or one shard): shard, sequence number, partition key, data (JSON or text), who put it, when. |
+| `kinesis_put` | `POST /api/kinesis/streams/{stream}/records` | stream, data | partition_key, explicit_hash_key | Puts a record as another producer would: data (JSON or text), partition_key (MD5 of it picks the shard), explicit_hash_key to choose the shard. The app's consumers read it. |
+| `wait_for_kinesis_record` | `GET /api/kinesis/streams/{stream}/wait` | stream | contains, partition_key, since, timeout | Waits for the first record the app put (not you or an agent) on a stream that matches: text in the data, partition key. Looks back 15 s by default; 408 after the timeout. |
+| `set_kinesis` | `PUT /api/kinesis/config` | provoke | times, stream, delay_ms | A provocation on the Kinesis endpoint: throughput_puts, throughput_gets (ProvisionedThroughputExceededException), not_found (ResourceNotFoundException), expired_iterator, kms_throttling, slow_puts (delay_ms), partial_failures (PutRecords fails every second record); times = for the next N calls (0 = until cleared), stream = only that stream; none clears. reshard splits the stream's widest open shard now. |
 
 ## Secrets (Key Vault)
 

@@ -43,7 +43,7 @@ A **paused** environment answers 503 on every service, stores nothing, and keeps
 | Path prefix, on any HTTP port | `http://localhost:8025/e/pr-5462/mcp`, `:8027/e/pr-5462/in/<inbox>`, `:4318/e/pr-5462/v1/traces` |
 | gRPC metadata | `x-stuntman-env: pr-5462` |
 
-Anything else falls to the default environment (`STUNTMAN_ENV`, `stg-a` unless set). SMTP ports belong to one
+Anything else falls to the default environment (`STUNTMAN_ENV`, `staging` unless set). SMTP ports belong to one
 environment; a copy moves its SMTP services to free ports.
 
 Service Bus and Key Vault find the namespace or vault by host name. Give each environment a **base domain** under a

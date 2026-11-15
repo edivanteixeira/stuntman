@@ -249,8 +249,8 @@ pub fn Routes() -> impl IntoView {
                         if pl.is_null() { return view! { <div class="cap">"Loading…"</div> }.into_any(); }
                         if d.is_null() {
                             return view! { <div class="callout"><div class="t">"A new plugin with no routes"</div>
-                                <div class="t2">"Every call is answered 404 “no route” and listed in Unmatched; create routes from there in one click."</div>
-                                <a class="link" href="/apis/unmatched">"Unmatched ›"</a></div> }.into_any();
+                                <div class="t2">"Every call is answered 404 “no route” and listed as Not answered on the Timeline; create routes from there in one click."</div>
+                                <a class="link" href="/apis/unmatched">"Not answered ›"</a></div> }.into_any();
                         }
                         let answers: Vec<String> = pl["plugin"]["answers"].as_array().cloned().unwrap_or_default().iter().map(|a| s(a, "name")).collect();
                         let n_today = counts.get()[&s(&d, "route")].as_i64().unwrap_or(0);

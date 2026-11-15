@@ -49,6 +49,7 @@ async fn conn(ctx: Ctx, sock: tokio::net::TcpStream) {
         let line = line.trim_end().to_string();
         let mut p = line.splitn(3, ' ');
         let cmd = p.next().unwrap_or("").to_uppercase();
+        stuntman_core::usage::hit(&ctx, "email");
         let a1 = p.next().unwrap_or("").to_string();
         let a2 = p.next().unwrap_or("").to_string();
         if let Some(bx) = &b {

@@ -5,6 +5,7 @@
 pub mod avro;
 pub mod broker;
 pub mod config;
+pub mod foreign;
 pub mod registry;
 pub mod store;
 pub mod tools;

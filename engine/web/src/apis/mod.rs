@@ -94,7 +94,7 @@ pub fn UnmatchedHead(since: RwSignal<String>, q: RwSignal<String>, unmatched: Si
     view! {
         <div class="head">
             <div class="top">
-                <h1>"Unmatched"</h1><span class="sub">"calls no service took"</span><span class="grow"></span>
+                <h1>"Not answered"</h1><span class="sub">"calls no service took"</span><span class="grow"></span>
                 <RangeSearch since=since q=q/>
             </div>
             <div class="tabs">

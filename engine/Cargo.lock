@@ -4954,6 +4954,7 @@ dependencies = [
  "stuntman-files",
  "stuntman-identity",
  "stuntman-keyvault",
+ "stuntman-kinesis",
  "stuntman-messaging",
  "stuntman-pubsub",
  "stuntman-sms",
@@ -5169,6 +5170,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "stuntman-kinesis"
+version = "0.6.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "bytes",
+ "crc32fast",
+ "futures",
+ "md5 0.7.0",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "stuntman-core",
+ "tokio",
+]
+
+[[package]]
 name = "stuntman-messaging"
 version = "0.6.0"
 dependencies = [
@@ -5196,6 +5214,7 @@ dependencies = [
  "sha2 0.10.9",
  "stuntman-apis",
  "stuntman-core",
+ "stuntman-streams",
  "tokio",
  "tokio-rustls",
 ]
@@ -5224,6 +5243,8 @@ dependencies = [
  "stuntman-ai",
  "stuntman-core",
  "stuntman-identity",
+ "stuntman-kinesis",
+ "stuntman-messaging",
  "stuntman-storage",
  "stuntman-streams",
  "tokio",

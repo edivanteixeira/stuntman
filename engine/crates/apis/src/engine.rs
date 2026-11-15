@@ -977,7 +977,11 @@ pub async fn handle(State(envs): State<Envs>, mut req: Request) -> Response {
     let found = find_service(&plugins, &host, &path);
     let (p, inner) = match found {
         Some(x) => x,
-        None => return unmatched(&ctx, &plugins, "", &method, &path, &host, read_request(&method, &path, &query, headers, raw)).await,
+        None => {
+            // Not answered is still a call to HTTP APIs (the ones a service took count in live.seen below).
+            stuntman_core::usage::hit(&ctx, "apis");
+            return unmatched(&ctx, &plugins, "", &method, &path, &host, read_request(&method, &path, &query, headers, raw)).await;
+        }
     };
     // "/acme/v0/…" reached by the path prefix: the pages post back under the same prefix.
     let base = format!("{}{}", ctx.prefix(), path[..path.len() - inner.len().min(path.len())].trim_end_matches('/'));

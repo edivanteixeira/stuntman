@@ -1949,6 +1949,7 @@ impl Conn {
             return if resp { self.fail(wr, cid, "java.io.IOException", format!("Stuntman's ActiveMQ does not implement OpenWire command type {typ}")).await } else { Flow::Go };
         };
         let connected = self.ctx.is_some();
+        if let Some(c) = self.ctx.as_ref().filter(|_| typ != 10) { stuntman_core::usage::hit(c, "queues"); }
         // A BlobMessage is a Message with a URL: handled with the others, its URL kept as a header.
         let (d, blob) = match d {
             Ds::BlobMessage(b) => (Ds::Message(b.m), Some((b.url, b.mime))),

@@ -138,6 +138,7 @@ async fn conn(ctx: Ctx, sock: tokio::net::TcpStream) {
     let mut bound = String::new();
     while let Some(Ok(msg)) = f.next().await {
         let Ok(op) = ServerOps::try_from(msg) else { break };
+        stuntman_core::usage::hit(&ctx, "identity");
         let p_any = provider_for(&ctx, "");
         // The directory's own failures.
         if let Some(p) = &p_any {

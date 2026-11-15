@@ -267,7 +267,7 @@ pub fn all() -> Vec<Tool> {
         })
         .req("table", "acme-stg.logistics.shipments").req("schema", "[{\"name\": \"shipment\", \"type\": \"STRING\", \"mode\": \"REQUIRED\"}]")
         .route("PUT", "/pubsub/bigquery/tables/{table}"),
-        Tool::new("set_pubsub_topic", "Sets a topic's ingestion source (kind aws_kinesis, cloud_storage, azure_event_hubs, aws_msk, confluent_cloud with that source's fields) and/or a JavaScript UDF transform (udf_code, udf_function), making the topic when missing. Cloud Storage reads a Stuntman storage container of the bucket's name; MSK and Confluent read the Streams (Kafka) topic.", |ctx, a| async move {
+        Tool::new("set_pubsub_topic", "Sets a topic's ingestion source (kind aws_kinesis, cloud_storage, azure_event_hubs, aws_msk, confluent_cloud with that source's fields) and/or a JavaScript UDF transform (udf_code, udf_function), making the topic when missing. Cloud Storage reads a Stuntman storage container of the bucket's name; MSK and Confluent read the Streams (Kafka) topic; Kinesis reads the Stuntman Kinesis stream its stream_arn names, from TRIM_HORIZON.", |ctx, a| async move {
             let t = resolve(&ctx, &a, "topic", "topics").await?;
             store::create_topic(&ctx, &store::bare(&t)).await?;
             let mut topic = store::topic(&ctx, &t).await?.ok_or_else(|| ApiError::not_found(format!("No topic {t}")))?;
@@ -322,7 +322,7 @@ pub fn all() -> Vec<Tool> {
         })
         .req("topic", "shipments").param("contains", "text in the data").param("attributes", "{name: value}").param("ordering_key", "the key").param("since", "ms epoch").param("timeout", "30s").param("project", "acme-stg")
         .route("GET", "/pubsub/topics/{topic}/wait"),
-        Tool::new("set_pubsub", "Pub/Sub settings: project (for short names) and a provocation on Publish: unavailable, deadline_exceeded, resource_exhausted, not_found, slow_publish (delay_ms), duplicate (each message delivered again after its first ack); times = for the next N publishes (0 = until cleared), topic = only that topic; none clears.", |ctx, a| async move {
+        Tool::new("set_pubsub", "Pub/Sub settings: project (for short names) and a provocation on Publish: unavailable, deadline_exceeded, resource_exhausted, not_found, slow_publish (delay_ms), duplicate (each message delivered again after its first ack), ack_transient (exactly-once acks fail with a transient error the client retries), kms_disabled (publishes to topics with a KMS key fail with FAILED_PRECONDITION); times = for the next N publishes (0 = until cleared), topic = only that topic; none clears.", |ctx, a| async move {
             let mut c = config::load(&ctx);
             if let Some(p) = a.str("project") { c.project = p; }
             if let Some(p) = a.str("provoke") {
@@ -342,7 +342,7 @@ pub fn all() -> Vec<Tool> {
             out.insert("delayMs".into(), json!(c.delay_ms));
             Ok(json!({"config": out}))
         })
-        .param("project", "acme-stg").param("provoke", "unavailable | deadline_exceeded | resource_exhausted | not_found | slow_publish | duplicate | none").param("times", "next N publishes (0 = until cleared)")
+        .param("project", "acme-stg").param("provoke", "unavailable | deadline_exceeded | resource_exhausted | not_found | slow_publish | duplicate | ack_transient | kms_disabled | none").param("times", "next N publishes (0 = until cleared)")
         .param("topic", "only this topic").param("delay_ms", "slow_publish: 3000")
         .route("PUT", "/pubsub/config"),
     ]

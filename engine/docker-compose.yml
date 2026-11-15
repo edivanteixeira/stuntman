@@ -9,7 +9,7 @@ services:
     restart: unless-stopped
     environment:
       STUNTMAN_HOST: ${STUNTMAN_HOST:-localhost:8025}
-      STUNTMAN_ENV: ${STUNTMAN_ENV:-stg-a}
+      STUNTMAN_ENV: ${STUNTMAN_ENV:-staging}
       STUNTMAN_KAFKA_ADVERTISED_HOST: ${STUNTMAN_KAFKA_ADVERTISED_HOST:-localhost}
       STUNTMAN_FTP_PASSIVE_HOST: ${STUNTMAN_FTP_PASSIVE_HOST:-127.0.0.1}
     volumes:
@@ -36,6 +36,7 @@ services:
       - "${BIND:-127.0.0.1}:9092:9092"   # Kafka (advertised as STUNTMAN_KAFKA_ADVERTISED_HOST)
       - "${BIND:-127.0.0.1}:8081:8081"   # Schema Registry
       - "${BIND:-127.0.0.1}:8085:8085"   # Pub/Sub emulator (PUBSUB_EMULATOR_HOST)
+      - "${BIND:-127.0.0.1}:4567:4567"   # Kinesis (AWS_ENDPOINT_URL_KINESIS)
       - "${BIND:-127.0.0.1}:15672:15672" # RabbitMQ management API
       - "${BIND:-127.0.0.1}:61616:61616" # ActiveMQ (OpenWire)
       - "${BIND:-127.0.0.1}:12201:12201/udp" # GELF

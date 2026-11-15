@@ -35,6 +35,7 @@ fn modules() -> Vec<Box<dyn Module>> {
         Box::new(stuntman_events::Events),
         Box::new(stuntman_streams::Streams { kafka_port: env("STUNTMAN_KAFKA_PORT", "9092").parse().unwrap_or(9092), registry_port: env("STUNTMAN_SCHEMA_REGISTRY_PORT", "8081").parse().unwrap_or(8081) }),
         Box::new(stuntman_pubsub::PubSub { port: env("STUNTMAN_PUBSUB_PORT", "8085").parse().unwrap_or(8085) }),
+        Box::new(stuntman_kinesis::Kinesis { port: env("STUNTMAN_KINESIS_PORT", "4567").parse().unwrap_or(4567) }),
         Box::new(stuntman_files::Files { ftp_port: env("STUNTMAN_FTP_PORT", "2121").parse().unwrap_or(2121), sftp_port: env("STUNTMAN_SFTP_PORT", "2222").parse().unwrap_or(2222) }),
         Box::new(stuntman_identity::Identity { ldap_port: env("STUNTMAN_LDAP_PORT", "3389").parse().unwrap_or(3389) }),
         Box::new(stuntman_keyvault::KeyVault { port: env("STUNTMAN_KEYVAULT_PORT", "8444").parse().unwrap_or(8444) }),
@@ -212,7 +213,7 @@ async fn main() {
     let root = std::path::PathBuf::from(env("STUNTMAN_DATA", "data"));
     std::fs::create_dir_all(&root).expect("data folder");
     let port: u16 = env("STUNTMAN_PORT", "8025").parse().unwrap_or(8025);
-    let first = env("STUNTMAN_ENV", "stg-a");
+    let first = env("STUNTMAN_ENV", "staging");
     environments::migrate_flat(&root, &first);
     let mods = modules();
     let mut tools = vec![];
@@ -268,6 +269,19 @@ async fn main() {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
             environments::sweep().await;
         }
+    });
+    // Ctrl-C or a container stop: write the usage counts the heartbeat has not written yet.
+    tokio::spawn(async {
+        #[cfg(unix)]
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM");
+        #[cfg(unix)]
+        tokio::select! { _ = tokio::signal::ctrl_c() => {} _ = term.recv() => {} }
+        #[cfg(not(unix))]
+        let _ = tokio::signal::ctrl_c().await;
+        for c in srv().envs.all() {
+            let _ = stuntman_core::usage::flush(&c).await;
+        }
+        std::process::exit(0);
     });
 
     let root_router = Router::new().fallback(dispatch);

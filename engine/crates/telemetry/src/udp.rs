@@ -152,6 +152,7 @@ pub fn serve(envs: Envs, gelf_port: u16, statsd_port: u16) {
                 if let Ok(v) = serde_json::from_slice::<Value>(&b) {
                     let (req, env) = gelf(&v);
                     if let Some(ctx) = pick(&e1, env) {
+                        stuntman_core::usage::hit(&ctx, "telemetry");
                         let _ = crate::store::add_logs(&ctx, req).await;
                     }
                 }
@@ -166,6 +167,7 @@ pub fn serve(envs: Envs, gelf_port: u16, statsd_port: u16) {
             let text = String::from_utf8_lossy(&buf[..n]).to_string();
             let (req, env) = statsd(&text);
             if let Some(ctx) = pick(&envs, env) {
+                stuntman_core::usage::hit(&ctx, "telemetry");
                 let _ = crate::store::add_metrics(&ctx, req).await;
             }
         }

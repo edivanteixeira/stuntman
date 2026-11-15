@@ -532,3 +532,22 @@ a.mrow.on { box-shadow: inset 3px 0 0 var(--ink); background: #fff; }
 .stack { display: flex; flex-direction: column; gap: 8px; }
 .stack textarea.input { min-height: 70px; }
 .body .caps + .stack, .body .caps + table, .pane .caps + .stack { margin-top: 8px; }
+
+/* ---------- rail C2: services in use first ---------- */
+.rail .item .name { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.rail .item .name .dot { width: 6px; height: 6px; }
+.rail .item.used { font-weight: 600; }
+.rail .item.unused { color: var(--caption); }
+.rail .group.row { margin: 14px 0 6px; padding-right: 16px; }
+.rail .group .seg { padding: 2px; }
+.rail .group .seg button { height: 18px; padding: 0 10px; font-size: 10px; }
+.rail .sep-line { height: 1px; background: var(--rule); margin: 6px 20px; }
+.rail .badge { font: 500 11px/20px var(--sans); padding: 0 10px; border-radius: 10px; background: var(--attention-fill); color: var(--attention); white-space: nowrap; }
+
+/* ---------- Timeline filters and "Not answered" rows ---------- */
+.pills { display: flex; gap: 8px; padding: 14px 24px 10px; }
+.pill { height: 26px; padding: 0 12px; border-radius: 13px; border: 1px solid var(--border); background: var(--surface); font: 500 12px var(--sans); color: var(--ink); cursor: pointer; }
+.pill.on { background: var(--ink); border-color: var(--ink); color: var(--surface); }
+.pill.warn { background: var(--attention-fill); border-color: #ebd9a8; color: var(--attention); }
+.pill.warn.on { background: var(--attention); border-color: var(--attention); color: var(--surface); }
+.ftable .frow.na { background: #fff8e6; border-radius: 6px; margin: 0 0 8px; border-bottom: 0; cursor: default; }

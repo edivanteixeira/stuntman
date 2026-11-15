@@ -386,6 +386,7 @@ async fn conn(ctx: Ctx, sock: tokio::net::TcpStream) {
         }
         let tag = t[0].clone();
         let mut cmd = t[1].to_uppercase();
+        stuntman_core::usage::hit(&ctx, "email");
         let mut args: Vec<String> = t[2..].to_vec();
         let by_uid = cmd == "UID";
         if by_uid {

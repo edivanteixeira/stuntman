@@ -80,6 +80,7 @@ pub fn parse_request(raw_b64: &str, deflated: bool) -> Result<(String, String, S
 }
 
 async fn sso(ctx: Ctx, tenant: String, q: HashMap<String, String>, deflated: bool) -> Response {
+    stuntman_core::usage::hit(&ctx, "identity");
     let Some(mut p) = crate::config::by_tenant(&ctx, &tenant).filter(|p| p.saml.is_some()) else {
         return (StatusCode::NOT_FOUND, Html(page::error(None, "SAML", "No identity provider with SAML for this tenant (Identity › Protocols).", None))).into_response();
     };

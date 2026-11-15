@@ -123,10 +123,11 @@ The tools it will use:
 | Stand in for a SOAP provider | `import_wsdl`, `list_operations`, `set_operation`, `try_operation`, `reimport_wsdl`, `send_callback` |
 | Reuse WireMock mappings | `import_mocks`, `set_scenario` |
 | Prove nothing leaks | `real_provider_calls`, `list_unmatched` |
+| See which services the app already uses | `usage` |
 
 ## Tools by intent
 
-A sample; the full list of 376 is in the [tool reference](reference/tools.md).
+A sample; the full list of 389 is in the [tool reference](reference/tools.md).
 
 | Intent | Tools |
 |---|---|

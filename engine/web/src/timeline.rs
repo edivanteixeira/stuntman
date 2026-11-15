@@ -10,7 +10,7 @@ use crate::{
     ui,
 };
 
-const SERVICES: [(&str, &str, &str); 9] = [("email", "E-mail", "#F2A900"), ("whatsapp", "WhatsApp", "#1FA855"), ("sms", "SMS", "#00A3A3"), ("storage", "Storage", "#E5243B"), ("messaging", "Queues", "#E8743B"), ("keyvault", "Key Vault", "#5C5C66"),
+const SERVICES: [(&str, &str, &str); 11] = [("ai", "AI models", "#7A5AF8"), ("files", "Files", "#8C5A2E"), ("email", "E-mail", "#F2A900"), ("whatsapp", "WhatsApp", "#1FA855"), ("sms", "SMS", "#00A3A3"), ("storage", "Storage", "#E5243B"), ("messaging", "Queues", "#E8743B"), ("keyvault", "Key Vault", "#5C5C66"),
     ("identity", "Identity", "#6B4FD8"), ("apis", "HTTP APIs", "#0070C9"), ("webhook", "Webhooks", "#12A0A8")];
 const BUCKETS: usize = 60;
 const BAND_KEY: &str = "stuntman.timeline.band";
@@ -39,6 +39,7 @@ pub fn Timeline() -> impl IntoView {
     let group = RwSignal::new(true);
     let paused = RwSignal::new(false);
     let data = RwSignal::new(Value::Null);
+    let unanswered = RwSignal::new(Vec::<Value>::new());
     let picked = RwSignal::new(Value::Null);
     // A selected period (and a zoom) live in the URL: ?from=&to= (epoch ms), ?zfrom=&zto=.
     let pair = |a: &str, b: &str| { let m = qm.get_untracked(); m.get(a).and_then(|x| x.parse::<i64>().ok()).zip(m.get(b).and_then(|x| x.parse::<i64>().ok())) };
@@ -57,12 +58,19 @@ pub fn Timeline() -> impl IntoView {
     });
     Effect::new(move |_| {
         if !paused.get() { live.tick.track(); }
-        let mut url = format!("/timeline?range={}&service={}&who={}&show={}&q={}&buckets={BUCKETS}", range.get(), enc(&svc.get()), enc(&actor.get()), show.get(), enc(&q.get()));
+        let sh = show.get();
+        let mut url = format!("/timeline?range={}&service={}&who={}&show={}&q={}&buckets={BUCKETS}", range.get(), enc(&svc.get()), enc(&actor.get()), if sh == "unanswered" { "all" } else { &sh }, enc(&q.get()));
         if let Some((a, b)) = zoom.get() { url += &format!("&from={a}&to={b}"); }
         if let Some((a, b)) = sel.get() { url += &format!("&sel_from={a}&sel_to={b}"); }
-        leptos::task::spawn_local(async move { if let Ok(v) = api::get(&url).await { data.set(v); } });
+        let since = range.get();
+        leptos::task::spawn_local(async move {
+            if let Ok(v) = api::get(&url).await { data.set(v); }
+            // Calls no route took (HTTP APIs answered 404 "no route"): amber rows on top.
+            if let Ok(v) = api::get(&format!("/apis/unmatched?since={since}")).await { unanswered.set(v["groups"].as_array().cloned().unwrap_or_default()); }
+        });
     });
-    let rows = Memo::new(move |_| data.get()["rows"].as_array().cloned().unwrap_or_default());
+    let rows = Memo::new(move |_| if show.get() == "unanswered" { vec![] } else { data.get()["rows"].as_array().cloned().unwrap_or_default() });
+    let n_unanswered = move || unanswered.get().iter().map(|g| api::n(g, "count")).sum::<i64>();
     // The open row follows ?id=, else the newest.
     Effect::new(move |_| {
         let id = qm.get().get("id").or_else(|| rows.get().first().map(|r| s(r, "id")));
@@ -100,12 +108,24 @@ pub fn Timeline() -> impl IntoView {
                         <div class="kvrow" class:on=move || actor.get() == k on:click=move |_| actor.update(|v| *v = if v == k { String::new() } else { k.to_string() })>
                             <div>{label}</div><div class="small cap ell">{move || actors(&data.get()["counts"]["actors"], k)}</div></div>
                     }).collect_view()}
-                    <div class="caps" style="padding:16px 20px 8px">"Show"</div>
-                    <div style="padding:0 20px"><ui::Seg options=vec![("all", "All"), ("failed", "Failed"), ("provoked", "Provoked")] value=show set=Callback::new(move |v| show.set(v))/></div>
                     <div class="row" style="padding:16px 20px 0;gap:10px"><ui::Toggle on=group set=Callback::new(move |v| group.set(v))/><span>"Group by journey"</span></div>
                     <div class="small cap" style="padding:4px 20px">"rows of the same trace together"</div>
                 </div>
                 <div class="pane">
+                    <div class="pills">
+                        {[("all", "All"), ("provoked", "Provoked"), ("failed", "Errors")].into_iter().map(|(v, l)| view! {
+                            <button class="pill" class:on=move || show.get() == v on:click=move |_| show.set(v.into())>{l}</button> }).collect_view()}
+                        <button class="pill warn" class:on=move || show.get() == "unanswered" on:click=move |_| show.set("unanswered".into())
+                            title="Calls no route took: Stuntman answered 404 “no route”">
+                            {move || { let n = n_unanswered(); if n > 0 { format!("Not answered  {n}") } else { "Not answered".into() } }}</button>
+                    </div>
+                    {move || matches!(show.get().as_str(), "all" | "unanswered").then(|| {
+                        let gs = unanswered.get();
+                        if gs.is_empty() && show.get() == "unanswered" {
+                            return view! { <div class="empty"><h3>"Every call found a route"</h3><div class="small cap">"Calls to HTTP APIs that no route takes show up here, ready to become a route."</div></div> }.into_any();
+                        }
+                        view! { <div class="ftable" style="padding:0 24px">{gs.into_iter().map(|g| unanswered_view(g)).collect_view()}</div> }.into_any()
+                    })}
                     {move || sel.get().map(|(a, b)| view! {
                         <div class="row selbar">
                             <b>{move || format!("{} of {} events", rows.get().len(), api::n(&data.get(), "windowTotal"))}</b>
@@ -114,7 +134,7 @@ pub fn Timeline() -> impl IntoView {
                             <span class="grow"></span>
                             {move || { let n = after(&data.get(), b); (n > 0).then(|| view! { <button class="link" on:click=move |_| sel.set(None)>{format!("{n} new after the selection")}</button> }) }}
                         </div> })}
-                    {move || (rows.get().is_empty()).then(|| if let Some((a, b)) = sel.get() {
+                    {move || (rows.get().is_empty() && show.get() != "unanswered").then(|| if let Some((a, b)) = sel.get() {
                         view! { <div class="empty"><h3>{format!("No events between {} and {}", api::hms(a), api::hms(b))}</h3><button class="btn" on:click=move |_| sel.set(None)>"Clear selection"</button></div> }.into_any()
                     } else { view! { <div class="empty"><h3>"Nothing reached the services in this window"</h3><div class="small cap">"Point the app at this environment, or widen the range."</div></div> }.into_any() })}
                     <div class="ftable">{move || items(rows.get(), data.get()["gaps"].as_array().cloned().unwrap_or_default().into_iter()
@@ -123,6 +143,23 @@ pub fn Timeline() -> impl IntoView {
                 </div>
                 <div class="side">{move || detail(picked.get())}</div>
             </div>
+        </div>
+    }
+}
+
+/// A request no route took, as an amber row: "POST /v1/refunds: no route in the stripe plugin".
+fn unanswered_view(g: Value) -> impl IntoView {
+    let l = g["latest"].clone();
+    let n = api::n(&g, "count");
+    let why = if s(&l, "service").is_empty() { format!("no plugin answers {}", s(&l, "host")) } else { format!("no route in the {} plugin", s(&l, "service")) };
+    let id = s(&l, "id");
+    let nav = use_navigate();
+    view! {
+        <div class="frow na">
+            <span class="mono small cap" style="width:72px;flex:none;padding-top:14px">{api::hms(api::n(&l, "at"))}</span>
+            <span class="grow" style="min-width:0"><span class="small attn">{if n > 1 { format!("Not answered  ·  {n}×") } else { "Not answered".into() }}</span>
+                <div>{format!("{} {}: {why}", s(&l, "method"), s(&l, "path"))}</div></span>
+            <button class="link" style="align-self:center" on:click=move |_| crate::apis::unmatched::make_route(nav.clone(), id.clone())>"Make a route from it ›"</button>
         </div>
     }
 }

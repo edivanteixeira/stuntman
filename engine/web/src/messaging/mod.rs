@@ -5,6 +5,7 @@
 
 pub mod activemq;
 pub mod consumers;
+pub mod eventhubs;
 pub mod messages;
 pub mod rules;
 pub mod settings;
@@ -172,6 +173,7 @@ pub fn Area(children: ChildrenFn) -> impl IntoView {
                         {move || data.get()["namespaces"].as_array().cloned().unwrap_or_default().into_iter().map(|x| { let nm = s(&x, "namespace"); let nav = use_navigate(); let t = tab();
                             view! { <div class="mi" on:click=move |_| nav(&href(&t, &nm, "", ""), Default::default())><span>{s(&x, "namespace")}</span><span class="sub">{label(&s(&x, "kind"))}</span></div> } }).collect_view()}
                         <a class="mi" href="/queues/activemq" style="text-decoration:none;color:inherit"><span>"ActiveMQ"</span><span class="sub">"OpenWire broker · 61616"</span></a>
+                        <a class="mi" href="/queues/eventhubs" style="text-decoration:none;color:inherit"><span>"Event Hubs"</span><span class="sub">"Azure · AMQP and Kafka"</span></a>
                         <div class="rule"></div>
                         <div class="mi" on:click=move |_| new_open.set(true)>"+ New namespace"</div>
                     </ui::Pop>

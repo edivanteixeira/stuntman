@@ -52,7 +52,7 @@ callbacks back and **fails exactly when you ask it to**.
 
 <p align="center"><img src="docs/images/agent-loop.png" alt="The loop an agent runs on its own: read the code, set up Stuntman, change the code, run the real flow, provoke failures, read what the app sent, check the result" width="100%"></p>
 
-Every action in Stuntman is a tool: **376 of them**, each one both an **MCP tool** and an **HTTP route**.
+Every action in Stuntman is a tool: **382 of them**, each one both an **MCP tool** and an **HTTP route**.
 Claude Code, Codex, Gemini CLI, OpenCode, Cursor, GitHub Copilot or a plain test script can:
 
 1. **Set it up.** Find the providers your app calls, install the matching plugins, point the base URLs at Stuntman.
@@ -169,7 +169,7 @@ claude mcp add --transport http stuntman http://localhost:8025/mcp
 | [Environments](docs/environments.md) | One environment per branch: clone, pause, expire, route requests |
 | [Configuration](docs/configuration.md) | Environment variables, ports, Docker, data layout |
 | [Security](docs/security.md) | What is and is not protected today |
-| [Tool reference](docs/reference/tools.md) | All 376 tools, generated from the source |
+| [Tool reference](docs/reference/tools.md) | All 382 tools, generated from the source |
 
 ## How it is built
 

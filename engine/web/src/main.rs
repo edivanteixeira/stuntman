@@ -10,6 +10,7 @@ mod events;
 mod ftp;
 mod identity;
 mod keyvault;
+mod kinesis;
 mod messaging;
 mod pubsub;
 mod shell;

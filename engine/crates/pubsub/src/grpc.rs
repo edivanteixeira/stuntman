@@ -178,7 +178,16 @@ pub async fn conform(ctx: &Ctx, t: &Topic, data: &[u8], attrs: &mut Labels) -> R
 /// Publish as the app does (gRPC or REST): provocations first, then the topic, the schema, then the messages.
 pub async fn publish(ctx: &Ctx, topic: &str, msgs: Vec<PubsubMessage>, by: &str) -> Result<Vec<String>, Status> {
     check(topic, "topics")?;
-    if let Some((kind, delay)) = config::take(ctx, topic) {
+    let provoked = config::take(ctx, topic);
+    if let Some((kind, _)) = &provoked {
+        if kind == "kms_disabled" {
+            let t = store::topic(ctx, topic).await.map_err(int)?.ok_or_else(|| not_found(topic))?;
+            if !t.kms_key_name.is_empty() {
+                return Err(Status::failed_precondition(format!("The Cloud KMS key {} is disabled or its permission was revoked. (provoked by Stuntman)", t.kms_key_name)));
+            }
+        }
+    }
+    if let Some((kind, delay)) = provoked {
         match kind.as_str() {
             "unavailable" => return Err(Status::unavailable("The service is currently unavailable. (provoked by Stuntman)")),
             "deadline_exceeded" => return Err(Status::deadline_exceeded("Deadline exceeded (provoked by Stuntman)")),
@@ -230,7 +239,32 @@ pub async fn accept(ctx: &Ctx, t: &Topic, msgs: Vec<PubsubMessage>, by: &str) ->
 }
 
 /// A topic as kept: retention in bounds, the schema existing, the encoding set.
+/// A Cloud KMS key name, as Pub/Sub checks it: projects/*/locations/*/keyRings/*/cryptoKeys/*.
+fn kms_ok(k: &str) -> bool {
+    let p: Vec<&str> = k.split('/').collect();
+    p.len() == 8 && p[0] == "projects" && p[2] == "locations" && p[4] == "keyRings" && p[6] == "cryptoKeys" && p.iter().all(|x| !x.is_empty())
+}
+
+/// A Google Cloud region name: us-central1, europe-west4, southamerica-east1, asia-northeast1…
+fn region_ok(r: &str) -> bool {
+    let mut parts = r.split('-');
+    let (Some(a), Some(b), None) = (parts.next(), parts.next(), parts.next()) else { return false };
+    !a.is_empty() && a.chars().all(|c| c.is_ascii_lowercase()) && b.len() >= 2
+        && b.chars().last().is_some_and(|c| c.is_ascii_digit()) && b.trim_end_matches(|c: char| c.is_ascii_digit()).chars().all(|c| c.is_ascii_lowercase())
+}
+
 async fn topic_settings(ctx: &Ctx, mut t: Topic) -> Result<Topic, Status> {
+    if !t.kms_key_name.is_empty() && !kms_ok(&t.kms_key_name) {
+        return Err(Status::invalid_argument(format!("Invalid kms_key_name: {}. Expected projects/{{project}}/locations/{{location}}/keyRings/{{key_ring}}/cryptoKeys/{{key}}.", t.kms_key_name)));
+    }
+    if let Some(p) = &t.message_storage_policy {
+        if let Some(bad) = p.allowed_persistence_regions.iter().find(|r| !region_ok(r)) {
+            return Err(Status::invalid_argument(format!("Invalid region in allowed_persistence_regions: {bad}.")));
+        }
+        if p.enforce_in_transit && p.allowed_persistence_regions.is_empty() {
+            return Err(Status::invalid_argument("enforce_in_transit needs at least one allowed persistence region."));
+        }
+    }
     if let Some(ms) = dur_ms(&t.message_retention_duration) {
         if !(600_000..=31 * store::DAY_MS).contains(&ms) { return Err(Status::invalid_argument("message_retention_duration must be between 10 minutes and 31 days.")) }
     }
@@ -587,6 +621,7 @@ impl Subscriber for Svc {
     async fn pull(&self, r: Request<PullRequest>) -> Result<Resp<PullResponse>, Status> {
         let ctx = self.ctx(&r)?;
         let q = r.into_inner();
+        stuntman_core::usage::hit(&ctx, "pubsub");
         let s = need_sub(&ctx, &q.subscription).await?;
         pullable(&s)?;
         store::seen(&ctx, &s.name).await.map_err(int)?;
@@ -611,6 +646,7 @@ impl Subscriber for Svc {
     async fn streaming_pull(&self, r: Request<Streaming<StreamingPullRequest>>) -> Result<Resp<tonic::codegen::BoxStream<StreamingPullResponse>>, Status> {
         let ctx = self.ctx(&r)?;
         let mut inb = r.into_inner();
+        stuntman_core::usage::hit(&ctx, "pubsub");
         let first = inb.message().await?.ok_or_else(|| Status::invalid_argument("The first StreamingPullRequest must name a subscription."))?;
         let s = need_sub(&ctx, &first.subscription).await?;
         pullable(&s)?;
@@ -939,4 +975,14 @@ pub fn serve(envs: Envs, port: u16) {
         let incoming = futures::stream::unfold(l, |l| async move { Some((l.accept().await.map(|(s, _)| s), l)) });
         let _ = tonic::transport::Server::builder().accept_http1(true).add_routes(routes).serve_with_incoming(incoming).await;
     });
+}
+
+#[cfg(test)]
+mod kms_t {
+    #[test]
+    fn names() {
+        assert!(super::kms_ok("projects/acme-stg/locations/us-central1/keyRings/app/cryptoKeys/topics"));
+        assert!(!super::kms_ok("projects/acme-stg/keyRings/app"));
+        assert!(super::region_ok("southamerica-east1") && super::region_ok("us-central1") && !super::region_ok("mars") && !super::region_ok("us-central"));
+    }
 }

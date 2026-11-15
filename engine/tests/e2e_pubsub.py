@@ -8,7 +8,7 @@ snapshots and Seek; UpdateTopic and UpdateSubscription; filters; push subscripti
 receiver (wrapped and unwrapped, OIDC token, retry after a 500); BigQuery and Cloud Storage
 subscriptions (checked through the tools); exactly-once ack errors; DetachSubscription; paging. And:
 Bigtable subscriptions; import topics (Amazon MSK read from Streams' Kafka, Cloud Storage read from
-a storage container, Kinesis fed by pubsub_ingest); JavaScript UDF transforms on topics and
+a storage container, Kinesis fed by pubsub_ingest when the stream is not in Stuntman); JavaScript UDF transforms on topics and
 subscriptions; expiration on the environment clock; BigQuery table schemas with a dead-letter;
 typed Avro files; proto2 groups; retry-policy backoff on nacks; transient exactly-once ack failures
 the client retries; max_outstanding_bytes. Last: AI inference transforms answered by Stuntman's AI
@@ -329,7 +329,20 @@ def rest_of_the_api(s, pub, sub):
         pass
     pages = list(pub.list_topics(request={"project": P, "page_size": 2}).pages)
     assert len(pages) >= 3 and pages[0].next_page_token and sum(len(p.topics) for p in pages) == len(list(pub.list_topics(request={"project": P}))), [len(p.topics) for p in pages]
-    print("ok   UpdateTopic (labels, retention; KMS and storage policy kept), UpdateSubscription, paging")
+    for bad in [{"kms_key_name": "acme-key"}, {"message_storage_policy": {"allowed_persistence_regions": ["mars"]}}]:
+        try:
+            pub.create_topic(request={"name": f"{P}/topics/bad-settings", **bad})
+            raise AssertionError(f"accepted {bad}")
+        except gx.InvalidArgument:
+            pass
+    s.call("PUT", "/pubsub/config", {"provoke": "kms_disabled", "times": 1})
+    try:
+        pub.publish(deliveries, b"x").result(timeout=20)
+        raise AssertionError("kms_disabled did not fail the publish")
+    except Exception as e:
+        assert "KMS" in str(e) or "FailedPrecondition" in type(e).__name__, e
+    s.call("PUT", "/pubsub/config", {"provoke": "none"})
+    print("ok   UpdateTopic (labels, retention; KMS and storage policy checked), a disabled KMS key fails publishes, UpdateSubscription, paging")
 
     # ---- Snapshots and Seek.
     for i in range(2):
@@ -572,12 +585,13 @@ def the_remaining_items(s, pub, sub):
         "consumer_arn": "arn:aws:kinesis:us-east-1:111122223333:stream/orders/consumer/pubsub:1", "aws_role_arn": "arn:aws:iam::111122223333:role/pubsub", "gcp_service_account": "ingest@acme-stg.iam.gserviceaccount.com"}}})
     sub.create_subscription(request={"name": f"{P}/subscriptions/orders-from-kinesis-app", "topic": kin})
     r = s.call("POST", "/pubsub/topics/orders-from-kinesis/ingest", {"records": [{"data": {"order": "ORD-8001"}, "partition_key": "C-9"}]})
-    assert r["source"]["kind"] == "aws_kinesis" and r["source"]["state"] == "ACTIVE" and len(r["messageIds"]) == 1, r
+    # "orders" is not a stream in Stuntman's Kinesis: STREAM_NOT_FOUND, and pubsub_ingest still feeds it (e2e_kinesis.py reads a real one).
+    assert r["source"]["kind"] == "aws_kinesis" and r["source"]["state"] == "STREAM_NOT_FOUND" and len(r["messageIds"]) == 1, r
     m = pull_ack(f"{P}/subscriptions/orders-from-kinesis-app")[0].message
     assert json.loads(m.data) == {"order": "ORD-8001"} and m.ordering_key == "C-9", m
     view = {t["name"]: t for t in s.call("GET", "/pubsub/topics")["topics"]}
     assert view[msk]["ingestion"]["state"] == "ACTIVE" and view[gcs_t]["ingestion"]["from"].startswith("gs://acme-stg-inbound-files"), view[msk]
-    print("ok   import topics: MSK from the Kafka topic (key → ordering key, headers), Cloud Storage lines (glob), Kinesis via pubsub_ingest; states")
+    print("ok   import topics: MSK from the Kafka topic (key → ordering key, headers), Cloud Storage lines (glob), Kinesis via pubsub_ingest (STREAM_NOT_FOUND); states")
 
     # ---- JavaScript UDF transforms: on the topic (redact, drop TEST) and the subscription (stamp, fail).
     udf_t = f"{P}/topics/orders-redacted"

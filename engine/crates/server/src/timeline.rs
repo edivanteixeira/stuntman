@@ -1,7 +1,7 @@
 //! The Timeline (B1): one feed of what reached every service, who did it, and when Stuntman was off.
 
 use serde_json::{json, Value};
-use stuntman_core::{trips, util, ApiError, Ctx, Tool};
+use stuntman_core::{trips, usage, util, ApiError, Ctx, Tool};
 
 fn window(a: &stuntman_core::tools::Args) -> Result<(i64, i64), ApiError> {
     // A zoom: an explicit window.
@@ -124,5 +124,9 @@ pub fn tools() -> Vec<Tool> {
         .param("service", "as in timeline").param("who", "as in timeline").param("show", "as in timeline").param("q", "as in timeline")
         .param("since", "epoch ms, default now").param("timeout", "e.g. 10s (default)")
         .route("POST", "/timeline/wait"),
+        Tool::new("usage", "Which services this environment's apps use: per service kind (email, whatsapp, sms, storage, queues, streams, pubsub, kinesis, files, keyvault, identity, apis, ai, events, webhooks, telemetry) the calls today and in the last 7 days, the last call, and live (a call in the last 5 minutes). Your own tool calls do not count.", |ctx, _a| async move {
+            usage::summary(&ctx).await
+        })
+        .route("GET", "/usage"),
     ]
 }

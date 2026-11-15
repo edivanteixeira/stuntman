@@ -5,7 +5,7 @@ pasted a short prompt that sent you here. Your job: **set Stuntman up for the pr
 directory, end to end, and leave the developer with a working staging environment that never calls a real provider.**
 
 Stuntman stands in for the external providers an app calls (SMS, WhatsApp, email and mailboxes, storage, file
-servers, queues (Service Bus, RabbitMQ, ActiveMQ), Kafka, Google Cloud Pub/Sub, identity, secrets, AI models, product analytics, webhooks, telemetry and any REST, GraphQL or
+servers, queues (Service Bus, RabbitMQ, ActiveMQ), Azure Event Hubs, Kafka, Google Cloud Pub/Sub, identity, secrets, AI models, product analytics, webhooks, telemetry and any REST, GraphQL or
 SOAP API through YAML plugins). It answers like the provider, keeps state,
 sends callbacks and fails on cue. Every action is an MCP tool and an HTTP route.
 
@@ -72,13 +72,13 @@ docker run -d --name stuntman --restart unless-stopped \
   -p 127.0.0.1:10000:10000 -p 127.0.0.1:9000:9000 -p 127.0.0.1:4317:4317 -p 127.0.0.1:4318:4318 \
   -p 127.0.0.1:3389:3389 -p 127.0.0.1:2121:2121 -p 127.0.0.1:30000-30009:30000-30009 -p 127.0.0.1:2222:2222 \
   -p 127.0.0.1:1143:1143 -p 127.0.0.1:1110:1110 -p 127.0.0.1:9092:9092 -p 127.0.0.1:8081:8081 \
-  -p 127.0.0.1:8085:8085 -p 127.0.0.1:15672:15672 -p 127.0.0.1:61616:61616 \
+  -p 127.0.0.1:8085:8085 -p 127.0.0.1:4567:4567 -p 127.0.0.1:15672:15672 -p 127.0.0.1:61616:61616 \
   -p 127.0.0.1:12201:12201/udp -p 127.0.0.1:8125:8125/udp \
   -v stuntman-data:/data edivanteixeira/stuntman
 ```
 
    The second half of the ports (LDAP, FTP and its passive range, SFTP, IMAP, POP3, Kafka, Schema Registry,
-   Pub/Sub, RabbitMQ management, ActiveMQ, GELF, StatsD) is only needed when the project uses those lines; leave them in when unsure.
+   Pub/Sub, Kinesis, RabbitMQ management, ActiveMQ, GELF, StatsD) is only needed when the project uses those lines; leave them in when unsure.
 
 4. Wait until `http://localhost:8025/api/env` answers `200` (poll every 2 s, up to 60 s).
 5. If a container named `stuntman` already exists but is stopped, run `docker start stuntman` instead.
@@ -154,9 +154,11 @@ hosts, SDK packages and setting names. Do not print secret values you come acros
 | **Azure Blob** | `blob.core.windows.net`, `Azure.Storage.Blobs`, `@azure/storage-blob`, `azure-storage-blob`, storage connection strings |
 | **Amazon S3 / R2** | `s3.amazonaws.com`, `AWS_ENDPOINT_URL`, aws-sdk S3 clients, `boto3.client("s3")`, R2 endpoints |
 | **Azure Service Bus** | `servicebus.windows.net`, `Azure.Messaging.ServiceBus`, `@azure/service-bus` |
+| **Azure Event Hubs** | `azure-eventhub` (Python), `Azure.Messaging.EventHubs` (.NET, with `.Processor`), `@azure/event-hubs`, `azure-messaging-eventhubs` (Java), `servicebus.windows.net` connection strings with `EntityPath=`, `EventHubProducerClient` / `EventHubConsumerClient` / `EventProcessorClient`, `BlobCheckpointStore`; Kafka clients with `sasl.username=$ConnectionString` or `:9093` |
 | **RabbitMQ** | `amqp://`, `RabbitMQ.Client`, `amqplib`, `pika`, `bunny`; the management API (`:15672`, MassTransit) |
 | **ActiveMQ** | `tcp://…:61616`, `activemq:tcp://…`, `failover:(tcp://…)` broker URLs, `Apache.NMS.ActiveMQ`, `activemq-client` / `activemq-all`, `spring.activemq.*`, `ConnectionFactory` with OpenWire, `BrokerURL` settings; an `ActiveMQ.DLQ` or `AMQ_SCHEDULED_*` in the code (Stuntman speaks OpenWire; STOMP/AMQP-only ActiveMQ clients are not covered) |
 | **Google Cloud Pub/Sub** | `PUBSUB_EMULATOR_HOST`, `google-cloud-pubsub`, `@google-cloud/pubsub`, `Google.Cloud.PubSub.V1`, `cloud.google.com/go/pubsub`, `spring-cloud-gcp-starter-pubsub`, `pubsub.googleapis.com`, `projects/<p>/topics/<t>` names |
+| **Amazon Kinesis** | `AWS_ENDPOINT_URL_KINESIS`, `boto3.client("kinesis")`, `@aws-sdk/client-kinesis`, `AWSSDK.Kinesis`, `software.amazon.awssdk:kinesis`, `aws-sdk-go-v2/service/kinesis`, KCL (`amazon-kinesis-client`), `kinesis.<region>.amazonaws.com`, `PutRecord`/`GetShardIterator` calls, stream ARNs `arn:aws:kinesis:…:stream/<name>` |
 | **Kafka** | `bootstrap.servers`, `Confluent.Kafka`, `kafkajs`, `kafka-python`, `confluent-kafka`, `schema.registry.url` |
 | **File servers** | `ftp://`, `sftp://`, FluentFTP, SSH.NET, paramiko, `ssh2-sftp-client`, EDI drop folders |
 | **Identity** | `login.microsoftonline.com` (Entra ID), `accounts.google.com`, `*.okta.com`, OIDC `Authority` / `issuer` settings; SAML metadata URLs and ACS settings; `ldap://`, `DirectoryServices`, `ldap3`; Bot Framework / Teams bots (`MicrosoftAppId`) |
@@ -191,6 +193,7 @@ Do everything in the environment you created in step 3. For each provider:
 | Mailboxes | `set_mailbox` for each address the app reads; `put_mail` to drop a test message. |
 | File servers | `set_file_server` with the users and folders the app uses; `put_file` for files a partner would drop. |
 | ActiveMQ | Usually nothing: queues and topics appear when the app uses them. `set_activemq {"users": {...}}` when the app logs in with a fixed user (with no users, any login works); `activemq_send` for messages another system would send. |
+| Azure Event Hubs | `create_eventhub {"namespace": "<ns>", "hub": "<hub>", "partitions": 4, "consumer_groups": [...]}` for every hub the app uses (hubs are not created on first use); `eventhub_send` for events another producer would send. |
 | Google Cloud Pub/Sub | `set_pubsub {"project": "<the app's project id>"}`; `create_pubsub_subscription` (it makes the topic too) for what the app expects to exist, or let the app create them; `set_pubsub_schema` for schema-bound topics. |
 | Kafka | `create_topic` for the topics the app uses (or let clients create them); `register_schema` for Avro subjects. |
 | Azure Blob / S3 | `create_account` (service `azure-blob` or `s3`) with the account and containers the app uses; `add_container` for more. |
@@ -236,7 +239,9 @@ Change **base URLs only**; the app keeps its code and SDKs.
 | Kafka / Schema Registry | `bootstrap.servers=localhost:9092`, `schema.registry.url=http://localhost:8081` |
 | RabbitMQ management API | `http://localhost:15672` |
 | ActiveMQ (OpenWire) | `tcp://localhost:61616` (Java, Spring `spring.activemq.broker-url`) / `activemq:tcp://localhost:61616` (Apache.NMS.ActiveMQ); keep a `failover:(…)` wrapper if the app has one, with only this URL inside |
+| Azure Event Hubs | `Endpoint=sb://<namespace>.localhost:5673/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=<key>;EntityPath=<hub>;UseDevelopmentEmulator=true` (`list_eventhubs` gives it); Kafka clients: `localhost:9092`, `SASL_PLAINTEXT`, `PLAIN`, user `$ConnectionString`, password that connection string |
 | Google Cloud Pub/Sub | `PUBSUB_EMULATOR_HOST=localhost:8085` (no credentials needed; in .NET also `EmulatorDetection = EmulatorDetection.EmulatorOrProduction`) |
+| Amazon Kinesis | `AWS_ENDPOINT_URL_KINESIS=http://localhost:4567` (or the client's endpoint override), any access key and secret, any region |
 | SAML 2.0 | IdP metadata `http://localhost:8025/login/<tenant>/saml/metadata` |
 | LDAP | `ldap://localhost:3389`, base DN from `set_provider` |
 

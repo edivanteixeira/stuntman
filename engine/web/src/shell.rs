@@ -9,7 +9,7 @@ use leptos_router::{
 };
 use serde_json::Value;
 
-use crate::{ai, api, apis, catalog, email, events, ftp, pubsub, sms, streams, environments, identity, keyvault, messaging, storage, telemetry, timeline, ui, webhook, whatsapp};
+use crate::{ai, api, apis, catalog, email, events, ftp, kinesis, pubsub, sms, streams, environments, identity, keyvault, messaging, storage, telemetry, timeline, ui, webhook, whatsapp};
 
 #[component]
 pub fn App() -> impl IntoView {
@@ -82,6 +82,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/ftp") view=ftp::Files/>
                     <Route path=path!("/streams") view=streams::Streams/>
                     <Route path=path!("/pubsub") view=pubsub::PubSub/>
+                    <Route path=path!("/kinesis") view=kinesis::Kinesis/>
                     <Route path=path!("/mailboxes") view=email::mailboxes::Mailboxes/>
                     <Route path=path!("/identity/protocols") view=identity::protocols::Protocols/>
                     <Route path=path!("/catalog") view=catalog::Store/>
@@ -109,6 +110,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/whatsapp/number") view=whatsapp::number::Number/>
                     <Route path=path!("/queues") view=|| view! { <messaging::Area><messaging::messages::Messages/></messaging::Area> }/>
                     <Route path=path!("/queues/activemq") view=messaging::activemq::ActiveMq/>
+                    <Route path=path!("/queues/eventhubs") view=messaging::eventhubs::EventHubs/>
                     <Route path=path!("/queues/subscriptions") view=|| view! { <messaging::Area><messaging::subscriptions::Subscriptions/></messaging::Area> }/>
                     <Route path=path!("/queues/dead-letter") view=|| view! { <messaging::Area><messaging::messages::Messages dlq=true/></messaging::Area> }/>
                     <Route path=path!("/queues/consumers") view=|| view! { <messaging::Area><messaging::consumers::Consumers/></messaging::Area> }/>
@@ -134,23 +136,27 @@ pub fn App() -> impl IntoView {
     }
 }
 
-/// Rail (shell B): global views on top, one entry per service kind (its services are listed in
-/// the page's own column, with + New on top), then environments and settings. "" = not in this build.
+/// Rail (shell C2): Timeline and Telemetry (how you see the app), then the services, the ones this
+/// environment's apps use first, then environments and settings. "" = not in this build.
 // Scenarios (B5/B6) is designed but deferred (2026-11-13): it comes back here when built.
-const TOP: [(&str, &str); 2] = [("Timeline", "/timeline"), ("Unmatched", "/apis/unmatched")];
-const KINDS: [(&str, &str); 15] = [("E-mail", "/notifications"), ("WhatsApp", "/whatsapp"), ("SMS", "/sms"), ("Storage", "/files"), ("Queues", "/queues"), ("Streams", "/streams"), ("Pub/Sub", "/pubsub"), ("Files", "/ftp"), ("Key Vault", "/secrets"), ("Identity", "/identity"),
-    ("HTTP APIs", "/apis"), ("AI models", "/ai"), ("Events", "/events"), ("Webhooks", "/inboxes/webhooks"), ("Telemetry", "/telemetry")];
-const BOTTOM: [(&str, &str); 3] = [("Environments", "/environments"), ("Catalog", "/catalog"), ("Settings", "")];
+// "Not answered" (the old Unmatched) is a badge on Timeline and a filter there; /apis/unmatched still opens.
+const TOP: [(&str, &str, &str); 2] = [("Timeline", "/timeline", ""), ("Telemetry", "/telemetry", "telemetry")];
+/// (label, path, usage kind)
+const KINDS: [(&str, &str, &str); 15] = [("E-mail", "/notifications", "email"), ("WhatsApp", "/whatsapp", "whatsapp"), ("SMS", "/sms", "sms"), ("Storage", "/files", "storage"), ("Queues", "/queues", "queues"),
+    ("Streams", "/streams", "streams"), ("Pub/Sub", "/pubsub", "pubsub"), ("Kinesis", "/kinesis", "kinesis"), ("Files", "/ftp", "files"), ("Key Vault", "/secrets", "keyvault"), ("Identity", "/identity", "identity"),
+    ("HTTP APIs", "/apis", "apis"), ("AI models", "/ai", "ai"), ("Events", "/events", "events"), ("Webhooks", "/inboxes/webhooks", "webhooks")];
+const BOTTOM: [(&str, &str, &str); 3] = [("Environments", "/environments", ""), ("Catalog", "/catalog", ""), ("Settings", "", "")];
+const SHOW_KEY: &str = "stuntman.rail.services";
 
 /// Which rail entry a path belongs to.
 fn rail_on(path: &str) -> &'static str {
     let any = |p: &[&str]| p.iter().any(|x| path == *x || path.starts_with(&format!("{x}/")));
-    if path == "/apis/unmatched" { "Unmatched" }
-    else if path == "/timeline" { "Timeline" }
+    if path == "/timeline" || path == "/apis/unmatched" { "Timeline" }
     else if any(&["/inboxes/webhooks"]) { "Webhooks" }
     else if any(&["/notifications", "/inboxes", "/services/email", "/mailboxes"]) { "E-mail" }
     else if any(&["/streams"]) { "Streams" }
     else if any(&["/pubsub"]) { "Pub/Sub" }
+    else if any(&["/kinesis"]) { "Kinesis" }
     else if any(&["/ftp"]) { "Files" }
     else if any(&["/ai"]) { "AI models" }
     else if any(&["/events"]) { "Events" }
@@ -167,50 +173,95 @@ fn rail_on(path: &str) -> &'static str {
     else { "" }
 }
 
+/// In use: a call today or in the last 7 days, or live now.
+fn in_use(u: &Value) -> bool {
+    api::n(u, "week") > 0 || u["live"].as_bool() == Some(true)
+}
+
+/// 2,140 → "2.1k".
+fn short(n: i64) -> String {
+    match n { 0 => String::new(), n if n < 1000 => n.to_string(), n if n < 10_000 => format!("{:.1}k", n as f64 / 1000.0), n if n < 1_000_000 => format!("{}k", n / 1000), n => format!("{:.1}M", n as f64 / 1e6) }
+}
+
+fn stored(key: &str) -> Option<String> {
+    web_sys::window()?.local_storage().ok()??.get_item(key).ok()?
+}
+
 #[component]
 fn Rail() -> impl IntoView {
     let loc = use_location();
     let nav = use_navigate();
     let live = expect_context::<api::Live>();
     let env = expect_context::<RwSignal<Value>>();
-    let counts = RwSignal::new((0i64, 0i64));
+    let unanswered = RwSignal::new(0i64);
+    let usage = RwSignal::new(Value::Null);
     let clients = RwSignal::new(Vec::<Value>::new());
+    // "in use" (default) or "all", per person.
+    let show = RwSignal::new(stored(SHOW_KEY).filter(|v| v == "all").unwrap_or_else(|| "in use".into()));
+    let expand = RwSignal::new(false);
+    let last_usage = StoredValue::new(0f64);
     Effect::new(move |_| {
         live.tick.track();
+        env.track();
         leptos::task::spawn_local(async move {
             let un = api::get("/apis/unmatched?since=1h").await.ok().and_then(|v| v["groups"].as_array().map(|g| g.iter().map(|x| api::n(x, "count")).sum::<i64>())).unwrap_or(0);
-            let sv = api::get("/apis/services").await.ok().and_then(|v| v["services"].as_array().map(|a| a.len() as i64)).unwrap_or(0);
-            counts.set((un, sv));
+            unanswered.set(un);
+            // Usage writes to the database: at most every 3 s however busy the live stream is.
+            let now = js_sys::Date::now();
+            if now - last_usage.get_value() > 3000.0 {
+                last_usage.set_value(now);
+                if let Ok(u) = api::get("/usage").await { usage.set(u); }
+            }
             if let Ok(c) = api::get("/clients").await {
                 clients.set(c["clients"].as_array().cloned().unwrap_or_default());
             }
         });
     });
+    let set_show = move |v: String| {
+        if let Some(st) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) { let _ = st.set_item(SHOW_KEY, &v); }
+        show.set(v);
+    };
+    let entry = move |label: &'static str, path: &'static str, kind: &'static str, used: bool| {
+        let nav = nav.clone();
+        let u = move || usage.get()[kind].clone();
+        view! {
+            <div class="item" class:on=move || rail_on(&loc.pathname.get()) == label class:off=path.is_empty() class:used=used && !kind.is_empty() class:unused=!used && !kind.is_empty()
+                title=if path.is_empty() { "Not in this build yet" } else { "" }
+                on:click=move |_| if !path.is_empty() { nav(path, Default::default()) }>
+                <span class="name">{label}{move || (!kind.is_empty() && u()["live"].as_bool() == Some(true)).then(|| view! { <span class="dot" title="a call in the last 5 minutes"></span> })}</span>
+                {move || match label {
+                    "Timeline" => { let n = unanswered.get(); (n > 0).then(|| view! { <span class="badge" title="calls no route took, last hour">{format!("{n} not answered")}</span> }).into_any() }
+                    _ if used && !kind.is_empty() => view! { <span class="count" title="calls today">{short(api::n(&u(), "today"))}</span> }.into_any(),
+                    _ => ().into_any(),
+                }}
+            </div>
+        }
+    };
     view! {
         <nav class="rail">
             <div class="logo">"Stuntman"</div>
             <environments::Switcher/>
             {
-                let entry = move |label: &'static str, path: &'static str| {
-                    let nav = nav.clone();
-                    let count = move || match label {
-                        "Unmatched" => { let n = counts.get().0; if n > 0 { n.to_string() } else { String::new() } }
-                        "HTTP APIs" => counts.get().1.to_string(),
-                        _ => String::new(),
-                    };
+                let entry = entry.clone();
+                move || {
+                    let u = usage.get();
+                    let (mut on, off): (Vec<_>, Vec<_>) = KINDS.iter().partition(|(_, _, k)| in_use(&u[*k]));
+                    on.sort_by_key(|(_, _, k)| -api::n(&u[*k], "week"));
+                    let hidden = show.get() == "in use" && !expand.get();
+                    let n_off = off.len();
                     view! {
-                        <div class="item" class:on=move || rail_on(&loc.pathname.get()) == label class:off=path.is_empty()
-                            title=if path.is_empty() { "Not in this build yet" } else { "" }
-                            on:click=move |_| if !path.is_empty() { nav(path, Default::default()) }>
-                            <span>{label}</span><span class="count">{count}</span>
-                        </div>
+                        {TOP.iter().map(|(l, p, k)| entry(l, p, k, k.is_empty() || in_use(&u[*k]))).collect_view()}
+                        <div class="group row"><span class="caps grow">"Services"</span>
+                            <ui::Seg options=vec![("in use", "In use"), ("all", "All")] value=show set=Callback::new(move |v: String| { expand.set(false); set_show(v) })/></div>
+                        {on.iter().map(|(l, p, k)| entry(l, p, k, true)).collect_view()}
+                        {(!on.is_empty() && n_off > 0).then(|| view! { <div class="sep-line"></div> })}
+                        {if hidden {
+                            (n_off > 0).then(|| view! { <div class="item unused" on:click=move |_| expand.set(true)>{format!("Not used yet  ·  {n_off}")}</div> }).into_any()
+                        } else {
+                            off.iter().map(|(l, p, k)| entry(l, p, k, false)).collect_view().into_any()
+                        }}
+                        <div class="rail-bottom">{BOTTOM.iter().map(|(l, p, k)| entry(l, p, k, true)).collect_view()}</div>
                     }
-                };
-                view! {
-                    {TOP.iter().map(|(l, p)| entry(l, p)).collect_view()}
-                    <div class="group caps">"Services"</div>
-                    {KINDS.iter().map(|(l, p)| entry(l, p)).collect_view()}
-                    <div class="rail-bottom">{BOTTOM.iter().map(|(l, p)| entry(l, p)).collect_view()}</div>
                 }
             }
             <div class="connected">

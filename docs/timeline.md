@@ -15,7 +15,7 @@ took. Raw HTTP is one click away when you need it.
 | **Provoked** | marked on the row, with the rule or forced answer that changed it |
 | **Next** | the object, the rule, the trace, raw HTTP |
 
-Filter by service, by who acted, or show only what was provoked. Calls with the same trace ID group together, so one
+Filter by service, by who acted, or with the chips on top: **All**, **Provoked**, **Errors** and **Not answered**. Calls with the same trace ID group together, so one
 order that touched five providers reads as one journey.
 
 ## Calls that never came through
@@ -24,8 +24,9 @@ order that touched five providers reads as one journey.
 
 Two things can escape a test:
 
-- **Requests with no route.** They reach Stuntman but no plugin answers them. They get their own list
-  (`list_unmatched`), with "create a route from this request".
+- **Requests with no route: Not answered.** They reach Stuntman but no plugin answers them (404 "no route"). The
+  Timeline shows them as amber rows on top, and its rail entry carries a "N not answered" badge; each one becomes a
+  route with **Make a route from it** (`list_unmatched`, `route_from_request`).
 - **Hosts the app still calls directly.** Telemetry reveals them: `real_provider_calls` lists every host your app
   called that never went through Stuntman. A forgotten base URL cannot hide.
 
@@ -49,3 +50,4 @@ Read the same timeline over MCP or HTTP, and wait instead of sleeping:
 | Read calls per line | `list_api_calls`, `list_sms`, `list_whatsapp_messages`, `list_events`, `list_deliveries`, `list_sign_ins` |
 | Who forced what | `list_forced` |
 | What escaped | `list_unmatched`, `real_provider_calls` |
+| Which services the app uses | `usage` (calls today and in 7 days per service kind, last call, live) |

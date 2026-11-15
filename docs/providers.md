@@ -170,7 +170,7 @@ Tools: `list_file_servers`, `set_file_server`, `list_files`, `get_file`, `put_fi
 
 | | |
 |---|---|
-| **Speaks** | AMQP for Azure Service Bus and RabbitMQ, on `:5673` (and `:5671` with TLS); ActiveMQ over OpenWire on `:61616` ([below](#activemq-openwire)) |
+| **Speaks** | AMQP for Azure Service Bus, Azure Event Hubs ([below](#azure-event-hubs)) and RabbitMQ, on `:5673` (and `:5671` with TLS); ActiveMQ over OpenWire on `:61616` ([below](#activemq-openwire)) |
 | **Point your app at** | Service Bus: `Endpoint=sb://<namespace>.<env base domain>:5673;…` (any key); RabbitMQ: `<host>:5673`, vhost `<env>/<namespace>` |
 | **It keeps** | namespaces, queues, topics, subscriptions, every message with its deliveries, consumers and their locks |
 | **You can provoke** | lost locks, duplicates, held, dropped, dead-lettered or out-of-order messages; a namespace that refuses, times out, rejects the key or is busy |
@@ -257,6 +257,41 @@ list_activemq_destinations                                              → dura
 Tools: `list_activemq_destinations`, `list_activemq_messages`, `activemq_send`, `set_activemq`, `cancel_activemq_scheduled`,
 `wait_for_activemq_ack`. In the web UI: **Queues › ActiveMQ**.
 
+### Azure Event Hubs
+
+| | |
+|---|---|
+| **Speaks** | Event Hubs over AMQP 1.0 on the Service Bus port `:5673` (and `:5671` with TLS), as the SDKs speak it in emulator mode (`UseDevelopmentEmulator=true`): `$cbs` put-token (SAS), senders to `<hub>` and `<hub>/Partitions/<n>` (one event or a batch), receivers on `<hub>/ConsumerGroups/<group>/Partitions/<n>` with the selector filter (`amqp.annotation.x-opt-offset`, `x-opt-sequence-number` or `x-opt-enqueued-time`, `>` or `>=`, `-1` and `@latest`), owner level (`com.microsoft:epoch`), last-enqueued runtime metrics, and `$management` READ for `com.microsoft:eventhub` and `com.microsoft:partition`. The Kafka endpoint through Streams' Kafka port: SASL PLAIN, user `$ConnectionString`, the connection string as password |
+| **Point your app at** | `Endpoint=sb://<namespace>.localhost:5673/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=<key>;EntityPath=<hub>;UseDevelopmentEmulator=true` (from `list_eventhubs`); the official emulator's `Endpoint=sb://localhost:5673;…;UseDevelopmentEmulator=true` works too (the hub names the namespace). Kafka clients: `bootstrap.servers=localhost:9092`, `security.protocol=SASL_PLAINTEXT`, `sasl.mechanism=PLAIN` |
+| **It keeps** | namespaces in `eventhubs/<namespace>.yaml` (policies, hubs with partitions, consumer groups and retention, the provocations); every event with its partition, sequence number, byte offset, enqueued time (environment clock), partition key, properties, body and who sent it (the app over AMQP or Kafka, you, an agent); the receivers reading each partition now with their owner level and position; the checkpoints the app writes with `BlobCheckpointStore` to a [Storage](#storage) account |
+| **You can provoke** | `set_eventhubs`: `server_busy` (the next N sends and management requests answer `com.microsoft:server-busy`), `quota_exceeded` (the next N sends answer QuotaExceeded), `slow_sends`, `not_found` (hubs that answer "entity not found"), `steal_owner` (the receivers of a hub lose their partition: `amqp:link:stolen`), `drop_connections` (every connection of the namespace is closed with `amqp:connection:forced`; the SDKs reconnect) |
+
+A partition key goes to the partition the service would pick: Bob Jenkins' lookup3 hash of the UTF-8 key, folded to
+16 bits, `|hash % partitions|`; events without a key go round-robin, a batch to one partition. A receiver with a higher
+owner level disconnects the ones below it (and the ones without); a lower one, or one without while an epoch receiver
+reads, is refused; at most 5 receivers per partition and consumer group. Events older than the hub's retention go on
+the environment clock (`advance_clock`), and the partition's begin sequence number moves on. Offsets are byte offsets.
+Over Kafka, a hub is a topic with the same partitions, sequence numbers are the Kafka offsets, the partition key is
+the record key and properties are headers; consumer groups and their committed offsets are Streams'. A Pub/Sub import
+topic whose `azure_event_hubs` names a hub reads it ([Pub/Sub](#pubsub)).
+
+```text
+create_eventhub          {"namespace": "acme-hubs-stg", "hub": "orders", "partitions": 4, "consumer_groups": ["billing"]}
+eventhub_send            {"namespace": "acme-hubs-stg", "hub": "orders", "body": {"orderId": "ORD-1042"}, "partition_key": "ORD-1042"}
+set_eventhubs            {"namespace": "acme-hubs-stg", "server_busy": 2}
+wait_for_eventhub_event  {"namespace": "acme-hubs-stg", "hub": "orders", "where": {"kind": "OrderPaid"}}
+list_eventhub_events     {"namespace": "acme-hubs-stg", "hub": "orders", "partition": 0}
+```
+
+Tools: `list_eventhubs`, `create_eventhub`, `list_eventhub_events`, `eventhub_send`, `set_eventhubs`,
+`wait_for_eventhub_event`. In the web UI: **Queues › Event Hubs** (from the namespace menu).
+
+Limits: create the hub first (`create_eventhub`): a host that names no Event Hubs namespace becomes a Service Bus one.
+The Python SDK (`azure-eventhub`) sends a delivery rejected on a link it has just opened only once (it raises
+`EventDataSendError`); later sends on that link are sent again. Throughput units, capture, geo-replication, schema
+registry and AMQP transactions are not offered; the Kafka endpoint has no time lookup (ListOffsets by timestamp answers
+the end); the Kafka endpoint is plaintext on Streams' port, not TLS on `:9093`.
+
 ## Streams (Kafka and Schema Registry)
 
 | | |
@@ -289,7 +324,7 @@ compatible.
 |---|---|
 | **Speaks** | Google Cloud Pub/Sub's `google.pubsub.v1` gRPC on `:8085`, plaintext and without auth, as the official emulator: Publisher (CreateTopic, GetTopic, UpdateTopic, ListTopics, ListTopicSubscriptions, ListTopicSnapshots, DeleteTopic, DetachSubscription, Publish), Subscriber (CreateSubscription, GetSubscription, UpdateSubscription, ListSubscriptions, DeleteSubscription, ModifyPushConfig, Pull, StreamingPull, Acknowledge, ModifyAckDeadline, CreateSnapshot, GetSnapshot, ListSnapshots, UpdateSnapshot, DeleteSnapshot, Seek to a time or a snapshot) and SchemaService (CreateSchema, GetSchema, ListSchemas, ListSchemaRevisions, CommitSchema, RollbackSchema, DeleteSchemaRevision, DeleteSchema, ValidateSchema, ValidateMessage); every List pages with `page_size`/`page_token`; `POST /v1/projects/{p}/topics/{t}:publish` over REST on the same port |
 | **Point your app at** | `PUBSUB_EMULATOR_HOST=localhost:8085`; in .NET, `EmulatorDetection = EmulatorDetection.EmulatorOrProduction` on the client builder |
-| **It keeps** | topics with labels, schema settings, message retention, ingestion source (with its state), JavaScript transforms, message storage policy and KMS key name (the last two kept, no effect); subscriptions of five kinds — pull, push, BigQuery, Cloud Storage, Bigtable — with filter, JavaScript transforms, ack deadline, message ordering, exactly-once delivery, retention and retain-acked, expiration policy, retry policy and dead-letter topic; schemas with their revisions; snapshots; BigQuery table schemas; every message with its attributes and ordering key, and each subscription's state of it: pending, outstanding until its ack deadline, acked, dead-lettered; the rows BigQuery and Bigtable subscriptions wrote and the files Cloud Storage subscriptions wrote; settings in `pubsub/config.yaml` |
+| **It keeps** | topics with labels, schema settings, message retention, ingestion source (with its state), JavaScript transforms, message storage policy and KMS key name (both checked as Pub/Sub checks them; `kms_disabled` makes a topic's key fail its publishes); subscriptions of five kinds — pull, push, BigQuery, Cloud Storage, Bigtable — with filter, JavaScript transforms, ack deadline, message ordering, exactly-once delivery, retention and retain-acked, expiration policy, retry policy and dead-letter topic; schemas with their revisions; snapshots; BigQuery table schemas; every message with its attributes and ordering key, and each subscription's state of it: pending, outstanding until its ack deadline, acked, dead-lettered; the rows BigQuery and Bigtable subscriptions wrote and the files Cloud Storage subscriptions wrote; settings in `pubsub/config.yaml` |
 | **You can provoke** | `set_pubsub` with `provoke` on Publish: `unavailable`, `deadline_exceeded`, `resource_exhausted` (clients retry these), `not_found`, `slow_publish` (`delay_ms`, 3 s), `duplicate` (a message comes again after its first ack); `times` limits it to the next N publishes, `topic` to one topic; `ack_transient`: acks and modacks on exactly-once subscriptions fail with `TRANSIENT_FAILURE_UNORDERED_ACK_ID` (the clients retry), `times` counting requests |
 
 A message goes to the subscriptions its topic has when it is published, unless the subscription's filter
@@ -392,10 +427,43 @@ expiry, snapshots, schemas, BigQuery tables), `list_pubsub_messages`, `pubsub_pu
 `set_pubsub`. Short names (`shipments`) find the topic of that
 name, else use the `project` of `set_pubsub` (`acme-stg`). In the web UI: **Pub/Sub**.
 
-Limits: Kinesis and Event Hubs have no Stuntman backend, so those import topics only get what `pubsub_ingest` feeds;
+Limits: an Amazon Kinesis import topic reads the [Kinesis](#kinesis) stream its `stream_arn` names, from TRIM_HORIZON
+(partition key → ordering key; STREAM_NOT_FOUND when there is no such stream); an Azure Event Hubs import topic reads the
+[event hub](#azure-event-hubs) its `namespace` and `event_hub` name, from the start of each partition (body → data,
+partition key → ordering key, properties → attributes; NAMESPACE_NOT_FOUND / EVENT_HUB_NOT_FOUND when missing);
 AI inference has no 60-second timeout to hit: the simulator answers
-in process (force `slow` for a slow model). The KMS key and message storage policy have no effect. The minimums Pub/Sub
+in process (force `slow` for a slow model). The KMS key and message storage policy are checked (key name format, region names) but nothing is encrypted or moved; `set_pubsub provoke=kms_disabled` fails publishes to topics that have a key, with FAILED_PRECONDITION. The minimums Pub/Sub
 sets on Cloud Storage `max_messages` and `max_duration` are not enforced, so tests can use small batches.
+
+## Kinesis
+
+| | |
+|---|---|
+| **Speaks** | Amazon Kinesis Data Streams on `:4567`: AWS JSON 1.1 (`X-Amz-Target: Kinesis_20131202.*`) and the CBOR (`application/x-amz-cbor-1.1`) the AWS SDK for Java sends by default; SigV4 accepted with any key, the region taken from the signature. CreateStream (provisioned or on-demand), DeleteStream, DescribeStream, DescribeStreamSummary, ListStreams, ListShards (with shard filters), PutRecord, PutRecords, GetShardIterator (TRIM_HORIZON, LATEST, AT/AFTER_SEQUENCE_NUMBER, AT_TIMESTAMP), GetRecords (MillisBehindLatest, NextShardIterator, ChildShards), SplitShard, MergeShards, UpdateShardCount, Increase/DecreaseStreamRetentionPeriod, Add/Remove/ListTagsForStream and the resource-ARN tag calls, Register/List/Describe/DeregisterStreamConsumer, SubscribeToShard (enhanced fan-out, an event stream over HTTP/1.1 or HTTP/2), DescribeLimits |
+| **Point your app at** | `AWS_ENDPOINT_URL_KINESIS=http://localhost:4567` (or the client's `endpoint_url` / `ServiceURL` / `endpointOverride`), any access key and secret, any region |
+| **It keeps** | streams with mode, retention, tags and shards (hash key range, sequence number range, parent and adjacent parent after a split or merge), every record with its partition key, shard, sequence number, arrival time and who put it (`app` or you), enhanced fan-out consumers; the provocation in `kinesis/config.yaml` |
+| **You can provoke** | `set_kinesis` with `provoke`: `throughput_puts`, `throughput_gets` (ProvisionedThroughputExceededException; the SDKs retry), `not_found` (ResourceNotFoundException), `expired_iterator`, `kms_throttling` (KMSThrottlingException), `slow_puts` (`delay_ms`, 3 s), `partial_failures` (PutRecords fails every second record); `times` limits it to the next N calls, `stream` to one stream; `reshard` splits the stream's widest open shard now |
+
+The partition key's MD5, read as a 128-bit number, picks the open shard whose hash key range holds it (or
+`ExplicitHashKey` does). Shards of a new stream split the key space evenly; on-demand streams have 4. A split or merge
+closes the parent at the stream's last sequence number: reading it to its end gives no `NextShardIterator` and lists
+its `ChildShards`, new records go to the children. Iterators expire after 5 minutes and records after the retention
+period, both on the environment clock (`advance_clock`). One port serves every environment: the default one answers.
+
+```text
+create_kinesis_stream {"name": "shipments", "shards": 2}
+kinesis_put           {"stream": "shipments", "data": {"shipment": "SHP-1042", "status": "DELIVERED"}, "partition_key": "SHP-1042"}
+set_kinesis           {"provoke": "throughput_puts", "times": 2, "stream": "shipments"}
+wait_for_kinesis_record {"stream": "shipments", "contains": "SHP-1042"}
+```
+
+Tools: `list_kinesis_streams`, `create_kinesis_stream`, `list_kinesis_records`, `kinesis_put`,
+`wait_for_kinesis_record`, `set_kinesis`. In the web UI: **Kinesis**. A Pub/Sub import topic whose
+`aws_kinesis.stream_arn` names one of these streams reads it ([Pub/Sub](#pubsub)).
+
+Limits: the real per-shard limits (1 MB/s or 1,000 records/s in, 2 MB/s out, 5 GetRecords/s) are not enforced, only
+provoked; streams are ACTIVE at once (no CREATING/UPDATING); server-side encryption, enhanced monitoring and
+UpdateStreamMode are not offered; the account is always `000000000000`.
 
 ## Identity
 

@@ -85,6 +85,8 @@ struct Conn {
     client: String,
     peer: String,
     user: String,
+    /// Logged in as another service's Kafka endpoint (an Event Hubs namespace): its topics.
+    foreign: Option<String>,
 }
 
 fn hmac(alg: &str, key: &[u8], msg: &[u8]) -> Vec<u8> {
@@ -144,6 +146,24 @@ impl Conn {
         None
     }
 
+    fn fx(&self) -> Option<(&'static dyn crate::foreign::Foreign, String)> {
+        Some((crate::foreign::get()?, self.foreign.clone()?))
+    }
+
+    async fn known(&self, t: &str, auto: bool) -> Option<i32> {
+        match self.fx() {
+            Some((f, s)) => f.partitions(&self.ctx, &s, t),
+            None => self.ensure_topic(t, auto).await,
+        }
+    }
+
+    async fn marks(&self, t: &str, p: i32) -> (i64, i64) {
+        match self.fx() {
+            Some((f, s)) => f.marks(self.ctx.clone(), s, t.into(), p).await,
+            None => store::marks(&self.ctx, t, p).await.unwrap_or((0, 0)),
+        }
+    }
+
     /// SaslAuthenticate: PLAIN in one step, SCRAM in two.
     fn sasl(&mut self, data: &[u8]) -> Result<Vec<u8>, String> {
         let cfg = config::load(&self.ctx);
@@ -157,6 +177,13 @@ impl Conn {
         if self.mech == "PLAIN" {
             let p: Vec<&[u8]> = data.split(|b| *b == 0).collect();
             let (u, pw) = (String::from_utf8_lossy(p.get(1).unwrap_or(&&b""[..])).to_string(), String::from_utf8_lossy(p.get(2).unwrap_or(&&b""[..])).to_string());
+            if u == "$ConnectionString" {
+                let scope = crate::foreign::get().and_then(|f| f.login(&self.ctx, &u, &pw)).ok_or("Authentication failed: the connection string names no Event Hubs namespace Stuntman has, or its key is wrong")?;
+                self.foreign = Some(scope);
+                self.user = u;
+                self.authed = true;
+                return Ok(vec![]);
+            }
             let ok = match pw_of(&u) { Some(want) => want == pw, None => cfg.sasl.users.is_empty() && !pw.is_empty() && pw != "wrong" };
             if !ok { return Err("Authentication failed: Invalid username or password".into()) }
             self.user = u;
@@ -244,9 +271,10 @@ impl Conn {
                 let all = n < 0 || (n == 0 && v == 0);
                 let mut topics: Vec<(String, Option<i32>)> = vec![];
                 if all {
-                    for (t, p) in store::topics(&ctx).await.map_err(|e| e.message)? { topics.push((t, Some(p))); }
+                    let all = match self.fx() { Some((f, s)) => f.topics(&ctx, &s), None => store::topics(&ctx).await.map_err(|e| e.message)? };
+                    for (t, p) in all { topics.push((t, Some(p))); }
                 } else {
-                    for t in want { let p = self.ensure_topic(&t, auto).await; topics.push((t, p)); }
+                    for t in want { let p = self.known(&t, auto).await; topics.push((t, p)); }
                 }
                 if v >= 3 { w.i32(0); }
                 w.i32(1).i32(0).str(&host).i32(port);
@@ -280,7 +308,7 @@ impl Conn {
                     let t = r.str()?;
                     let np = r.count()?;
                     let mut ps = vec![];
-                    let parts = self.ensure_topic(&t, true).await;
+                    let parts = self.known(&t, true).await;
                     for _ in 0..np {
                         let idx = r.i32()?;
                         let data = r.bytes()?.unwrap_or(&[]).to_vec();
@@ -292,7 +320,11 @@ impl Conn {
                                 Err(e) => (if e.contains("compression") { 76 } else { 2 }, -1, e),
                                 Ok(mut recs) => {
                                     if cfg.provoke == "duplicate" { let again = recs.clone(); recs.extend(again); }
-                                    match store::append(&ctx, &t, idx, recs, &self.client).await { Ok(b) => (0, b, String::new()), Err(e) => (2, -1, e.message) }
+                                    let done = match self.fx() {
+                                        Some((f, s)) => f.append(ctx.clone(), s, t.clone(), idx, recs, self.client.clone()).await.map_err(|e| (if e.contains("throttled") { 89 } else { 2 }, e)),
+                                        None => store::append(&ctx, &t, idx, recs, &self.client).await.map_err(|e| (2, e.message)),
+                                    };
+                                    match done { Ok(b) => (0, b, String::new()), Err((code, e)) => (code, -1, e) }
                                 }
                             },
                         };
@@ -344,7 +376,8 @@ impl Conn {
                     let mut any = false;
                     for (t, ps) in &asks {
                         for (p, off, _) in ps {
-                            if let Ok((_, hw)) = store::marks(&ctx, t, *p).await { if hw > *off { any = true } }
+                            let (_, hw) = self.marks(t, *p).await;
+                            if hw > *off { any = true }
                         }
                     }
                     if any || Instant::now() >= end { break }
@@ -356,11 +389,12 @@ impl Conn {
                 let mut budget = max_bytes.max(1024) as usize;
                 for (t, ps) in &asks {
                     w.str(t).i32(ps.len() as i32);
-                    let known = store::topic(&ctx, t).await.ok().flatten();
+                    let known = match self.fx() { Some((f, s)) => f.partitions(&ctx, &s, t), None => store::topic(&ctx, t).await.ok().flatten() };
                     for (p, off, pmax) in ps {
-                        let (start, hw) = store::marks(&ctx, t, *p).await.unwrap_or((0, 0));
+                        let (start, hw) = self.marks(t, *p).await;
                         let err: i16 = if known.is_none() { 3 } else if lna { 5 } else if *off > hw || (*off < start && hw > 0) { 1 } else { 0 };
-                        let recs = if err == 0 { store::read(&ctx, t, *p, *off, (*pmax as usize).min(budget)).await.unwrap_or_default() } else { vec![] };
+                        let max = (*pmax as usize).min(budget);
+                        let recs = match (err, self.fx()) { (0, Some((f, s))) => f.read(ctx.clone(), s, t.clone(), *p, *off, max).await, (0, None) => store::read(&ctx, t, *p, *off, max).await.unwrap_or_default(), _ => vec![] };
                         let batch = write_batch(&recs);
                         budget = budget.saturating_sub(batch.len());
                         w.i32(*p).i16(err).i64(hw);
@@ -386,8 +420,9 @@ impl Conn {
                         let p = r.i32()?;
                         if v >= 4 { r.i32()?; }
                         let ts = r.i64()?;
-                        let (start, hw) = store::marks(&ctx, &t, p).await.unwrap_or((0, 0));
-                        let (off, at) = match ts { -1 => (hw, -1), -2 => (start, -1), x => store::offset_for_time(&ctx, &t, p, x).await.ok().flatten().unwrap_or((hw, -1)) };
+                        let (start, hw) = self.marks(&t, p).await;
+                        // ponytail: a time lookup on an Event Hubs topic answers the end.
+                        let (off, at) = match ts { -1 => (hw, -1), -2 => (start, -1), _ if self.foreign.is_some() => (hw, -1), x => store::offset_for_time(&ctx, &t, p, x).await.ok().flatten().unwrap_or((hw, -1)) };
                         ps.push((p, off, at));
                     }
                     out.push((t, ps));
@@ -642,7 +677,7 @@ impl Conn {
 
 async fn conn(ctx: Ctx, mut sock: tokio::net::TcpStream) {
     let peer = sock.peer_addr().map(|a| a.ip().to_string()).unwrap_or_default();
-    let mut c = Conn { ctx: ctx.clone(), authed: false, mech: String::new(), scram: None, client: String::new(), peer, user: String::new() };
+    let mut c = Conn { ctx: ctx.clone(), authed: false, mech: String::new(), scram: None, client: String::new(), peer, user: String::new(), foreign: None };
     loop {
         let Ok(len) = sock.read_i32().await else { break };
         if !(0..=64 << 20).contains(&len) { break }
@@ -651,6 +686,7 @@ async fn conn(ctx: Ctx, mut sock: tokio::net::TcpStream) {
         let mut r = R::new(&buf);
         let (Ok(api), Ok(v), Ok(corr)) = (r.i16(), r.i16(), r.i32()) else { break };
         let client = r.nstr().ok().flatten().unwrap_or_default();
+        stuntman_core::usage::hit(&ctx, "streams");
         if c.client.is_empty() && !client.is_empty() {
             c.client = client.clone();
             ctx.live.seen(&client, "Streams");

@@ -101,6 +101,7 @@ pub fn all() -> Vec<Tool> {
     let mut v = queues();
     v.extend(rules_tools());
     v.extend(namespaces());
+    v.extend(crate::openwire::tools());
     v
 }
 

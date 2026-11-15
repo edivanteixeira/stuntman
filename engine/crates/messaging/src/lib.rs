@@ -1,12 +1,14 @@
 //! Messaging (M1–M3): Azure Service Bus (AMQP 1.0) and RabbitMQ (AMQP 0-9-1) on one AMQP port, one
 //! vocabulary for both — namespace, entity (queue, topic, subscription), message. Messages with
 //! their delivery history, locks, dead-letter, consumers, "next delivery", rules, namespaces as YAML.
+//! ActiveMQ Classic (OpenWire) has its own port and a small store of its own: openwire.rs.
 
 pub mod amqp;
 pub mod amqp1;
 pub mod broker;
 pub mod config;
 pub mod mgmt;
+pub mod openwire;
 pub mod rabbit;
 pub mod rabbit_mgmt;
 pub mod rules;
@@ -39,7 +41,8 @@ impl Module for Messaging {
     }
 
     fn migrations(&self) -> &'static str {
-        broker::SQL
+        static SQL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        SQL.get_or_init(|| format!("{}{}", broker::SQL, openwire::SQL))
     }
 
     fn tools(&self) -> Vec<Tool> {
@@ -74,6 +77,7 @@ impl Module for Messaging {
         TLS_PORT.store(self.tls_port, Ordering::Relaxed);
         tokio::spawn(amqp::serve(envs.clone(), self.port));
         tokio::spawn(amqp::serve_tls(envs.clone(), self.tls_port));
+        tokio::spawn(openwire::serve(envs.clone(), std::env::var("STUNTMAN_ACTIVEMQ_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(61616)));
         rabbit_mgmt::serve(envs, std::env::var("STUNTMAN_RABBITMQ_MGMT_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(15672));
     }
 

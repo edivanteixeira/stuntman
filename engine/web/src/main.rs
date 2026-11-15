@@ -11,6 +11,7 @@ mod ftp;
 mod identity;
 mod keyvault;
 mod messaging;
+mod pubsub;
 mod shell;
 mod sms;
 mod storage;

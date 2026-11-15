@@ -3,6 +3,7 @@
 //! on top and the connection string at the bottom; the tabs act on the namespace and entity
 //! picked there: Messages · Dead-letter · Consumers · Rules · Settings.
 
+pub mod activemq;
 pub mod consumers;
 pub mod messages;
 pub mod rules;
@@ -170,6 +171,7 @@ pub fn Area(children: ChildrenFn) -> impl IntoView {
                     <ui::Pop open=pick_ns>
                         {move || data.get()["namespaces"].as_array().cloned().unwrap_or_default().into_iter().map(|x| { let nm = s(&x, "namespace"); let nav = use_navigate(); let t = tab();
                             view! { <div class="mi" on:click=move |_| nav(&href(&t, &nm, "", ""), Default::default())><span>{s(&x, "namespace")}</span><span class="sub">{label(&s(&x, "kind"))}</span></div> } }).collect_view()}
+                        <a class="mi" href="/queues/activemq" style="text-decoration:none;color:inherit"><span>"ActiveMQ"</span><span class="sub">"OpenWire broker · 61616"</span></a>
                         <div class="rule"></div>
                         <div class="mi" on:click=move |_| new_open.set(true)>"+ New namespace"</div>
                     </ui::Pop>

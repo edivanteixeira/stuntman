@@ -9,7 +9,7 @@ use leptos_router::{
 };
 use serde_json::Value;
 
-use crate::{ai, api, apis, catalog, email, events, ftp, sms, streams, environments, identity, keyvault, messaging, storage, telemetry, timeline, ui, webhook, whatsapp};
+use crate::{ai, api, apis, catalog, email, events, ftp, pubsub, sms, streams, environments, identity, keyvault, messaging, storage, telemetry, timeline, ui, webhook, whatsapp};
 
 #[component]
 pub fn App() -> impl IntoView {
@@ -81,6 +81,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/events/people") view=events::People/>
                     <Route path=path!("/ftp") view=ftp::Files/>
                     <Route path=path!("/streams") view=streams::Streams/>
+                    <Route path=path!("/pubsub") view=pubsub::PubSub/>
                     <Route path=path!("/mailboxes") view=email::mailboxes::Mailboxes/>
                     <Route path=path!("/identity/protocols") view=identity::protocols::Protocols/>
                     <Route path=path!("/catalog") view=catalog::Store/>
@@ -107,6 +108,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/whatsapp/recipients") view=whatsapp::recipients::Recipients/>
                     <Route path=path!("/whatsapp/number") view=whatsapp::number::Number/>
                     <Route path=path!("/queues") view=|| view! { <messaging::Area><messaging::messages::Messages/></messaging::Area> }/>
+                    <Route path=path!("/queues/activemq") view=messaging::activemq::ActiveMq/>
                     <Route path=path!("/queues/subscriptions") view=|| view! { <messaging::Area><messaging::subscriptions::Subscriptions/></messaging::Area> }/>
                     <Route path=path!("/queues/dead-letter") view=|| view! { <messaging::Area><messaging::messages::Messages dlq=true/></messaging::Area> }/>
                     <Route path=path!("/queues/consumers") view=|| view! { <messaging::Area><messaging::consumers::Consumers/></messaging::Area> }/>
@@ -136,7 +138,7 @@ pub fn App() -> impl IntoView {
 /// the page's own column, with + New on top), then environments and settings. "" = not in this build.
 // Scenarios (B5/B6) is designed but deferred (2026-11-13): it comes back here when built.
 const TOP: [(&str, &str); 2] = [("Timeline", "/timeline"), ("Unmatched", "/apis/unmatched")];
-const KINDS: [(&str, &str); 14] = [("E-mail", "/notifications"), ("WhatsApp", "/whatsapp"), ("SMS", "/sms"), ("Storage", "/files"), ("Queues", "/queues"), ("Streams", "/streams"), ("Files", "/ftp"), ("Key Vault", "/secrets"), ("Identity", "/identity"),
+const KINDS: [(&str, &str); 15] = [("E-mail", "/notifications"), ("WhatsApp", "/whatsapp"), ("SMS", "/sms"), ("Storage", "/files"), ("Queues", "/queues"), ("Streams", "/streams"), ("Pub/Sub", "/pubsub"), ("Files", "/ftp"), ("Key Vault", "/secrets"), ("Identity", "/identity"),
     ("HTTP APIs", "/apis"), ("AI models", "/ai"), ("Events", "/events"), ("Webhooks", "/inboxes/webhooks"), ("Telemetry", "/telemetry")];
 const BOTTOM: [(&str, &str); 3] = [("Environments", "/environments"), ("Catalog", "/catalog"), ("Settings", "")];
 
@@ -148,6 +150,7 @@ fn rail_on(path: &str) -> &'static str {
     else if any(&["/inboxes/webhooks"]) { "Webhooks" }
     else if any(&["/notifications", "/inboxes", "/services/email", "/mailboxes"]) { "E-mail" }
     else if any(&["/streams"]) { "Streams" }
+    else if any(&["/pubsub"]) { "Pub/Sub" }
     else if any(&["/ftp"]) { "Files" }
     else if any(&["/ai"]) { "AI models" }
     else if any(&["/events"]) { "Events" }

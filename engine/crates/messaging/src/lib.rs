@@ -8,6 +8,7 @@ pub mod broker;
 pub mod config;
 pub mod mgmt;
 pub mod rabbit;
+pub mod rabbit_mgmt;
 pub mod rules;
 pub mod tools;
 
@@ -72,7 +73,8 @@ impl Module for Messaging {
         PORT.store(self.port, Ordering::Relaxed);
         TLS_PORT.store(self.tls_port, Ordering::Relaxed);
         tokio::spawn(amqp::serve(envs.clone(), self.port));
-        tokio::spawn(amqp::serve_tls(envs, self.tls_port));
+        tokio::spawn(amqp::serve_tls(envs.clone(), self.tls_port));
+        rabbit_mgmt::serve(envs, std::env::var("STUNTMAN_RABBITMQ_MGMT_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(15672));
     }
 
     fn reset(&self, ctx: &Ctx) {

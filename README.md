@@ -101,6 +101,7 @@ Point your app's provider URLs at it (examples):
 | OpenTelemetry | `http://localhost:4318` (or gRPC `:4317`) |
 | OpenAI, Anthropic, Gemini… | `http://localhost:8025/openai/v1`, `…/anthropic`, `…/gemini` |
 | Kafka | `localhost:9092` (Schema Registry `http://localhost:8081`) |
+| Google Cloud Pub/Sub | `PUBSUB_EMULATOR_HOST=localhost:8085` |
 
 Connect Claude Code:
 
@@ -123,6 +124,7 @@ claude mcp add --transport http stuntman http://localhost:8025/mcp
 | **Files** | FTP, FTPS and SFTP servers over shared folders | logins refused, disk full, permission denied, transfers cut or slow, a changed host key |
 | **Messaging** | Azure Service Bus and RabbitMQ over AMQP, RabbitMQ management API | lost locks, duplicates, held, dropped, dead-lettered or out-of-order messages, refused or busy namespace |
 | **Streams** | Kafka (SASL, consumer groups) and Confluent Schema Registry with Avro | leader not available, SASL refused, slow fetches, duplicates, rebalances, registry down |
+| **Pub/Sub** | Google Cloud Pub/Sub emulator over gRPC (StreamingPull, ack deadlines, ordering keys, dead-letter topics) | unavailable, deadline exceeded, quota exhausted, topic not found, slow publishes, duplicate deliveries |
 | **Identity** | OIDC / OAuth2 (Microsoft Entra ID, Google, Okta, generic OIDC, password grant), SAML 2.0, LDAP, Bot Framework | MFA, consent, user cancels, wrong tenant, expired tokens, bad signature, IdP down, broken discovery or JWKS, locked accounts |
 | **Secrets** | Azure Key Vault (secrets, keys, certificates) and managed identity | 403, 404, 429, disabled, slow, expired or untrusted certificates, wrong signatures |
 | **Webhook inboxes** | Endpoints your app sends its own webhooks to | 200, 500, timeout, hang, delay, fail N times then succeed, signature checks |
@@ -186,7 +188,7 @@ engine/
   crates/keyvault   Key Vault, managed id.       crates/webhook    webhook inboxes
   crates/telemetry  OTLP, GELF, StatsD           crates/ai         AI model APIs
   crates/events     product analytics            crates/files      FTP, FTPS, SFTP
-  crates/streams    Kafka, Schema Registry
+  crates/streams    Kafka, Schema Registry       crates/pubsub     Google Cloud Pub/Sub
   web/              the web UI (Leptos)
 ```
 

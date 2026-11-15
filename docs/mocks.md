@@ -52,13 +52,16 @@ service.
 | `method` | the route's method; `ANY` becomes a `GET` and a `POST` route |
 | `queryParameters`, `headers` | conditions in `decide`: `equalTo`, `contains`, `doesNotContain`, `matches`, `doesNotMatch`, `absent` |
 | `host` | only used by `group_by=host` |
-| `bodyPatterns` | conditions on the body: `equalTo`, `contains`, `matches` and their negations, `equalToJson` (its top-level fields that are not objects or lists), `matchesJsonPath` (a path, or a `$[?(@.x == 'y')]` filter), `matchesXPath` (the forms mocks use: `//x`, `//x[text()='y']`, `//*[local-name()='x' and text()='y']`) |
+| `basicAuthCredentials` | a condition on the `Authorization` header (`Basic` with that user and password) |
+| `cookies` | conditions on one cookie each: `cookie(headers['cookie'], 'sid') == 's1'` |
+| `bodyPatterns` | conditions on the body: `equalTo`, `contains`, `matches` and their negations, `equalToJson` (one condition per field, nested objects included; lists compare whole and in order), `matchesJsonPath` (a path, or a `$[?(@.x == 'y')]` filter), `matchesXPath` (the forms mocks use: `//x`, `//x[text()='y']`, `//*[local-name()='x' and text()='y']`) |
 | each mapping | one rule in the route's `decide` and one named answer; rules follow the mappings' `priority` |
 | `status`, `headers`, `body`, `jsonBody`, `base64Body`, `bodyFileName` | the answer; a binary file is copied to `apis/<service>.files/` |
 | `fixedDelayMilliseconds`, `delayDistribution.median` | the answer's `latency` |
 | `fault` | `EMPTY_RESPONSE` becomes `empty`, the others `reset` |
 | `scenarioName`, `requiredScenarioState`, `newScenarioState` | [scenarios](plugins.md#scenarios): rules with `scenario == '…'` and a `scenario:` move after the answer |
 | a body with `{{ }}` or the `response-template` transformer | an answer with `template: handlebars` |
+| `postServeActions` / `serveEventListeners` `webhook` | a `send` on the route that fires only after that mapping's answer (`when: answer == '…'`), with its method, URL, headers, body and delay |
 | no mapping matched | the answer `not_matched`: 404 "Request was not matched", as WireMock answers |
 
 Imported routes have `fallthrough: true`: when none of a route's rules match, the next route whose path matches is
@@ -112,13 +115,16 @@ Helpers:
 - Matchers with no equivalent are reported as gaps and left out of the rule: `equalToXml`, `binaryEqualTo`,
   `matchesJsonPath` with a matcher object, `multipartPatterns`, and query or header matchers other than the ones
   listed above.
-- Some parts of a mapping are not read and not reported either: `cookies`, `basicAuthCredentials`, and the nested
-  objects and lists of an `equalToJson`. Check those by hand.
+- Nothing is dropped quietly: any request field, response field or serve action the import does not convert
+  (`customMatcher`, `chunkedDribbleDelay`, `proxyBaseUrl`, `transformerParameters`, an action other than
+  `webhook`…) is listed in the import's gaps, file by file. `equalToJson` with `ignoreArrayOrder` is reported too:
+  lists are compared in order. `pathParameters` of a `urlPathTemplate` match any value.
+- `host`, `port` and `scheme` are not conditions: the app reaches Stuntman, not the real host.
 - `ANY` becomes `GET` and `POST` only.
 - Templates: `jsonPath` takes plain paths (`$.a.b`, `$.a[0]`, `$['a']`), not filters or wildcards; `xPath` takes the
   forms listed above, not full XPath. Helpers not listed here (`pickRandom`, `dateFormat`, `parseDate`,
   `formData`, `request.cookies`…) are not available.
 - Delays from `delayDistribution` use the median only; `chunkedDribbleDelay` is not read.
-- Proxying (`proxyBaseUrl`) and webhooks (`postServeActions`, `serveEventListeners`) are not imported. Use
-  [Recording](recording.md) for the first and a route's `send` for the second.
+- Proxying (`proxyBaseUrl`) is not imported: use [Recording](recording.md). Webhook templates
+  (`{{originalRequest.body}}`…) are sent as text and reported as a gap; rewrite them with Stuntman's expressions.
 - Request journals and the WireMock admin API (`/__admin`) are not served.

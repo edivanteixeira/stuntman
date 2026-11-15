@@ -87,7 +87,7 @@ Each route reads top to bottom: **receive → let → keep → wait → decide �
 | `wait` | "answer `processing` 3 times, then `done`": counts calls per key |
 | `decide` | a list of `when` → `answer`; the first match wins; the last item usually has no `when`. `scenario` moves the service to that scenario after this answer ([Scenarios](#scenarios)) |
 | `respond.latency` | e.g. `300ms..600ms` |
-| `send` | callbacks after answering: `url` (a template), `method`, `body`, `delay` (on the [environment's clock](clock.md)), `secret` (HMAC-SHA256 into `header`; may be a template), `sign` (overrides `service.webhooks.sign`), `event` (the event type), `headers` (names and values are templates; a name that renders empty is left out), `when` (an expression: sent only when it is true), `operation` (a SOAP callback) |
+| `send` | callbacks after answering: `url` (a template), `method`, `body`, `delay` (on the [environment's clock](clock.md)), `secret` (HMAC-SHA256 into `header`; may be a template), `sign` (overrides `service.webhooks.sign`), `event` (the event type), `headers` (names and values are templates; a name that renders empty is left out; the name `"*"` takes `Name: value` lines, one header each, e.g. the headers a subscriber chose), `when` (an expression: sent only when it is true), `operation` (a SOAP callback) |
 | `fail` | a generic failure on this route only: `reset`, `empty`, `timeout`, `401`, `403`, `500`, `503`, `html` |
 | `schema` | response fields and their types; answers are checked against it |
 | `billable`, `token`, `login`, `grant`, `step` | billing, the OAuth2 token route, the session login route, people grants (authorization code with PKCE), push approvals polled by the app |
@@ -135,10 +135,10 @@ Conditions and templates use a small, side-effect-free language (a CEL-like subs
 
 | | |
 |---|---|
-| **Read** | `body.x`, `query.x`, `path.x`, `headers.x`, `raw` (the body as text), `state.<collection>`, `data.<table>`, the `let` names (`person.x`), `caller`, `client_cert` and `client_cnpj` (mTLS), `scenario`; on GraphQL routes `variables` and `operation`; in `send`, `answer` |
+| **Read** | `body.x` (JSON, form fields, `multipart/form-data` fields, or the JSON part of a `multipart/related` upload), `files` (the uploaded parts: `field`, `filename`, `size`, `contentType`), `query.x`, `path.x`, `headers.x`, `raw` (the body as text), `state.<collection>`, `data.<table>`, the `let` names (`person.x`), `caller`, `client_cert` and `client_cnpj` (mTLS), `scenario`; on GraphQL routes `variables` and `operation`; in `send`, `answer` |
 | **Operators** | `==`, `!=`, `<`, `>`, `<=`, `>=`, `+`, `-`, `*`, `/`, `%`, `&&`, `\|\|`, `!`, `in`, `cond ? a : b`, `x[0]`, `x['key']`; lists `[1, 2]` and maps `{'n': 2}` |
 | **Methods** | `.startsWith()`, `.endsWith()`, `.contains()`, `.matches()`, `.size()`, `.upper()`, `.lower()`, `.digits()`, `.mask()`, `.sha256()`, `.base64url()`, `.cpf_ok()`, `.string()`, `.int()` |
-| **Functions** | `size`, `exists` (or `has`), `default`, `string`, `int`, `double`, `upper`, `lower`, `trim`, `replace(s, from, to)`, `split(s, sep)`, `join(list, sep)`, `substring(s, start, end)`, `digits`, `mask`, `cpf_ok`, `sha256`, `base64`, `base64url`, `uuid`, `random_id`, `now`, `now_ms`, `matches(s, regex)`, `json`, `lookup(table, field, value)` |
+| **Functions** | `size`, `exists` (or `has`), `default`, `string`, `int`, `double`, `upper`, `lower`, `trim`, `replace(s, from, to)`, `split(s, sep)`, `join(list, sep)`, `substring(s, start, end)`, `digits`, `mask`, `cpf_ok`, `sha256`, `base64`, `base64url`, `uuid`, `random_id`, `now`, `now_ms`, `matches(s, regex)`, `json`, `cookie(header, name)`, `lookup(table, field, value)` |
 | **Template filters** | `{{ value \| default('x') }}`, `mask`, `json`, `round(2)`, `tz('America/New_York')` (a short list of zones, fixed offsets), and any one-argument function (`\| trim`, `\| upper`) |
 
 Templates use `{{ }}` inside answer bodies, sentences, callback URLs, headers and secrets. `split` and `join`

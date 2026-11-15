@@ -8,7 +8,7 @@ Addresses below assume the default ports on `localhost`. In another environment,
 (or use its host names); see [Environments](environments.md). All ports are listed in [Configuration](configuration.md#ports).
 
 - [HTTP APIs](#http-apis) · [AI models](#ai-models) · [SMS](#sms) · [WhatsApp](#whatsapp) · [Email](#email) · [Mailboxes](#mailboxes-imap-and-pop3)
-- [Storage](#storage) · [Files](#files-ftp-ftps-and-sftp) · [Messaging](#messaging) · [Streams](#streams-kafka-and-schema-registry)
+- [Storage](#storage) · [Files](#files-ftp-ftps-and-sftp) · [Messaging](#messaging) · [Streams](#streams-kafka-and-schema-registry) · [Pub/Sub](#pubsub)
 - [Identity](#identity) · [Secrets](#secrets) · [Webhook inboxes](#webhook-inboxes) · [Product events](#product-events) · [Telemetry](#telemetry)
 
 ---
@@ -183,6 +183,33 @@ are the RabbitMQ namespaces of the default environment, so what a script creates
 Service Bus finds the namespace by host name: give the environment a base domain under a wildcard DNS name that
 points at Stuntman. See [Environments](environments.md#how-a-request-finds-its-environment).
 
+### ActiveMQ (OpenWire)
+
+| | |
+|---|---|
+| **Speaks** | ActiveMQ "Classic" OpenWire on `:61616`, version 10 (Apache.NMS.ActiveMQ and the Java `activemq-client` negotiate down to it), loose encoding |
+| **Point your app at** | `activemq:tcp://localhost:61616` (NMS) or `tcp://localhost:61616` (Java), with the user and password you set |
+| **It keeps** | queues and topics, every message with its state (pending, delivered, acked, dead_letter, discarded) and redelivery count, the consumers connected now |
+| **You can provoke** | `set_activemq`: `refuse_login` (a SecurityException for everyone), `drop_after` (close the connection after N dispatched messages), `slow_dispatch` (a delay before each dispatch), `redeliver` (the next N acks are lost and those messages come again) |
+
+Connections, sessions, producers and consumers work as on a real broker: prefetch, `MessagePull` when the prefetch is 0
+(so `Receive(timeout)` returns null on time), auto, client and individual acks, poison acks (to dead_letter), queue
+browsers, text, bytes and other message types with their properties. A consumer that leaves gives back what it did not
+ack; what the app had already seen comes again as redelivered. Topics are plain (non-durable): each subscriber
+connected at send time gets a copy; with none, the message is kept as discarded. With no users set, any user name
+and password log in. Not implemented: transactions, durable subscriptions, selectors, message groups, scheduled
+delivery and compression (compressed bodies pass through as they came). One port serves every environment: the
+default one answers.
+
+```text
+set_activemq            {"users": {"acme": "s3cret"}}
+activemq_send           {"destination": "queue://positions", "text": "{\"truck\": \"TRK-100\"}", "properties": {"region": "north"}}
+wait_for_activemq_ack   {"destination": "queue://positions"}            → the app consumed and acked it
+list_activemq_messages  {"destination": "queue://positions", "state": "acked"}
+```
+
+Tools: `list_activemq_destinations`, `list_activemq_messages`, `activemq_send`, `set_activemq`, `wait_for_activemq_ack`.
+
 ## Streams (Kafka and Schema Registry)
 
 | | |
@@ -208,6 +235,36 @@ Tools: `list_topics`, `create_topic`, `delete_topic`, `list_stream_messages`, `p
 Limits: one broker node; record batches with no compression or gzip (snappy, lz4 and zstd are refused); only
 non-flexible request versions are offered, which current clients still speak; compatibility checks always answer
 compatible.
+
+## Pub/Sub
+
+| | |
+|---|---|
+| **Speaks** | Google Cloud Pub/Sub's `google.pubsub.v1` gRPC on `:8085`, plaintext and without auth, as the official emulator: Publisher (CreateTopic, GetTopic, UpdateTopic for labels, ListTopics, ListTopicSubscriptions, DeleteTopic, Publish) and Subscriber (CreateSubscription, GetSubscription, ListSubscriptions, DeleteSubscription, Pull, StreamingPull, Acknowledge, ModifyAckDeadline, Seek to a time); `POST /v1/projects/{p}/topics/{t}:publish` over REST on the same port |
+| **Point your app at** | `PUBSUB_EMULATOR_HOST=localhost:8085`; in .NET, `EmulatorDetection = EmulatorDetection.EmulatorOrProduction` on the client builder |
+| **It keeps** | topics, pull subscriptions (ack deadline, message ordering, dead-letter topic), every message with its attributes and ordering key, and each subscription's state of it: pending, outstanding until its ack deadline, acked, dead-lettered; settings in `pubsub/config.yaml` |
+| **You can provoke** | `set_pubsub` with `provoke` on Publish: `unavailable`, `deadline_exceeded`, `resource_exhausted` (clients retry these), `not_found`, `slow_publish` (`delay_ms`, 3 s), `duplicate` (a message comes again after its first ack); `times` limits it to the next N publishes, `topic` to one topic |
+
+A message goes to the subscriptions its topic has when it is published. A nack (ModifyAckDeadline to 0) or a passed
+ack deadline delivers it again; with message ordering, a key waits while one of its messages is out. With a
+dead-letter policy, `delivery_attempt` is filled and a message delivered `max_delivery_attempts` times moves to the
+dead-letter topic. Deleting a topic leaves its subscriptions detached (`_deleted-topic_`). One port serves every
+environment: the default one answers, or the one the `x-stuntman-env` gRPC metadata names.
+
+```text
+create_pubsub_subscription {"subscription": "shipments-billing", "topic": "shipments", "dead_letter_topic": "shipments-dlq"}
+pubsub_publish             {"topic": "shipments", "data": {"shipment": "SHP-1041"}, "attributes": {"source": "partner"}}
+set_pubsub                 {"provoke": "unavailable", "times": 2}
+```
+
+Tools: `list_pubsub_topics`, `list_pubsub_messages`, `pubsub_publish`, `create_pubsub_subscription`,
+`wait_for_pubsub_message`, `set_pubsub`. Short names (`shipments`) find the topic of that name, else use the
+`project` of `set_pubsub` (`acme-stg`).
+
+Limits: pull subscriptions only (no push, BigQuery, Cloud Storage or Bigtable delivery); subscription filters are
+refused; no schemas (SchemaService), snapshots, UpdateSubscription, DetachSubscription or ModifyPushConfig (they answer
+UNIMPLEMENTED); no exactly-once delivery; message retention and subscription expiry are not enforced; list calls
+return a single page.
 
 ## Identity
 

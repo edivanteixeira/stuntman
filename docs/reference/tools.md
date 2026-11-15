@@ -5,7 +5,7 @@ Every action in Stuntman is one tool. Each tool is an **MCP tool** (same name) a
 
 _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit by hand._
 
-**356 tools** in 15 areas.
+**367 tools** in 16 areas.
 
 - [Environments and timeline](#environments-and-timeline) · 12 tools
 - [Email and mailboxes](#email-and-mailboxes) · 39 tools
@@ -15,10 +15,11 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 - [AI models](#ai-models) · 9 tools
 - [Product events](#product-events) · 8 tools
 - [Storage (Azure Blob, S3)](#storage-azure-blob-s3) · 45 tools
-- [Messaging (Service Bus, RabbitMQ)](#messaging-service-bus-rabbitmq) · 19 tools
+- [Messaging (Service Bus, RabbitMQ, ActiveMQ)](#messaging-service-bus-rabbitmq-activemq) · 24 tools
 - [Identity (OIDC, OAuth2, SAML, LDAP, Bot Framework)](#identity-oidc-oauth2-saml-ldap-bot-framework) · 28 tools
 - [Files (FTP, SFTP)](#files-ftp-sftp) · 8 tools
 - [Streams (Kafka, Schema Registry)](#streams-kafka-schema-registry) · 10 tools
+- [Pub/Sub (Google Cloud)](#pub-sub-google-cloud) · 6 tools
 - [Secrets (Key Vault)](#secrets-key-vault) · 31 tools
 - [Webhook inboxes](#webhook-inboxes) · 9 tools
 - [Telemetry (OpenTelemetry)](#telemetry-opentelemetry) · 25 tools
@@ -289,7 +290,7 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `remove_container` | `DELETE /api/services/{name}/accounts/{account}/containers/{container}` | service, account, container | — | Removes a container and its objects; says how many went with it. The seed is not changed, so a reset brings them back. |
 | `delete_account` | `DELETE /api/services/{name}/accounts/{account}` | service, account | — | Deletes an account, its objects and links (people confirm on the screen; agents do not). Also for messaging: service = azure-service-bus \| rabbitmq (accounts are namespaces). |
 
-## Messaging (Service Bus, RabbitMQ)
+## Messaging (Service Bus, RabbitMQ, ActiveMQ)
 
 | Tool | HTTP | Required | Optional | What it does |
 |---|---|---|---|---|
@@ -312,6 +313,11 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `rotate_policy_key` | `POST /api/services/{name}/accounts/{account}/policies/{policy}/rotate` | namespace, policy | — | Makes a new key for a shared access policy (RabbitMQ: a user's password); senders still using the old one get 401. |
 | `set_throughput` | `PUT /api/messaging/{namespace}/throughput` | namespace, per_second | — | Messages a second the namespace takes before ServerBusy; none, a number, or throttle_now (every send ServerBusy). |
 | `set_auto_create` | `PUT /api/messaging/{namespace}/auto-create` | namespace, on | — | On: queues and topics the app declares or sends to are created. Off: they answer 404 (test a missing entity). |
+| `list_activemq_destinations` | `GET /api/activemq/destinations` | — | — | ActiveMQ (OpenWire, port 61616) queues and topics with their messages per state (pending, delivered, acked, dead_letter, discarded), the consumers connected now, the broker URL and what set_activemq changed. |
+| `list_activemq_messages` | `GET /api/activemq/messages` | — | destination, state, last | ActiveMQ messages, newest first, with their state: pending (waiting), delivered (dispatched, not acked yet), acked, dead_letter (poison ack), discarded (topic copy whose subscriber left). |
+| `activemq_send` | `POST /api/activemq/messages` | destination | text, kind, body_base64, properties, correlation_id, type, reply_to, group_id, persistent, priority, count | Puts a message on an ActiveMQ queue (or topic) as the partner system would; it is dispatched to the app's consumers. Recorded as sent by you or the agent. |
+| `set_activemq` | `PUT /api/activemq/settings` | — | users, refuse_login, drop_after, slow_dispatch, redeliver, reset | ActiveMQ broker behaviour: users (name → password; empty: anyone logs in), refuse_login (every login fails with a SecurityException), drop_after (close the connection after N dispatched messages), slow_dispatch (wait before each dispatch), redeliver (the next N acks are lost: those messages come again with a higher redelivery count). Only what you pass changes; reset=true goes back to defaults. |
+| `wait_for_activemq_ack` | `GET /api/activemq/wait-ack` | destination | seq, count, timeout | Waits until the app acked: one message (seq), at least `count` messages of the destination, or (neither) everything sent to it: nothing pending or delivered and at least one acked. 408 after the timeout. |
 
 ## Identity (OIDC, OAuth2, SAML, LDAP, Bot Framework)
 
@@ -373,6 +379,17 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `set_streams` | `PUT /api/streams/config` | — | default_partitions, auto_create, advertised_host, sasl_required, sasl_users, provoke | Broker settings: default_partitions, auto_create, advertised_host, sasl_required, sasl_users [{user, password}], and a provocation: leader_not_available, sasl_refused, slow_fetch, duplicate, registry_down (none clears). |
 | `list_schemas` | `GET /api/streams/schemas` | — | — | The Schema Registry's subjects with their versions and ids. |
 | `register_schema` | `POST /api/streams/schemas` | subject, schema | schema_type | Registers a schema under a subject (Avro by default; JSON or PROTOBUF as schema_type). The same schema keeps its id. |
+
+## Pub/Sub (Google Cloud)
+
+| Tool | HTTP | Required | Optional | What it does |
+|---|---|---|---|---|
+| `list_pubsub_topics` | `GET /api/pubsub/topics` | — | — | The Pub/Sub topics of this environment with their subscriptions (ack deadline, ordering, dead-letter) and how many messages each has pending, outstanding, acked and dead-lettered; how apps connect. |
+| `list_pubsub_messages` | `GET /api/pubsub/messages` | — | topic, subscription, project, limit | The newest messages of a topic with their state in each subscription (pending, outstanding, expired, acked, dead), or of one subscription: data (JSON or text), attributes, ordering key, delivery attempts, who published. |
+| `pubsub_publish` | `POST /api/pubsub/topics/{topic}/publish` | topic | data, attributes, ordering_key, project | Publishes a message to a topic as another service would (the app's subscribers receive it): data (JSON or text), attributes, ordering_key. Makes the topic when it does not exist. |
+| `create_pubsub_subscription` | `PUT /api/pubsub/subscriptions/{subscription}` | subscription, topic | ack_deadline_seconds, ordering, dead_letter_topic, max_delivery_attempts, labels, project | Creates a pull subscription on a topic (the topic too when missing): ack deadline, message ordering, a dead-letter topic with max delivery attempts. |
+| `wait_for_pubsub_message` | `GET /api/pubsub/topics/{topic}/wait` | topic | contains, attributes, ordering_key, since, timeout, project | Waits for the first message the app published (not you or an agent) on a topic that matches: text in the data, attributes, ordering key. Looks back 15 s by default; 408 after the timeout. |
+| `set_pubsub` | `PUT /api/pubsub/config` | — | project, provoke, times, topic, delay_ms | Pub/Sub settings: project (for short names) and a provocation on Publish: unavailable, deadline_exceeded, resource_exhausted, not_found, slow_publish (delay_ms), duplicate (each message delivered again after its first ack); times = for the next N publishes (0 = until cleared), topic = only that topic; none clears. |
 
 ## Secrets (Key Vault)
 

@@ -197,7 +197,7 @@ def chip(color, text):
 
 
 def anchor(name):
-    return name.lower().replace(" ", "-")
+    return "".join(c for c in name.lower().replace(" ", "-") if c.isalnum() or c == "-")
 
 
 # Every provider Stuntman simulates, by area: (color, area, anchor on /providers, names).
@@ -408,8 +408,12 @@ def provider_list():
          ("brown", "Files", "FTP · explicit FTPS · SFTP", "Servers as folders, their users, and every login and transfer.",
           "Logins refused, disk full, permission denied, a transfer cut halfway or crawling, a changed SFTP host key.", "files",
           "FTP <code>localhost:2121</code> · SFTP <code>localhost:2222</code>; drop files with <code>put_file</code>."),
-         ("teal", "Messaging", "Azure Service Bus · RabbitMQ (AMQP) · RabbitMQ management API", "Queues, topics, subscriptions, every message with its deliveries, consumers and locks.",
-          "Lost locks, duplicates, held, dropped, dead-lettered or out-of-order messages; a busy or refusing namespace.", "queues", "AMQP <code>:5673</code> (TLS <code>:5671</code>) · management API <code>:15672</code>."),
+         ("teal", "Messaging", "Azure Service Bus · RabbitMQ (AMQP) · RabbitMQ management API · Apache ActiveMQ (OpenWire)", "Queues, topics, subscriptions, every message with its deliveries, consumers and locks.",
+          "Lost locks, duplicates, held, dropped, dead-lettered or out-of-order messages; a busy or refusing namespace; a refused login or a connection dropped mid-queue.", "queues",
+          "AMQP <code>:5673</code> (TLS <code>:5671</code>) · management API <code>:15672</code> · ActiveMQ <code>tcp://localhost:61616</code>."),
+         ("teal", "Pub/Sub", "Google Cloud Pub/Sub (gRPC, as the official emulator) · REST publish", "Topics, subscriptions, every message with its ack state, ordering keys and attributes; dead-letter topics.",
+          "UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED or NOT_FOUND on the next publishes, slow publishes, a message delivered twice, an ack deadline that expires.", None,
+          "<code>PUBSUB_EMULATOR_HOST=localhost:8085</code>; the official clients need nothing else."),
          ("teal", "Streams", "Kafka (SASL PLAIN, SCRAM) · Confluent Schema Registry · Avro", "Topics, partitions, consumer groups with their lag, schemas and decoded messages.",
           "Leader not available, SASL refused, slow fetches, duplicated records, rebalances, registry down, a bad schema id.", "streams",
           "<code>bootstrap.servers=localhost:9092</code> · <code>schema.registry.url=http://localhost:8081</code>."),

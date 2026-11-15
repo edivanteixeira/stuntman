@@ -8,7 +8,7 @@ use stuntman_core::{yamlfile, ApiError, Ctx};
 pub struct Config {
     /// Tools take "shipments" for projects/<project>/topics/shipments when no topic of that name exists.
     pub project: String,
-    /// "" | unavailable | deadline_exceeded | resource_exhausted | not_found | slow_publish | duplicate | ack_transient
+    /// "" | unavailable | deadline_exceeded | resource_exhausted | not_found | slow_publish | duplicate | ack_transient | kms_disabled
     #[serde(skip_serializing_if = "String::is_empty")]
     pub provoke: String,
     /// Publish calls (ack/modack requests for ack_transient) the provocation still answers; 0 = until cleared.
@@ -26,10 +26,11 @@ impl Default for Config {
     }
 }
 
-pub const PROVOKE: [(&str, &str); 7] = [("unavailable", "Publish answers UNAVAILABLE (clients retry)"), ("deadline_exceeded", "Publish answers DEADLINE_EXCEEDED"),
+pub const PROVOKE: [(&str, &str); 8] = [("unavailable", "Publish answers UNAVAILABLE (clients retry)"), ("deadline_exceeded", "Publish answers DEADLINE_EXCEEDED"),
     ("resource_exhausted", "Publish answers RESOURCE_EXHAUSTED (quota)"), ("not_found", "Publish answers NOT_FOUND, as if the topic were deleted"),
     ("slow_publish", "Publish waits delay_ms before answering"), ("duplicate", "every message is delivered once more after its first ack"),
-    ("ack_transient", "exactly-once acks and modacks fail with TRANSIENT_FAILURE_UNORDERED_ACK_ID (clients retry)")];
+    ("ack_transient", "exactly-once acks and modacks fail with TRANSIENT_FAILURE_UNORDERED_ACK_ID (clients retry)"),
+    ("kms_disabled", "Publish to a topic with a KMS key answers FAILED_PRECONDITION: the key is disabled")];
 
 pub fn path(ctx: &Ctx) -> std::path::PathBuf {
     ctx.path("pubsub/config.yaml")

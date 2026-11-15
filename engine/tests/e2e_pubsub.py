@@ -329,7 +329,20 @@ def rest_of_the_api(s, pub, sub):
         pass
     pages = list(pub.list_topics(request={"project": P, "page_size": 2}).pages)
     assert len(pages) >= 3 and pages[0].next_page_token and sum(len(p.topics) for p in pages) == len(list(pub.list_topics(request={"project": P}))), [len(p.topics) for p in pages]
-    print("ok   UpdateTopic (labels, retention; KMS and storage policy kept), UpdateSubscription, paging")
+    for bad in [{"kms_key_name": "acme-key"}, {"message_storage_policy": {"allowed_persistence_regions": ["mars"]}}]:
+        try:
+            pub.create_topic(request={"name": f"{P}/topics/bad-settings", **bad})
+            raise AssertionError(f"accepted {bad}")
+        except gx.InvalidArgument:
+            pass
+    s.call("PUT", "/pubsub/config", {"provoke": "kms_disabled", "times": 1})
+    try:
+        pub.publish(deliveries, b"x").result(timeout=20)
+        raise AssertionError("kms_disabled did not fail the publish")
+    except Exception as e:
+        assert "KMS" in str(e) or "FailedPrecondition" in type(e).__name__, e
+    s.call("PUT", "/pubsub/config", {"provoke": "none"})
+    print("ok   UpdateTopic (labels, retention; KMS and storage policy checked), a disabled KMS key fails publishes, UpdateSubscription, paging")
 
     # ---- Snapshots and Seek.
     for i in range(2):

@@ -1,0 +1,1 @@
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><RegisterTripResponse><trip>{{xPath request.body "//*[local-name()='plate']/text()"}}-{{randomValue length=6 type='NUMERIC'}}</trip></RegisterTripResponse></soap:Body></soap:Envelope>

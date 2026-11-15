@@ -561,7 +561,7 @@ pub async fn import(http: &reqwest::Client, service: &str, source: &str, text: O
                     n
                 }
             };
-            r.decide = vec![Decide { when: None, answer: def }];
+            r.decide = vec![Decide { when: None, answer: def, ..Default::default() }];
             routes.push(r);
         }
     }

@@ -38,3 +38,6 @@ sha1 = "0.10"
 x509-parser = "0.18"
 # SOAP: envelopes and WSDLs.
 roxmltree = "0.20"
+# WireMock response templates (A11).
+handlebars = "6"
+fancy-regex = "0.14"

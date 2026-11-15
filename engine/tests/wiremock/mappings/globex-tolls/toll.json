@@ -1,0 +1,6 @@
+{
+  "request": {"method": "POST", "url": "/globex-tolls/vouchers?mode=buy", "bodyPatterns": [{"matchesJsonPath": "$.route"}]},
+  "response": {"status": 201, "headers": {"Content-Type": "application/json"},
+    "body": "{{#parseJson 'req'}}{{request.body}}{{/parseJson}}{\"voucher\": \"V-{{randomValue length=4 type='NUMERIC'}}\", \"route\": \"{{req.route}}\", \"total\": {{numberFormat (math req.axles '*' 7.5) '0.00'}}}"},
+  "newScenarioState": "bought"
+}

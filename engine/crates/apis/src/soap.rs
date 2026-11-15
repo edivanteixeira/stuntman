@@ -717,7 +717,7 @@ pub async fn import(http: &reqwest::Client, service: &str, source: &str, text: O
                         note: format!("the {fname} fault the WSDL declares"), ..Default::default() });
                 }
             }
-            ops.push(Route { operation: name.clone(), action: actions.get(&name).cloned().unwrap_or_default(), input: in_ty, output: out_ty, decide: vec![Decide { when: None, answer: ok }], ..Default::default() });
+            ops.push(Route { operation: name.clone(), action: actions.get(&name).cloned().unwrap_or_default(), input: in_ty, output: out_ty, decide: vec![Decide { when: None, answer: ok, ..Default::default() }], ..Default::default() });
         }
     }
     if ops.is_empty() {

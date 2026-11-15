@@ -442,11 +442,11 @@ pub fn analyse(calls: &[Value], existing: &Plugin) -> Analysis {
             let rest: Vec<&Value> = named.iter().filter(|o| &o.0 != name).flat_map(|o| o.2.iter().copied()).collect();
             if let Some((when, why)) = rule_for(list, &rest) {
                 rules.push(json!({"when": when, "answer": name, "why": why, "status": st}));
-                decide.push(Decide { when: Some(when), answer: name.clone() });
+                decide.push(Decide { when: Some(when), answer: name.clone(), ..Default::default() });
             }
         }
         if let Some(d) = &def {
-            decide.push(Decide { when: None, answer: d.clone() });
+            decide.push(Decide { when: None, answer: d.clone(), ..Default::default() });
         }
         let route = format!("{m} {t}");
         let exists = existing.routes.iter().any(|r| r.route.eq_ignore_ascii_case(&route));

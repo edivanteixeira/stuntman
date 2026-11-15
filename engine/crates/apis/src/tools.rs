@@ -65,7 +65,7 @@ fn draft_route_from(u: &Value, plugins: &[Plugin]) -> Route {
             }
             r
         }
-        None => Route { route: format!("{method} {path}"), receive: plugin::Receive { body: fields, ..Default::default() }, decide: vec![Decide { when: None, answer: "ok".into() }], ..Default::default() },
+        None => Route { route: format!("{method} {path}"), receive: plugin::Receive { body: fields, ..Default::default() }, decide: vec![Decide { when: None, answer: "ok".into(), ..Default::default() }], ..Default::default() },
     }
 }
 
@@ -80,6 +80,7 @@ pub fn all() -> Vec<Tool> {
     v.extend(crate::restpki::tools());
     v.extend(crate::soap::tools());
     v.extend(crate::openapi::tools());
+    v.extend(crate::mocks::tools());
     v.extend(crate::record::tools());
     v
 }
@@ -239,7 +240,7 @@ fn plugin_tools() -> Vec<Tool> {
             let (t, svc) = if name == "empty" {
                 let svc = a.need("service")?;
                 plugin::valid_name(&svc)?;
-                let routes = ["GET", "POST", "PUT", "PATCH", "DELETE"].iter().map(|m| Route { route: format!("{m} /{{*}}"), decide: vec![Decide { when: None, answer: "ok".into() }], ..Default::default() }).collect();
+                let routes = ["GET", "POST", "PUT", "PATCH", "DELETE"].iter().map(|m| Route { route: format!("{m} /{{*}}"), decide: vec![Decide { when: None, answer: "ok".into(), ..Default::default() }], ..Default::default() }).collect();
                 let p = Plugin { service: plugin::Service { name: svc.clone(), title: a.str("title").unwrap_or(svc.clone()), origin: "yours".into(), base_url: a.str("base_url").unwrap_or_default(), ..Default::default() },
                     routes,
                     answers: vec![Answer { name: "ok".into(), status: 200, body: "{\"ok\": true}".into(), sentence: "{{ caller }} called {{ path.rest | default('') }}".into(), ..Default::default() }], ..Default::default() };

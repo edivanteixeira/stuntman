@@ -79,6 +79,20 @@ pub fn match_path(pattern: &str, path: &str) -> Option<Map<String, Value>> {
 }
 
 pub fn match_path_case(pattern: &str, path: &str, ignore_case: bool) -> Option<Map<String, Value>> {
+    // "~/abc(/v[0-9]+)?/x": a regex over the whole path (imported mocks); named groups are params.
+    if let Some(re) = pattern.strip_prefix('~') {
+        use std::sync::{Mutex, OnceLock};
+        static C: OnceLock<Mutex<std::collections::HashMap<String, Option<fancy_regex::Regex>>>> = OnceLock::new();
+        let r = C.get_or_init(Default::default).lock().unwrap().entry(format!("{ignore_case}{re}")).or_insert_with(|| fancy_regex::Regex::new(&format!("{}^(?:{re})$", if ignore_case { "(?i)" } else { "" })).ok()).clone()?;
+        let caps = r.captures(path).ok().flatten()?;
+        let mut m = Map::new();
+        for n in r.capture_names().flatten() {
+            if let Some(v) = caps.name(n) {
+                m.insert(n.to_string(), json!(v.as_str()));
+            }
+        }
+        return Some(m);
+    }
     let (p, q): (Vec<&str>, Vec<&str>) = (pattern.trim_matches('/').split('/').collect(), path.trim_matches('/').split('/').collect());
     if p.len() != q.len() && !pattern.ends_with("{*}") {
         return None;
@@ -289,6 +303,10 @@ pub async fn run(ctx: &Ctx, p: &Plugin, r: &Route, params: Map<String, Value>, r
     sc.insert("client_cert".into(), json!(req.client_cert));
     sc.insert("auth".into(), Value::Null);
     sc.insert("__now".into(), json!(stuntman_core::clock::now(ctx)));
+    sc.insert("raw".into(), json!(String::from_utf8_lossy(&req.raw_body)));
+    sc.insert("__path".into(), json!(req.path));
+    sc.insert("__method".into(), json!(req.method));
+    sc.insert("scenario".into(), sc["state"].pointer("/__scenario/state/name").cloned().unwrap_or(json!("Started")));
     if !r.graphql.is_empty() {
         sc.insert("variables".into(), req.body.get("variables").cloned().unwrap_or(json!({})));
         sc.insert("operation".into(), json!(r.graphql));
@@ -565,7 +583,10 @@ pub async fn run(ctx: &Ctx, p: &Plugin, r: &Route, params: Map<String, Value>, r
                 },
             };
             if hit {
-                steps.push(json!({"step": "decide", "text": format!("{} → {}", d.when.clone().unwrap_or("otherwise".into()), d.answer), "ok": true, "rule": i}));
+                steps.push(json!({"step": "decide", "text": format!("{} → {}{}", d.when.clone().unwrap_or("otherwise".into()), d.answer, if d.scenario.is_empty() { String::new() } else { format!(" · scenario → {}", d.scenario) }), "ok": true, "rule": i}));
+                if !d.scenario.is_empty() && !dry {
+                    let _ = store::keep(ctx, &svc.name, "__scenario", "state", json!({"name": d.scenario})).await;
+                }
                 chosen = Some(d.answer.clone());
                 break;
             }
@@ -599,6 +620,9 @@ pub async fn run(ctx: &Ctx, p: &Plugin, r: &Route, params: Map<String, Value>, r
             o.answer = a.name.clone();
             if !a.stream.is_empty() {
                 stream_parts(&mut o, a, &sc, stream_force.as_deref());
+            }
+            if let Some(ms) = util::parse_ms(&a.latency) {
+                o.latency_ms = ms;
             }
             o.sentence = if a.sentence.is_empty() { format!("{m} {} → {}", req.path, a.name) } else { expr::render(&a.sentence, &sc).unwrap_or_else(|e| format!("(sentence: {e})")) };
             steps.push(json!({"step": "respond", "text": format!("{} {}  ·  latency {} ms", a.name, status, o.latency_ms), "ok": status < 400}));
@@ -690,7 +714,13 @@ pub fn gql_matches(body: &Value, name: &str) -> bool {
 /// Status, headers, body and the first answered fields of a named answer.
 pub fn render_answer(a: &Answer, sc: &Map<String, Value>) -> (u16, Vec<(String, String)>, Vec<u8>, Value) {
     let mut headers: Vec<(String, String)> = a.headers.iter().map(|(k, v)| (k.to_lowercase(), expr::render(v, sc).unwrap_or_else(|_| v.clone()))).collect();
-    let body = if a.raw { a.body.clone() } else { expr::render(&a.body, sc).unwrap_or_else(|e| format!("{{\"stuntman\": \"template error: {e}\"}}")) };
+    let body = if a.raw {
+        a.body.clone()
+    } else if a.template == "handlebars" {
+        crate::hbs::render(&a.body, sc).unwrap_or_else(|e| format!("Stuntman: template error: {e}"))
+    } else {
+        expr::render(&a.body, sc).unwrap_or_else(|e| format!("{{\"stuntman\": \"template error: {e}\"}}"))
+    };
     if !headers.iter().any(|(k, _)| k == "content-type") && !body.is_empty() {
         let t = body.trim_start();
         headers.push(("content-type".into(), if t.starts_with('<') { if t.to_lowercase().starts_with("<html") || t.to_lowercase().starts_with("<!doctype") { "text/html" } else { "application/xml" } } else { "application/json" }.into()));
@@ -716,6 +746,9 @@ pub fn check_answer(r: &Route, a: &Answer, p: &Plugin) -> Option<String> {
     }
     // The lets are null here: a function that needs real data (cert_pem(person)) fails, and the
     // holes already parsed in validate. Only a body that renders is checked against the schema.
+    if a.template == "handlebars" {
+        return None;
+    }
     let Ok(body) = expr::render(&a.body, &sc) else { return None };
     let ct = a.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("content-type")).map(|x| x.1.clone()).unwrap_or_default();
     if body.trim().is_empty() || ct.contains("xml") || ct.contains("html") || body.trim_start().starts_with('<') {
@@ -1004,7 +1037,7 @@ pub async fn handle(State(envs): State<Envs>, mut req: Request) -> Response {
         }
     }
     // GraphQL routes first (they share a path and differ by operation), then the others.
-    let Some((r, params)) = p.routes.iter().filter(|r| !r.graphql.is_empty()).chain(p.routes.iter().filter(|r| r.graphql.is_empty())).find_map(|r| {
+    let candidates: Vec<(&Route, Map<String, Value>)> = p.routes.iter().filter(|r| !r.graphql.is_empty()).chain(p.routes.iter().filter(|r| r.graphql.is_empty())).filter_map(|r| {
         let (m, pat) = r.method_path();
         if m != method && !(m == "GET" && method == "HEAD") {
             return None;
@@ -1013,7 +1046,8 @@ pub async fn handle(State(envs): State<Envs>, mut req: Request) -> Response {
             return None;
         }
         match_path_case(&pat, &inner, p.service.ignore_case).map(|pp| (r, pp))
-    }) else {
+    }).collect();
+    let Some((r, params)) = candidates.first().cloned() else {
         return unmatched(&ctx, &plugins, &p.service.name, &method, &inner, &host, rq).await;
     };
     // A10c: a key seen before gets the first answer again; with another body, 409.
@@ -1034,7 +1068,16 @@ pub async fn handle(State(envs): State<Envs>, mut req: Request) -> Response {
             return finish(&ctx, p, None, &format!("{m} {pat}"), &method, &path, &inner, &query, &headers, &rq, o, t0, kill).await;
         }
     }
-    let o = run(&ctx, p, r, params, &rq, false).await;
+    let mut o = run(&ctx, p, r, params, &rq, false).await;
+    // Imported mocks: no mapping of this route matched, try the next route that takes the path.
+    let mut r = r;
+    for (next, pp) in candidates.iter().skip(1) {
+        if !(r.fallthrough && o.answer == "not_matched") {
+            break;
+        }
+        o = run(&ctx, p, next, pp.clone(), &rq, false).await;
+        r = next;
+    }
     if let Some((_, k)) = &idem {
         if o.status > 0 && o.status < 500 && o.network.is_none() {
             let _ = store::idem_put(&ctx, &p.service.name, k, &hash, o.status, &o.headers, &o.body).await;

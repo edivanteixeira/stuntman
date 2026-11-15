@@ -275,6 +275,9 @@ pub struct Decide {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<String>,
     pub answer: String,
+    /// After this answer the service's scenario becomes this (WireMock's newScenarioState).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub scenario: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -383,6 +386,10 @@ pub struct Route {
     /// path (POST /graphql). The scope gets `variables` and `operation`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub graphql: String,
+    /// When no rule matches (the answer is not_matched), the next route that matches the path is
+    /// tried, as WireMock does across mappings (imported routes).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub fallthrough: bool,
     /// MCP: this route is a tool of the service's MCP server; `body` is the tool's arguments.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub tool: String,
@@ -444,6 +451,12 @@ pub struct Answer {
     /// sse (default) | ndjson | chunks
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub stream_format: String,
+    /// handlebars: the body is a WireMock response template (request.*, now, randomValue, xPath…).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub template: String,
+    /// Wait before answering ("800ms"), instead of the route's latency.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub latency: String,
     /// MCP: a JSON-RPC error (-32602…) instead of a tool result; the body is its message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rpc_error: Option<i64>,
@@ -797,7 +810,12 @@ pub fn validate(p: &Plugin, t: &str) -> Vec<Value> {
     }
     for r in p.routes.iter().chain(p.operations.iter()) {
         let (m, path) = r.method_path();
-        if !(r.route.is_empty() && (!r.operation.is_empty() || !r.tool.is_empty())) && (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"].contains(&m.as_str()) || !path.starts_with('/')) {
+        if let Some(re) = path.strip_prefix('~') {
+            if let Err(e) = fancy_regex::Regex::new(re) {
+                err(format!("route “{}”: the path regex: {e}", r.route), &r.route);
+            }
+        }
+        if !(r.route.is_empty() && (!r.operation.is_empty() || !r.tool.is_empty())) && (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].contains(&m.as_str()) || !(path.starts_with('/') || path.starts_with('~'))) {
             err(format!("route “{}”: METHOD /path", r.route), &r.route);
         }
         if !seen.insert(format!("{m} {path} {}", r.graphql)) {
@@ -944,7 +962,11 @@ pub fn validate(p: &Plugin, t: &str) -> Vec<Value> {
         }
     }
     for a in &p.answers {
-        if let Err(x) = expr::check_template(&a.body).and_then(|_| expr::check_template(&a.sentence)).and_then(|_| expr::check_template(&a.fault.as_ref().map(|f| f.reason.clone()).unwrap_or_default())) {
+        let body_ok = if a.raw { Ok(()) } else if a.template == "handlebars" { crate::hbs::check(&a.body) } else { expr::check_template(&a.body) };
+        if !["", "handlebars"].contains(&a.template.as_str()) {
+            err(format!("answer {}: template: handlebars (or nothing)", a.name), &format!("name: {}", a.name));
+        }
+        if let Err(x) = body_ok.and_then(|_| expr::check_template(&a.sentence)).and_then(|_| expr::check_template(&a.fault.as_ref().map(|f| f.reason.clone()).unwrap_or_default())) {
             err(format!("answer {}: {x}", a.name), &format!("name: {}", a.name));
         }
     }

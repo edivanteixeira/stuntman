@@ -383,7 +383,11 @@ fn call(name: &str, a: &[Value], sc: &Scope) -> Result<Value, String> {
         "random_id" => json!(stuntman_core::util::uuid().replace('-', "")[..8].to_string()),
         "now" => json!(iso(clock(sc), None)),
         "now_ms" => json!(clock(sc)),
-        "matches" => json!(regex::Regex::new(&a.get(1).map(text).unwrap_or_default()).map(|r| r.is_match(&s0())).unwrap_or(false)),
+        // Java-style patterns (look-around) from imported mocks fall back to fancy-regex.
+        "matches" => {
+            let re = a.get(1).map(text).unwrap_or_default();
+            json!(match regex::Regex::new(&re) { Ok(r) => r.is_match(&s0()), Err(_) => fancy_regex::Regex::new(&re).ok().and_then(|r| r.is_match(&s0()).ok()).unwrap_or(false) })
+        }
         "json" => json!(serde_json::to_string(a.first().unwrap_or(&Value::Null)).unwrap_or_default()),
         // lookup("people", "cpf", body.cpf): the first row of a data table whose field equals the value.
         "lookup" => {

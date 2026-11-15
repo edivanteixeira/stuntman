@@ -1,0 +1,10 @@
+{
+  "mappings": [
+    {"scenarioName": "acme-tracking", "requiredScenarioState": "auth-failure",
+     "request": {"method": "GET", "urlPathPattern": "/acme-tracking/v[0-9]+/positions/.*"},
+     "response": {"status": 403, "jsonBody": {"error": "key revoked"}}},
+    {"scenarioName": "acme-tracking", "requiredScenarioState": "network",
+     "request": {"method": "GET", "urlPathPattern": "/acme-tracking/v[0-9]+/positions/.*"},
+     "response": {"fault": "CONNECTION_RESET_BY_PEER"}}
+  ]
+}

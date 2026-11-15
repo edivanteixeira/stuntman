@@ -1,0 +1,24 @@
+[package]
+name = "stuntman-pubsub"
+version = "0.5.0"
+edition = "2021"
+
+[dependencies]
+stuntman-core.workspace = true
+axum.workspace = true
+tokio.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+base64.workspace = true
+rand.workspace = true
+futures.workspace = true
+# The Pub/Sub messages and services are generated once from the googleapis protos into
+# src/google.pubsub.v1.rs (no protoc at build time), like telemetry's opentelemetry-proto.
+prost = "0.13"
+prost-types = "0.13"
+tonic = { version = "0.13", default-features = false, features = ["transport", "codegen", "prost", "router", "server"] }
+
+[dev-dependencies]
+reqwest.workspace = true

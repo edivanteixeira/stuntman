@@ -11,7 +11,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(os.environ.get("CARGO_TARGET_DIR", os.path.join(ROOT, "target")), "debug", "stuntman")
 PORTS = ["PORT", "HOOKS_PORT", "SMTP_PORT", "OTLP_HTTP_PORT", "OTLP_GRPC_PORT", "BLOB_PORT", "S3_PORT", "APIS_PORT", "APIS_TLS_PORT", "KEYVAULT_PORT",
          "AMQP_PORT", "AMQPS_PORT", "IDENTITY_PORT", "LDAP_PORT", "FTP_PORT", "SFTP_PORT", "IMAP_PORT", "POP3_PORT", "KAFKA_PORT", "SCHEMA_REGISTRY_PORT",
-         "GELF_PORT", "STATSD_PORT", "RABBITMQ_MGMT_PORT"]
+         "GELF_PORT", "STATSD_PORT", "RABBITMQ_MGMT_PORT", "ACTIVEMQ_PORT", "PUBSUB_PORT"]
 
 
 def free_port():

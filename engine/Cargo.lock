@@ -3560,6 +3560,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "prost-types"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52c2c1bf36ddb1a1c396b3601a3cec27c2462e45f07c386894ec3ccf5332bd16"
+dependencies = [
+ "prost",
+]
+
+[[package]]
 name = "psm"
 version = "0.1.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4875,6 +4884,7 @@ dependencies = [
  "stuntman-identity",
  "stuntman-keyvault",
  "stuntman-messaging",
+ "stuntman-pubsub",
  "stuntman-sms",
  "stuntman-storage",
  "stuntman-streams",
@@ -5116,6 +5126,26 @@ dependencies = [
  "stuntman-core",
  "tokio",
  "tokio-rustls",
+]
+
+[[package]]
+name = "stuntman-pubsub"
+version = "0.4.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "futures",
+ "prost",
+ "prost-types",
+ "rand 0.8.8",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "stuntman-core",
+ "tokio",
+ "tonic",
 ]
 
 [[package]]

@@ -34,6 +34,7 @@ fn modules() -> Vec<Box<dyn Module>> {
         Box::new(stuntman_ai::Ai),
         Box::new(stuntman_events::Events),
         Box::new(stuntman_streams::Streams { kafka_port: env("STUNTMAN_KAFKA_PORT", "9092").parse().unwrap_or(9092), registry_port: env("STUNTMAN_SCHEMA_REGISTRY_PORT", "8081").parse().unwrap_or(8081) }),
+        Box::new(stuntman_pubsub::PubSub { port: env("STUNTMAN_PUBSUB_PORT", "8085").parse().unwrap_or(8085) }),
         Box::new(stuntman_files::Files { ftp_port: env("STUNTMAN_FTP_PORT", "2121").parse().unwrap_or(2121), sftp_port: env("STUNTMAN_SFTP_PORT", "2222").parse().unwrap_or(2222) }),
         Box::new(stuntman_identity::Identity { ldap_port: env("STUNTMAN_LDAP_PORT", "3389").parse().unwrap_or(3389) }),
         Box::new(stuntman_keyvault::KeyVault { port: env("STUNTMAN_KEYVAULT_PORT", "8444").parse().unwrap_or(8444) }),

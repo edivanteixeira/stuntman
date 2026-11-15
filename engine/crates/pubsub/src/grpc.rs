@@ -1,8 +1,8 @@
-//! The emulator port: google.pubsub.v1 Publisher and Subscriber over plaintext gRPC, and on the same
-//! port the REST publish (POST /v1/projects/{p}/topics/{t}:publish). gRPC has no path to carry an
-//! environment: the x-stuntman-env metadata names it, else the default one answers.
+//! The emulator port: google.pubsub.v1 Publisher, Subscriber and SchemaService over plaintext gRPC,
+//! and on the same port the REST publish (POST /v1/projects/{p}/topics/{t}:publish). gRPC has no
+//! path to carry an environment: the x-stuntman-env metadata names it, else the default one answers.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::HashMap, time::Duration};
 
 use axum::{
     body::Bytes,
@@ -12,16 +12,18 @@ use axum::{
     routing::post,
     Json, Router,
 };
+use prost::Message;
 use serde_json::{json, Value};
 use stuntman_core::{env::Envs, util, ApiError, Ctx};
 use tonic::{metadata::MetadataMap, Request, Response as Resp, Status, Streaming};
 
 use crate::{
-    config,
-    store::{self, Got, Labels, Sub},
+    config, filter, schema,
+    store::{self, dur_ms, Got, Labels, Rev, Snap, Sub, DELETED_SCHEMA, DELETED_TOPIC},
     v1::{
         publisher_server::{Publisher, PublisherServer},
-        streaming_pull_response::SubscriptionProperties,
+        schema_service_server::{SchemaService, SchemaServiceServer},
+        streaming_pull_response::{AcknowledgeConfirmation, ModifyAckDeadlineConfirmation, SubscriptionProperties},
         subscriber_server::{Subscriber, SubscriberServer},
         *,
     },
@@ -70,23 +72,47 @@ fn short(name: &str) -> &str {
     name.rsplit('/').next().unwrap_or(name)
 }
 
-fn topic_pb(name: &str, labels: Labels) -> Topic {
-    Topic { name: name.into(), labels: labels.into_iter().collect(), state: 1, ..Default::default() }
+fn not_found(name: &str) -> Status {
+    Status::not_found(format!("Resource not found (resource={}).", short(name)))
+}
+
+fn ts(ms: i64) -> prost_types::Timestamp {
+    prost_types::Timestamp { seconds: ms.div_euclid(1000), nanos: ms.rem_euclid(1000) as i32 * 1_000_000 }
+}
+
+fn ts_ms(t: &prost_types::Timestamp) -> i64 {
+    t.seconds * 1000 + t.nanos as i64 / 1_000_000
+}
+
+/// One page of a list: page_size (default 100, at most 1000) from page_token (an offset).
+fn page<T>(v: Vec<T>, size: i32, token: &str) -> Result<(Vec<T>, String), Status> {
+    let start: usize = if token.is_empty() { 0 } else { token.parse().map_err(|_| Status::invalid_argument(format!("Invalid page token: {token}")))? };
+    let size = if size <= 0 { 100 } else { (size as usize).min(1000) };
+    let total = v.len();
+    let out = v.into_iter().skip(start).take(size).collect();
+    Ok((out, if start + size < total { (start + size).to_string() } else { String::new() }))
+}
+
+fn mask(m: Option<prost_types::FieldMask>) -> Result<Vec<String>, Status> {
+    let p = m.map(|m| m.paths).unwrap_or_default();
+    if p.is_empty() { return Err(Status::invalid_argument("The update_mask in the request must be set and non-empty.")) }
+    Ok(p)
 }
 
 fn sub_pb(s: &Sub) -> Subscription {
-    Subscription {
-        name: s.name.clone(),
-        topic: s.topic.clone(),
-        ack_deadline_seconds: s.ack_deadline,
-        enable_message_ordering: s.ordering,
-        labels: s.labels.clone().into_iter().collect(),
-        dead_letter_policy: (!s.dead_letter.is_empty()).then(|| DeadLetterPolicy { dead_letter_topic: s.dead_letter.clone(), max_delivery_attempts: s.max_attempts }),
-        message_retention_duration: Some(prost_types::Duration { seconds: 7 * 86400, nanos: 0 }),
-        expiration_policy: Some(ExpirationPolicy { ttl: Some(prost_types::Duration { seconds: 31 * 86400, nanos: 0 }) }),
-        state: 1,
-        ..Default::default()
-    }
+    let mut pb = s.pb.clone();
+    pb.name = s.name.clone();
+    pb.topic = s.topic.clone();
+    pb.ack_deadline_seconds = s.ack_deadline;
+    pb.enable_message_ordering = s.ordering;
+    pb.labels = s.labels.clone().into_iter().collect();
+    pb.dead_letter_policy = (!s.dead_letter.is_empty()).then(|| DeadLetterPolicy { dead_letter_topic: s.dead_letter.clone(), max_delivery_attempts: s.max_attempts });
+    pb.message_retention_duration.get_or_insert(store::dur(7 * store::DAY_MS));
+    pb.expiration_policy.get_or_insert(ExpirationPolicy { ttl: Some(store::dur(31 * store::DAY_MS)) });
+    pb.state = 1;
+    if let Some(b) = pb.bigquery_config.as_mut() { b.state = 1 }
+    if let Some(c) = pb.cloud_storage_config.as_mut() { c.state = 1 }
+    pb
 }
 
 fn received(s: &Sub, g: Got) -> ReceivedMessage {
@@ -98,7 +124,7 @@ fn received(s: &Sub, g: Got) -> ReceivedMessage {
             data: g.msg.data,
             attributes: g.msg.attributes.into_iter().collect(),
             message_id: g.msg.id.to_string(),
-            publish_time: Some(prost_types::Timestamp { seconds: g.msg.published / 1000, nanos: (g.msg.published % 1000) as i32 * 1_000_000 }),
+            publish_time: Some(ts(g.msg.published)),
             ordering_key: g.msg.ordering_key,
         }),
     }
@@ -106,10 +132,49 @@ fn received(s: &Sub, g: Got) -> ReceivedMessage {
 
 async fn need_sub(ctx: &Ctx, name: &str) -> Result<Sub, Status> {
     check(name, "subscriptions")?;
-    store::sub(ctx, name).await.map_err(int)?.ok_or_else(|| Status::not_found(format!("Resource not found (resource={}).", short(name))))
+    store::sub(ctx, name).await.map_err(int)?.ok_or_else(|| not_found(name))
 }
 
-/// Publish as the app does (gRPC or REST): provocations first, then the topic, then the messages.
+async fn need_topic(ctx: &Ctx, name: &str) -> Result<Topic, Status> {
+    check(name, "topics")?;
+    store::topic(ctx, name).await.map_err(int)?.ok_or_else(|| not_found(name))
+}
+
+/// Pull and StreamingPull: only from a pull (or push) subscription that is not detached.
+fn pullable(s: &Sub) -> Result<(), Status> {
+    if s.pb.detached { return Err(Status::failed_precondition(format!("Subscription {} is detached.", s.name))) }
+    if matches!(s.kind(), "bigquery" | "cloud_storage") { return Err(Status::failed_precondition(format!("Subscription {} delivers to {}; it cannot be pulled.", s.name, s.kind()))) }
+    Ok(())
+}
+
+// ---------------------------------------------------------------- schemas on topics
+
+/// Validates data against the topic's schema (the revisions it allows, newest first) and stamps the
+/// googclient_ attributes subscribers read.
+pub async fn conform(ctx: &Ctx, t: &Topic, data: &[u8], attrs: &mut Labels) -> Result<(), String> {
+    let Some(ss) = t.schema_settings.as_ref().filter(|s| !s.schema.is_empty()) else { return Ok(()) };
+    if ss.schema == DELETED_SCHEMA { return Err("the topic's schema was deleted".into()) }
+    let revs = store::revs(ctx, &ss.schema).await.map_err(|e| e.message)?;
+    if revs.is_empty() { return Err(format!("schema {} does not exist", ss.schema)) }
+    let hi = revs.iter().position(|r| r.revision == ss.last_revision_id).unwrap_or(0);
+    let lo = revs.iter().position(|r| r.revision == ss.first_revision_id).unwrap_or(revs.len() - 1);
+    let enc = if ss.encoding == 0 { schema::JSON } else { ss.encoding };
+    let mut first_err = None;
+    for r in revs.get(hi..=lo.max(hi)).unwrap_or(&[]) {
+        match schema::validate(r.kind, &r.definition, enc, data) {
+            Ok(_) => {
+                attrs.insert("googclient_schemaname".into(), ss.schema.clone());
+                attrs.insert("googclient_schemaencoding".into(), if enc == schema::BINARY { "BINARY" } else { "JSON" }.into());
+                attrs.insert("googclient_schemarevisionid".into(), r.revision.clone());
+                return Ok(());
+            }
+            Err(e) => { first_err.get_or_insert(e); }
+        }
+    }
+    Err(first_err.unwrap_or_else(|| "no schema revision in range".into()))
+}
+
+/// Publish as the app does (gRPC or REST): provocations first, then the topic, the schema, then the messages.
 pub async fn publish(ctx: &Ctx, topic: &str, msgs: Vec<PubsubMessage>, by: &str) -> Result<Vec<String>, Status> {
     check(topic, "topics")?;
     if let Some((kind, delay)) = config::take(ctx, topic) {
@@ -122,24 +187,134 @@ pub async fn publish(ctx: &Ctx, topic: &str, msgs: Vec<PubsubMessage>, by: &str)
             _ => {}
         }
     }
-    if store::topic(ctx, topic).await.map_err(int)?.is_none() {
-        return Err(Status::not_found(format!("Resource not found (resource={}).", short(topic))));
-    }
+    let t = store::topic(ctx, topic).await.map_err(int)?.ok_or_else(|| not_found(topic))?;
     if msgs.is_empty() {
         return Err(Status::invalid_argument("The request contains no messages."));
     }
     if let Some(m) = msgs.iter().find(|m| m.data.is_empty() && m.attributes.is_empty()) {
         return Err(Status::invalid_argument(format!("Some messages contain neither data nor attributes (message_id={}).", m.message_id)));
     }
+    let mut out = vec![];
+    for m in msgs {
+        let mut a: Labels = m.attributes.into_iter().collect();
+        conform(ctx, &t, &m.data, &mut a).await.map_err(|e| Status::invalid_argument(format!("Invalid data in message: Message failed schema validation. {e}")))?;
+        out.push((m.data, a, m.ordering_key));
+    }
     ctx.live.seen(by.trim_start_matches("app:"), "Pub/Sub");
-    let ids = store::publish(ctx, topic, msgs.into_iter().map(|m| (m.data, m.attributes.into_iter().collect::<BTreeMap<_, _>>(), m.ordering_key)).collect(), by).await.map_err(int)?;
+    let ids = store::publish(ctx, topic, out, by).await.map_err(int)?;
     Ok(ids.into_iter().map(|i| i.to_string()).collect())
 }
 
-async fn apply_acks(ctx: &Ctx, sub: &str, acks: Vec<String>, modacks: Vec<(String, i32)>) -> Result<(), Status> {
+/// A topic as kept: retention in bounds, the schema existing, the encoding set.
+async fn topic_settings(ctx: &Ctx, mut t: Topic) -> Result<Topic, Status> {
+    if let Some(ms) = dur_ms(&t.message_retention_duration) {
+        if !(600_000..=31 * store::DAY_MS).contains(&ms) { return Err(Status::invalid_argument("message_retention_duration must be between 10 minutes and 31 days.")) }
+    }
+    if let Some(ss) = t.schema_settings.as_mut().filter(|s| !s.schema.is_empty()) {
+        if ss.schema != DELETED_SCHEMA {
+            check(&ss.schema, "schemas")?;
+            let revs = store::revs(ctx, &ss.schema).await.map_err(int)?;
+            if revs.is_empty() { return Err(Status::not_found(format!("Schema {} not found.", ss.schema))) }
+            for r in [&ss.first_revision_id, &ss.last_revision_id] {
+                if !r.is_empty() && !revs.iter().any(|x| &x.revision == r) { return Err(Status::invalid_argument(format!("Revision {r} of {} not found.", ss.schema))) }
+            }
+        }
+        if ss.encoding == 0 { ss.encoding = schema::JSON }
+    }
+    if t.schema_settings.as_ref().is_some_and(|s| s.schema.is_empty()) { t.schema_settings = None }
+    if t.ingestion_data_source_settings.is_some() { return Err(Status::invalid_argument("Stuntman does not import from ingestion sources (Kinesis, Cloud Storage, Event Hubs, MSK, Confluent).")) }
+    t.state = 1;
+    Ok(t)
+}
+
+/// A subscription as kept, checked as Pub/Sub checks it.
+pub async fn sub_settings(ctx: &Ctx, mut pb: Subscription, new: bool) -> Result<Sub, Status> {
+    check(&pb.name, "subscriptions")?;
+    if new {
+        check(&pb.topic, "topics")?;
+        need_topic(ctx, &pb.topic).await?;
+    }
+    if pb.bigtable_config.is_some() { return Err(Status::invalid_argument("Stuntman has no Bigtable: Bigtable subscriptions are not offered.")) }
+    if pb.push_config.as_ref().is_some_and(|p| p.push_endpoint.is_empty()) { pb.push_config = None }
+    let kinds = pb.push_config.is_some() as u8 + pb.bigquery_config.is_some() as u8 + pb.cloud_storage_config.is_some() as u8;
+    if kinds > 1 { return Err(Status::invalid_argument("A subscription is push, BigQuery or Cloud Storage, not more than one.")) }
+    if let Some(p) = &pb.push_config {
+        if !(p.push_endpoint.starts_with("http://") || p.push_endpoint.starts_with("https://")) { return Err(Status::invalid_argument(format!("Invalid push_endpoint: {}", p.push_endpoint))) }
+        if pb.enable_exactly_once_delivery { return Err(Status::invalid_argument("Exactly-once delivery is not supported on push subscriptions.")) }
+    }
+    if let Some(b) = &pb.bigquery_config {
+        if b.table.split(['.', ':']).filter(|x| !x.is_empty()).count() != 3 { return Err(Status::invalid_argument(format!("Invalid BigQuery table: \"{}\" (project.dataset.table).", b.table))) }
+        if b.use_topic_schema && b.use_table_schema { return Err(Status::invalid_argument("use_topic_schema and use_table_schema cannot both be set.")) }
+        if b.use_topic_schema && new && need_topic(ctx, &pb.topic).await?.schema_settings.is_none() { return Err(Status::invalid_argument("use_topic_schema needs a topic with a schema.")) }
+    }
+    if let Some(c) = pb.cloud_storage_config.as_mut() {
+        if c.bucket.is_empty() || c.bucket.starts_with("gs://") { return Err(Status::invalid_argument("cloud_storage_config.bucket: the bucket name, without gs://")) }
+        c.max_duration.get_or_insert(store::dur(300_000));
+        c.output_format.get_or_insert(cloud_storage_config::OutputFormat::TextConfig(cloud_storage_config::TextConfig {}));
+    }
+    if !pb.filter.is_empty() { filter::parse(&pb.filter).map_err(|e| Status::invalid_argument(format!("Invalid filter: {e}")))?; }
+    if let Some(ms) = dur_ms(&pb.message_retention_duration) {
+        if !(600_000..=31 * store::DAY_MS).contains(&ms) { return Err(Status::invalid_argument("message_retention_duration must be between 10 minutes and 31 days.")) }
+    }
+    if let Some(d) = &pb.dead_letter_policy { if !d.dead_letter_topic.is_empty() { check(&d.dead_letter_topic, "topics")?; } }
+    Ok(Sub::from_pb(pb))
+}
+
+// ---------------------------------------------------------------- exactly-once ack errors
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct RpcStatus {
+    #[prost(int32, tag = "1")]
+    code: i32,
+    #[prost(string, tag = "2")]
+    message: String,
+    #[prost(message, repeated, tag = "3")]
+    details: Vec<prost_types::Any>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct ErrorInfo {
+    #[prost(string, tag = "1")]
+    reason: String,
+    #[prost(string, tag = "2")]
+    domain: String,
+    #[prost(map = "string, string", tag = "3")]
+    metadata: HashMap<String, String>,
+}
+
+/// What Pub/Sub answers an ack or modack with expired ack ids under exactly-once delivery:
+/// INVALID_ARGUMENT with a google.rpc.ErrorInfo whose metadata maps each id to
+/// PERMANENT_FAILURE_INVALID_ACK_ID (the clients read it to fail that message's ack future).
+fn ack_failure(bad: &[String]) -> Status {
+    let msg = "Some acknowledgement ids in the request were invalid. This could be because the acknowledgement ids have expired or the acknowledgement ids were malformed.";
+    let info = ErrorInfo { reason: "EXACTLY_ONCE_ACKID_FAILURE".into(), domain: "pubsub.googleapis.com".into(), metadata: bad.iter().map(|a| (a.clone(), "PERMANENT_FAILURE_INVALID_ACK_ID".into())).collect() };
+    let st = RpcStatus { code: tonic::Code::InvalidArgument as i32, message: msg.into(), details: vec![prost_types::Any { type_url: "type.googleapis.com/google.rpc.ErrorInfo".into(), value: info.encode_to_vec() }] };
+    Status::with_details(tonic::Code::InvalidArgument, msg, Bytes::from(st.encode_to_vec()))
+}
+
+/// Applies acks and modacks; answers the ids that matched nothing (acks, modacks).
+async fn apply_acks(ctx: &Ctx, s: &Sub, acks: Vec<String>, modacks: Vec<(String, i32)>) -> Result<(Vec<String>, Vec<String>), Status> {
     let dup = config::load(ctx).provoke == "duplicate";
-    store::ack(ctx, sub, acks, dup).await.map_err(int)?;
-    store::modack(ctx, sub, modacks).await.map_err(int)
+    let a = store::ack(ctx, &s.name, acks, dup, s.exactly_once()).await.map_err(int)?;
+    let m = store::modack(ctx, &s.name, modacks, s.exactly_once()).await.map_err(int)?;
+    Ok((a, m))
+}
+
+// ---------------------------------------------------------------- Publisher
+
+fn copy_topic(cur: &mut Topic, new: &Topic, path: &str) -> Result<(), Status> {
+    match path.split('.').next().unwrap_or("") {
+        "labels" => cur.labels = new.labels.clone(),
+        "message_storage_policy" => cur.message_storage_policy = new.message_storage_policy.clone(),
+        "kms_key_name" => cur.kms_key_name = new.kms_key_name.clone(),
+        "schema_settings" => cur.schema_settings = new.schema_settings.clone(),
+        "message_retention_duration" => cur.message_retention_duration = new.message_retention_duration,
+        "message_transforms" => cur.message_transforms = new.message_transforms.clone(),
+        "ingestion_data_source_settings" => cur.ingestion_data_source_settings = new.ingestion_data_source_settings.clone(),
+        "name" => return Err(Status::invalid_argument("A topic's name cannot be updated.")),
+        p => return Err(Status::invalid_argument(format!("Invalid update_mask provided in the UpdateTopicRequest: the field '{p}' cannot be updated or does not exist."))),
+    }
+    Ok(())
 }
 
 #[tonic::async_trait]
@@ -148,30 +323,28 @@ impl Publisher for Svc {
         let ctx = self.ctx(&r)?;
         let t = r.into_inner();
         check(&t.name, "topics")?;
-        let labels: Labels = t.labels.into_iter().collect();
-        if !store::create_topic(&ctx, &t.name, &labels).await.map_err(int)? {
+        let t = topic_settings(&ctx, t).await?;
+        if !store::create_topic(&ctx, &t).await.map_err(int)? {
             return Err(Status::already_exists("Topic already exists"));
         }
-        Ok(Resp::new(topic_pb(&t.name, labels)))
+        Ok(Resp::new(t))
     }
 
     async fn get_topic(&self, r: Request<GetTopicRequest>) -> Result<Resp<Topic>, Status> {
         let ctx = self.ctx(&r)?;
-        let n = r.into_inner().topic;
-        check(&n, "topics")?;
-        let l = store::topic(&ctx, &n).await.map_err(int)?.ok_or_else(|| Status::not_found("Topic not found"))?;
-        Ok(Resp::new(topic_pb(&n, l)))
+        Ok(Resp::new(need_topic(&ctx, &r.into_inner().topic).await?))
     }
 
-    /// Labels only: the other topic settings (schemas, retention, ingestion, KMS) are not kept.
+    /// The fields the update mask names: labels, schema settings, retention, storage policy, KMS key.
     async fn update_topic(&self, r: Request<UpdateTopicRequest>) -> Result<Resp<Topic>, Status> {
         let ctx = self.ctx(&r)?;
-        let t = r.into_inner().topic.ok_or_else(|| Status::invalid_argument("topic is required"))?;
-        check(&t.name, "topics")?;
-        store::topic(&ctx, &t.name).await.map_err(int)?.ok_or_else(|| Status::not_found("Topic not found"))?;
-        let labels: Labels = t.labels.into_iter().collect();
-        store::set_topic_labels(&ctx, &t.name, &labels).await.map_err(int)?;
-        Ok(Resp::new(topic_pb(&t.name, labels)))
+        let q = r.into_inner();
+        let new = q.topic.ok_or_else(|| Status::invalid_argument("topic is required"))?;
+        let mut cur = need_topic(&ctx, &new.name).await?;
+        for p in mask(q.update_mask)? { copy_topic(&mut cur, &new, &p)?; }
+        let cur = topic_settings(&ctx, cur).await?;
+        store::save_topic(&ctx, &cur).await.map_err(int)?;
+        Ok(Resp::new(cur))
     }
 
     async fn publish(&self, r: Request<PublishRequest>) -> Result<Resp<PublishResponse>, Status> {
@@ -183,18 +356,27 @@ impl Publisher for Svc {
 
     async fn list_topics(&self, r: Request<ListTopicsRequest>) -> Result<Resp<ListTopicsResponse>, Status> {
         let ctx = self.ctx(&r)?;
-        let p = r.into_inner().project;
-        let topics = store::topics(&ctx, &format!("{p}/topics/")).await.map_err(int)?.into_iter().map(|(n, l)| topic_pb(&n, l)).collect();
-        Ok(Resp::new(ListTopicsResponse { topics, next_page_token: String::new() }))
+        let q = r.into_inner();
+        let (topics, next_page_token) = page(store::topics(&ctx, &format!("{}/topics/", q.project)).await.map_err(int)?, q.page_size, &q.page_token)?;
+        Ok(Resp::new(ListTopicsResponse { topics, next_page_token }))
     }
 
     async fn list_topic_subscriptions(&self, r: Request<ListTopicSubscriptionsRequest>) -> Result<Resp<ListTopicSubscriptionsResponse>, Status> {
         let ctx = self.ctx(&r)?;
-        let t = r.into_inner().topic;
-        check(&t, "topics")?;
-        store::topic(&ctx, &t).await.map_err(int)?.ok_or_else(|| Status::not_found("Topic not found"))?;
-        let subscriptions = store::subs(&ctx, "", Some(&t)).await.map_err(int)?.into_iter().map(|s| s.name).collect();
-        Ok(Resp::new(ListTopicSubscriptionsResponse { subscriptions, next_page_token: String::new() }))
+        let q = r.into_inner();
+        need_topic(&ctx, &q.topic).await?;
+        let all = store::subs(&ctx, "", Some(&q.topic)).await.map_err(int)?.into_iter().filter(|s| !s.pb.detached).map(|s| s.name).collect();
+        let (subscriptions, next_page_token) = page(all, q.page_size, &q.page_token)?;
+        Ok(Resp::new(ListTopicSubscriptionsResponse { subscriptions, next_page_token }))
+    }
+
+    async fn list_topic_snapshots(&self, r: Request<ListTopicSnapshotsRequest>) -> Result<Resp<ListTopicSnapshotsResponse>, Status> {
+        let ctx = self.ctx(&r)?;
+        let q = r.into_inner();
+        need_topic(&ctx, &q.topic).await?;
+        let all = store::snapshots(&ctx, "", Some(&q.topic)).await.map_err(int)?.into_iter().map(|s| s.name).collect();
+        let (snapshots, next_page_token) = page(all, q.page_size, &q.page_token)?;
+        Ok(Resp::new(ListTopicSnapshotsResponse { snapshots, next_page_token }))
     }
 
     async fn delete_topic(&self, r: Request<DeleteTopicRequest>) -> Result<Resp<()>, Status> {
@@ -202,29 +384,62 @@ impl Publisher for Svc {
         let t = r.into_inner().topic;
         check(&t, "topics")?;
         if !store::delete_topic(&ctx, &t).await.map_err(int)? {
-            return Err(Status::not_found("Topic not found"));
+            return Err(not_found(&t));
         }
         Ok(Resp::new(()))
     }
+
+    /// The subscription keeps its name but gets nothing more; what it held is dropped; pulls fail.
+    async fn detach_subscription(&self, r: Request<DetachSubscriptionRequest>) -> Result<Resp<DetachSubscriptionResponse>, Status> {
+        let ctx = self.ctx(&r)?;
+        let mut s = need_sub(&ctx, &r.into_inner().subscription).await?;
+        s.pb.detached = true;
+        store::save_sub(&ctx, &s).await.map_err(int)?;
+        store::drop_deliveries(&ctx, &s.name).await.map_err(int)?;
+        Ok(Resp::new(DetachSubscriptionResponse {}))
+    }
+}
+
+// ---------------------------------------------------------------- Subscriber
+
+fn copy_sub(cur: &mut Subscription, new: &Subscription, path: &str) -> Result<(), Status> {
+    match path.split('.').next().unwrap_or("") {
+        "ack_deadline_seconds" => cur.ack_deadline_seconds = new.ack_deadline_seconds,
+        "push_config" => {
+            cur.push_config = new.push_config.clone();
+            if cur.push_config.as_ref().is_some_and(|p| !p.push_endpoint.is_empty()) { cur.bigquery_config = None; cur.cloud_storage_config = None; }
+        }
+        "bigquery_config" => {
+            cur.bigquery_config = new.bigquery_config.clone();
+            if cur.bigquery_config.is_some() { cur.push_config = None; cur.cloud_storage_config = None; }
+        }
+        "cloud_storage_config" => {
+            cur.cloud_storage_config = new.cloud_storage_config.clone();
+            if cur.cloud_storage_config.is_some() { cur.push_config = None; cur.bigquery_config = None; }
+        }
+        "labels" => cur.labels = new.labels.clone(),
+        "retain_acked_messages" => cur.retain_acked_messages = new.retain_acked_messages,
+        "message_retention_duration" => cur.message_retention_duration = new.message_retention_duration,
+        "expiration_policy" => cur.expiration_policy = new.expiration_policy,
+        "dead_letter_policy" => cur.dead_letter_policy = new.dead_letter_policy.clone(),
+        "retry_policy" => cur.retry_policy = new.retry_policy,
+        "enable_exactly_once_delivery" => cur.enable_exactly_once_delivery = new.enable_exactly_once_delivery,
+        "message_transforms" => cur.message_transforms = new.message_transforms.clone(),
+        p @ ("filter" | "enable_message_ordering" | "topic" | "name" | "detached") => return Err(Status::invalid_argument(format!("The field '{p}' of a subscription cannot be updated."))),
+        p => return Err(Status::invalid_argument(format!("Invalid update_mask provided in the UpdateSubscriptionRequest: the field '{p}' cannot be updated or does not exist."))),
+    }
+    Ok(())
+}
+
+fn snap_pb(s: &Snap) -> Snapshot {
+    Snapshot { name: s.name.clone(), topic: s.topic.clone(), expire_time: Some(ts(s.expire)), labels: s.labels.clone().into_iter().collect() }
 }
 
 #[tonic::async_trait]
 impl Subscriber for Svc {
     async fn create_subscription(&self, r: Request<Subscription>) -> Result<Resp<Subscription>, Status> {
         let ctx = self.ctx(&r)?;
-        let s = r.into_inner();
-        check(&s.name, "subscriptions")?;
-        check(&s.topic, "topics")?;
-        if !s.filter.is_empty() {
-            return Err(Status::invalid_argument("Stuntman does not apply subscription filters yet; create the subscription without one."));
-        }
-        if s.push_config.as_ref().is_some_and(|p| !p.push_endpoint.is_empty()) || s.bigquery_config.is_some() || s.cloud_storage_config.is_some() || s.bigtable_config.is_some() {
-            return Err(Status::invalid_argument("Stuntman offers pull subscriptions only (no push, BigQuery, Cloud Storage or Bigtable delivery)."));
-        }
-        store::topic(&ctx, &s.topic).await.map_err(int)?.ok_or_else(|| Status::not_found(format!("Resource not found (resource={}).", short(&s.topic))))?;
-        let (dl, max) = s.dead_letter_policy.map(|d| (d.dead_letter_topic, if d.max_delivery_attempts == 0 { 5 } else { d.max_delivery_attempts.clamp(5, 100) })).unwrap_or_default();
-        let sub = Sub { name: s.name, topic: s.topic, ack_deadline: if s.ack_deadline_seconds == 0 { 10 } else { s.ack_deadline_seconds.clamp(10, 600) }, ordering: s.enable_message_ordering,
-            dead_letter: dl, max_attempts: max, labels: s.labels.into_iter().collect() };
+        let sub = sub_settings(&ctx, r.into_inner(), true).await?;
         if !store::create_sub(&ctx, &sub).await.map_err(int)? {
             return Err(Status::already_exists("Subscription already exists"));
         }
@@ -236,11 +451,24 @@ impl Subscriber for Svc {
         Ok(Resp::new(sub_pb(&need_sub(&ctx, &r.into_inner().subscription).await?)))
     }
 
+    /// The fields the update mask names; filter, ordering and topic cannot change.
+    async fn update_subscription(&self, r: Request<UpdateSubscriptionRequest>) -> Result<Resp<Subscription>, Status> {
+        let ctx = self.ctx(&r)?;
+        let q = r.into_inner();
+        let new = q.subscription.ok_or_else(|| Status::invalid_argument("subscription is required"))?;
+        let mut cur = sub_pb(&need_sub(&ctx, &new.name).await?);
+        for p in mask(q.update_mask)? { copy_sub(&mut cur, &new, &p)?; }
+        let s = sub_settings(&ctx, cur, false).await?;
+        store::save_sub(&ctx, &s).await.map_err(int)?;
+        Ok(Resp::new(sub_pb(&s)))
+    }
+
     async fn list_subscriptions(&self, r: Request<ListSubscriptionsRequest>) -> Result<Resp<ListSubscriptionsResponse>, Status> {
         let ctx = self.ctx(&r)?;
-        let p = r.into_inner().project;
-        let subscriptions = store::subs(&ctx, &format!("{p}/subscriptions/"), None).await.map_err(int)?.iter().map(sub_pb).collect();
-        Ok(Resp::new(ListSubscriptionsResponse { subscriptions, next_page_token: String::new() }))
+        let q = r.into_inner();
+        let all = store::subs(&ctx, &format!("{}/subscriptions/", q.project), None).await.map_err(int)?.iter().map(sub_pb).collect();
+        let (subscriptions, next_page_token) = page(all, q.page_size, &q.page_token)?;
+        Ok(Resp::new(ListSubscriptionsResponse { subscriptions, next_page_token }))
     }
 
     async fn delete_subscription(&self, r: Request<DeleteSubscriptionRequest>) -> Result<Resp<()>, Status> {
@@ -255,7 +483,8 @@ impl Subscriber for Svc {
         let q = r.into_inner();
         let s = need_sub(&ctx, &q.subscription).await?;
         let secs = q.ack_deadline_seconds;
-        apply_acks(&ctx, &s.name, vec![], q.ack_ids.into_iter().map(|a| (a, secs)).collect()).await?;
+        let (_, bad) = apply_acks(&ctx, &s, vec![], q.ack_ids.into_iter().map(|a| (a, secs)).collect()).await?;
+        if s.exactly_once() && !bad.is_empty() { return Err(ack_failure(&bad)) }
         Ok(Resp::new(()))
     }
 
@@ -263,7 +492,18 @@ impl Subscriber for Svc {
         let ctx = self.ctx(&r)?;
         let q = r.into_inner();
         let s = need_sub(&ctx, &q.subscription).await?;
-        apply_acks(&ctx, &s.name, q.ack_ids, vec![]).await?;
+        let (bad, _) = apply_acks(&ctx, &s, q.ack_ids, vec![]).await?;
+        if s.exactly_once() && !bad.is_empty() { return Err(ack_failure(&bad)) }
+        Ok(Resp::new(()))
+    }
+
+    async fn modify_push_config(&self, r: Request<ModifyPushConfigRequest>) -> Result<Resp<()>, Status> {
+        let ctx = self.ctx(&r)?;
+        let q = r.into_inner();
+        let mut cur = sub_pb(&need_sub(&ctx, &q.subscription).await?);
+        copy_sub(&mut cur, &Subscription { push_config: q.push_config, ..Default::default() }, "push_config")?;
+        let s = sub_settings(&ctx, cur, false).await?;
+        store::save_sub(&ctx, &s).await.map_err(int)?;
         Ok(Resp::new(()))
     }
 
@@ -271,6 +511,7 @@ impl Subscriber for Svc {
         let ctx = self.ctx(&r)?;
         let q = r.into_inner();
         let s = need_sub(&ctx, &q.subscription).await?;
+        pullable(&s)?;
         let max = if q.max_messages <= 0 { 100 } else { q.max_messages as usize };
         #[allow(deprecated)]
         let wait = !q.return_immediately;
@@ -288,37 +529,53 @@ impl Subscriber for Svc {
 
     /// The stream the Python, .NET, Go and Java subscribers live on: the first request names the
     /// subscription and the stream's ack deadline; later ones carry acks, modacks and heartbeats.
+    /// With exactly-once delivery, each ack and modack is confirmed on the stream (invalid ids named).
     async fn streaming_pull(&self, r: Request<Streaming<StreamingPullRequest>>) -> Result<Resp<tonic::codegen::BoxStream<StreamingPullResponse>>, Status> {
         let ctx = self.ctx(&r)?;
         let mut inb = r.into_inner();
         let first = inb.message().await?.ok_or_else(|| Status::invalid_argument("The first StreamingPullRequest must name a subscription."))?;
         let s = need_sub(&ctx, &first.subscription).await?;
+        pullable(&s)?;
         let secs = if first.stream_ack_deadline_seconds > 0 { first.stream_ack_deadline_seconds.clamp(10, 600) } else { s.ack_deadline };
         let max_out = if first.max_outstanding_messages > 0 { first.max_outstanding_messages } else { 1000 };
-        let modacks = |q: &StreamingPullRequest| q.modify_deadline_ack_ids.iter().cloned().zip(q.modify_deadline_seconds.iter().copied()).collect::<Vec<_>>();
-        apply_acks(&ctx, &s.name, first.ack_ids.clone(), modacks(&first)).await?;
+        let props = SubscriptionProperties { exactly_once_delivery_enabled: s.exactly_once(), message_ordering_enabled: s.ordering };
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<StreamingPullResponse, Status>>(8);
         let done = std::sync::Arc::new(tokio::sync::Notify::new());
         {
-            let (ctx, name, done) = (ctx.clone(), s.name.clone(), done.clone());
+            let (ctx, s, done, tx) = (ctx.clone(), s.clone(), done.clone(), tx.clone());
             tokio::spawn(async move {
-                while let Ok(Some(q)) = inb.message().await {
-                    let _ = apply_acks(&ctx, &name, q.ack_ids.clone(), modacks(&q)).await;
+                let mut q = Some(first);
+                while let Some(req) = q.take() {
+                    let mods: Vec<(String, i32)> = req.modify_deadline_ack_ids.iter().cloned().zip(req.modify_deadline_seconds.iter().copied()).collect();
+                    let (acks, mod_ids) = (req.ack_ids.clone(), req.modify_deadline_ack_ids.clone());
+                    if let Ok((bad_a, bad_m)) = apply_acks(&ctx, &s, acks.clone(), mods).await {
+                        if s.exactly_once() && !(acks.is_empty() && mod_ids.is_empty()) {
+                            let ok = |all: &[String], bad: &[String]| all.iter().filter(|a| !bad.contains(a)).cloned().collect::<Vec<_>>();
+                            let resp = StreamingPullResponse {
+                                acknowledge_confirmation: (!acks.is_empty()).then(|| AcknowledgeConfirmation { ack_ids: ok(&acks, &bad_a), invalid_ack_ids: bad_a.clone(), ..Default::default() }),
+                                modify_ack_deadline_confirmation: (!mod_ids.is_empty()).then(|| ModifyAckDeadlineConfirmation { ack_ids: ok(&mod_ids, &bad_m), invalid_ack_ids: bad_m.clone(), ..Default::default() }),
+                                subscription_properties: Some(props),
+                                ..Default::default()
+                            };
+                            if tx.send(Ok(resp)).await.is_err() { break }
+                        }
+                    }
+                    q = match inb.message().await { Ok(Some(x)) => Some(x), _ => None };
                 }
                 done.notify_one();
             });
         }
         tokio::spawn(async move {
-            let props = SubscriptionProperties { exactly_once_delivery_enabled: false, message_ordering_enabled: s.ordering };
             loop {
                 if ctx.state.gone() { break }
                 let bell = crate::bell().notified();
                 let room = max_out - store::outstanding(&ctx, &s.name).await.unwrap_or(0);
                 if room > 0 {
-                    // The subscription may be deleted while the stream is open.
-                    let Ok(Some(cur)) = store::sub(&ctx, &s.name).await else {
-                        let _ = tx.send(Err(Status::not_found(format!("Resource not found (resource={}).", short(&s.name))))).await;
-                        break;
+                    // The subscription may be deleted or detached while the stream is open.
+                    let cur = match store::sub(&ctx, &s.name).await {
+                        Ok(Some(c)) if !c.pb.detached => c,
+                        Ok(Some(_)) => { let _ = tx.send(Err(Status::failed_precondition(format!("Subscription {} is detached.", s.name)))).await; break }
+                        _ => { let _ = tx.send(Err(not_found(&s.name))).await; break }
                     };
                     let got = store::pull(&ctx, &cur, room.min(500) as usize, secs).await.unwrap_or_default();
                     if !got.is_empty() {
@@ -339,16 +596,211 @@ impl Subscriber for Svc {
         Ok(Resp::new(Box::pin(out)))
     }
 
-    /// Seek to a time (snapshots are not offered).
+    async fn create_snapshot(&self, r: Request<CreateSnapshotRequest>) -> Result<Resp<Snapshot>, Status> {
+        let ctx = self.ctx(&r)?;
+        let q = r.into_inner();
+        let s = need_sub(&ctx, &q.subscription).await?;
+        if s.pb.detached { return Err(Status::failed_precondition(format!("Subscription {} is detached.", s.name))) }
+        let name = if q.name.is_empty() { format!("projects/{}/snapshots/snapshot-{}", s.name.split('/').nth(1).unwrap_or(""), &util::uuid()[..8]) } else { q.name };
+        check(&name, "snapshots")?;
+        let snap = store::create_snapshot(&ctx, &name, &s, &q.labels.into_iter().collect()).await.map_err(int)?.ok_or_else(|| Status::already_exists("Snapshot already exists"))?;
+        Ok(Resp::new(snap_pb(&snap)))
+    }
+
+    async fn get_snapshot(&self, r: Request<GetSnapshotRequest>) -> Result<Resp<Snapshot>, Status> {
+        let ctx = self.ctx(&r)?;
+        let n = r.into_inner().snapshot;
+        check(&n, "snapshots")?;
+        Ok(Resp::new(snap_pb(&store::snapshot(&ctx, &n).await.map_err(int)?.ok_or_else(|| not_found(&n))?)))
+    }
+
+    async fn list_snapshots(&self, r: Request<ListSnapshotsRequest>) -> Result<Resp<ListSnapshotsResponse>, Status> {
+        let ctx = self.ctx(&r)?;
+        let q = r.into_inner();
+        let all = store::snapshots(&ctx, &format!("{}/snapshots/", q.project), None).await.map_err(int)?.iter().map(snap_pb).collect();
+        let (snapshots, next_page_token) = page(all, q.page_size, &q.page_token)?;
+        Ok(Resp::new(ListSnapshotsResponse { snapshots, next_page_token }))
+    }
+
+    /// Labels and expire_time.
+    async fn update_snapshot(&self, r: Request<UpdateSnapshotRequest>) -> Result<Resp<Snapshot>, Status> {
+        let ctx = self.ctx(&r)?;
+        let q = r.into_inner();
+        let new = q.snapshot.ok_or_else(|| Status::invalid_argument("snapshot is required"))?;
+        check(&new.name, "snapshots")?;
+        let mut cur = store::snapshot(&ctx, &new.name).await.map_err(int)?.ok_or_else(|| not_found(&new.name))?;
+        for p in mask(q.update_mask)? {
+            match p.as_str() {
+                "labels" => cur.labels = new.labels.clone().into_iter().collect(),
+                "expire_time" => cur.expire = new.expire_time.as_ref().map(ts_ms).ok_or_else(|| Status::invalid_argument("expire_time is required"))?,
+                p => return Err(Status::invalid_argument(format!("Invalid update_mask provided in the UpdateSnapshotRequest: the field '{p}' cannot be updated."))),
+            }
+        }
+        store::update_snapshot(&ctx, &cur).await.map_err(int)?;
+        Ok(Resp::new(snap_pb(&cur)))
+    }
+
+    async fn delete_snapshot(&self, r: Request<DeleteSnapshotRequest>) -> Result<Resp<()>, Status> {
+        let ctx = self.ctx(&r)?;
+        let n = r.into_inner().snapshot;
+        check(&n, "snapshots")?;
+        if !store::delete_snapshot(&ctx, &n).await.map_err(int)? { return Err(not_found(&n)) }
+        Ok(Resp::new(()))
+    }
+
+    /// Seek to a time (within what is retained) or to a snapshot of the same topic.
     async fn seek(&self, r: Request<SeekRequest>) -> Result<Resp<SeekResponse>, Status> {
         let ctx = self.ctx(&r)?;
         let q = r.into_inner();
         let s = need_sub(&ctx, &q.subscription).await?;
+        if s.pb.detached { return Err(Status::failed_precondition(format!("Subscription {} is detached.", s.name))) }
         match q.target {
-            Some(seek_request::Target::Time(t)) => store::seek(&ctx, &s.name, t.seconds * 1000 + t.nanos as i64 / 1_000_000).await.map_err(int)?,
-            _ => return Err(Status::unimplemented("Stuntman seeks to a time only (no snapshots).")),
+            Some(seek_request::Target::Time(t)) => {
+                let ret = if s.topic == DELETED_TOPIC { None } else { store::topic(&ctx, &s.topic).await.map_err(int)?.and_then(|t| dur_ms(&t.message_retention_duration)) };
+                store::seek(&ctx, &s, ts_ms(&t), ret).await.map_err(int)?
+            }
+            Some(seek_request::Target::Snapshot(n)) => {
+                check(&n, "snapshots")?;
+                let snap = store::snapshot(&ctx, &n).await.map_err(int)?.ok_or_else(|| not_found(&n))?;
+                if snap.topic != s.topic { return Err(Status::failed_precondition(format!("The snapshot's topic ({}) is not the subscription's ({}).", snap.topic, s.topic))) }
+                store::seek_snapshot(&ctx, &s, &snap).await.map_err(int)?
+            }
+            None => return Err(Status::invalid_argument("Seek needs a time or a snapshot.")),
         }
         Ok(Resp::new(SeekResponse {}))
+    }
+}
+
+// ---------------------------------------------------------------- SchemaService
+
+/// "projects/p/schemas/s@rev" into the name and the revision.
+fn schema_ref(n: &str) -> Result<(String, Option<String>), Status> {
+    let (name, rev) = match n.split_once('@') { Some((a, b)) => (a.to_string(), Some(b.to_string())), None => (n.to_string(), None) };
+    check(&name, "schemas")?;
+    Ok((name, rev))
+}
+
+fn schema_pb(r: &Rev, basic: bool) -> Schema {
+    Schema { name: r.name.clone(), r#type: r.kind, definition: if basic { String::new() } else { r.definition.clone() }, revision_id: r.revision.clone(),
+        revision_create_time: Some(ts(r.created)), configuration: None }
+}
+
+async fn need_rev(ctx: &Ctx, n: &str) -> Result<Rev, Status> {
+    let (name, rev) = schema_ref(n)?;
+    let revs = store::revs(ctx, &name).await.map_err(int)?;
+    match rev {
+        Some(r) => revs.into_iter().find(|x| x.revision == r),
+        None => revs.into_iter().next(),
+    }
+    .ok_or_else(|| not_found(n))
+}
+
+fn valid_def(s: &Schema) -> Result<(), Status> {
+    schema::check(s.r#type, &s.definition).map_err(|e| Status::invalid_argument(format!("Invalid schema definition: {e}")))
+}
+
+#[tonic::async_trait]
+impl SchemaService for Svc {
+    async fn create_schema(&self, r: Request<CreateSchemaRequest>) -> Result<Resp<Schema>, Status> {
+        let ctx = self.ctx(&r)?;
+        let q = r.into_inner();
+        let s = q.schema.ok_or_else(|| Status::invalid_argument("schema is required"))?;
+        let name = if q.schema_id.is_empty() { s.name.clone() } else { format!("{}/schemas/{}", q.parent, q.schema_id) };
+        check(&name, "schemas")?;
+        valid_def(&s)?;
+        if !store::revs(&ctx, &name).await.map_err(int)?.is_empty() { return Err(Status::already_exists("Schema already exists")) }
+        Ok(Resp::new(schema_pb(&store::add_rev(&ctx, &name, s.r#type, &s.definition).await.map_err(int)?, false)))
+    }
+
+    async fn get_schema(&self, r: Request<GetSchemaRequest>) -> Result<Resp<Schema>, Status> {
+        let ctx = self.ctx(&r)?;
+        let q = r.into_inner();
+        Ok(Resp::new(schema_pb(&need_rev(&ctx, &q.name).await?, q.view == SchemaView::Basic as i32)))
+    }
+
+    async fn list_schemas(&self, r: Request<ListSchemasRequest>) -> Result<Resp<ListSchemasResponse>, Status> {
+        let ctx = self.ctx(&r)?;
+        let q = r.into_inner();
+        let basic = q.view != SchemaView::Full as i32;
+        let all = store::schemas(&ctx, &format!("{}/schemas/", q.parent)).await.map_err(int)?.iter().map(|x| schema_pb(x, basic)).collect();
+        let (schemas, next_page_token) = page(all, q.page_size, &q.page_token)?;
+        Ok(Resp::new(ListSchemasResponse { schemas, next_page_token }))
+    }
+
+    async fn list_schema_revisions(&self, r: Request<ListSchemaRevisionsRequest>) -> Result<Resp<ListSchemaRevisionsResponse>, Status> {
+        let ctx = self.ctx(&r)?;
+        let q = r.into_inner();
+        let (name, _) = schema_ref(&q.name)?;
+        let revs = store::revs(&ctx, &name).await.map_err(int)?;
+        if revs.is_empty() { return Err(not_found(&name)) }
+        let basic = q.view == SchemaView::Basic as i32;
+        let (schemas, next_page_token) = page(revs.iter().map(|x| schema_pb(x, basic)).collect(), q.page_size, &q.page_token)?;
+        Ok(Resp::new(ListSchemaRevisionsResponse { schemas, next_page_token }))
+    }
+
+    async fn commit_schema(&self, r: Request<CommitSchemaRequest>) -> Result<Resp<Schema>, Status> {
+        let ctx = self.ctx(&r)?;
+        let q = r.into_inner();
+        let s = q.schema.ok_or_else(|| Status::invalid_argument("schema is required"))?;
+        let cur = need_rev(&ctx, &q.name).await?;
+        if s.r#type != cur.kind { return Err(Status::invalid_argument("A new revision must keep the schema's type.")) }
+        valid_def(&s)?;
+        Ok(Resp::new(schema_pb(&store::add_rev(&ctx, &cur.name, s.r#type, &s.definition).await.map_err(int)?, false)))
+    }
+
+    /// A new revision with the definition of an older one.
+    async fn rollback_schema(&self, r: Request<RollbackSchemaRequest>) -> Result<Resp<Schema>, Status> {
+        let ctx = self.ctx(&r)?;
+        let q = r.into_inner();
+        let old = need_rev(&ctx, &format!("{}@{}", schema_ref(&q.name)?.0, q.revision_id)).await?;
+        Ok(Resp::new(schema_pb(&store::add_rev(&ctx, &old.name, old.kind, &old.definition).await.map_err(int)?, false)))
+    }
+
+    async fn delete_schema_revision(&self, r: Request<DeleteSchemaRevisionRequest>) -> Result<Resp<Schema>, Status> {
+        let ctx = self.ctx(&r)?;
+        #[allow(deprecated)]
+        let q = r.into_inner();
+        let (name, rev) = schema_ref(&q.name)?;
+        #[allow(deprecated)]
+        let rev = rev.or(Some(q.revision_id).filter(|x| !x.is_empty())).ok_or_else(|| Status::invalid_argument("Name the revision: projects/p/schemas/s@revision"))?;
+        let revs = store::revs(&ctx, &name).await.map_err(int)?;
+        let gone = revs.iter().find(|x| x.revision == rev).cloned().ok_or_else(|| not_found(&format!("{name}@{rev}")))?;
+        if revs.len() == 1 { return Err(Status::failed_precondition("The only revision of a schema cannot be deleted; delete the schema.")) }
+        store::delete_rev(&ctx, &name, &rev).await.map_err(int)?;
+        Ok(Resp::new(schema_pb(&gone, false)))
+    }
+
+    /// Topics that used it keep publishing nothing: their schema reads _deleted-schema_.
+    async fn delete_schema(&self, r: Request<DeleteSchemaRequest>) -> Result<Resp<()>, Status> {
+        let ctx = self.ctx(&r)?;
+        let (name, _) = schema_ref(&r.into_inner().name)?;
+        if !store::delete_schema(&ctx, &name).await.map_err(int)? { return Err(not_found(&name)) }
+        for mut t in store::topics(&ctx, "").await.map_err(int)? {
+            if let Some(ss) = t.schema_settings.as_mut().filter(|s| s.schema == name) {
+                ss.schema = DELETED_SCHEMA.into();
+                store::save_topic(&ctx, &t).await.map_err(int)?;
+            }
+        }
+        Ok(Resp::new(()))
+    }
+
+    async fn validate_schema(&self, r: Request<ValidateSchemaRequest>) -> Result<Resp<ValidateSchemaResponse>, Status> {
+        let _ = self.ctx(&r)?;
+        valid_def(&r.into_inner().schema.ok_or_else(|| Status::invalid_argument("schema is required"))?)?;
+        Ok(Resp::new(ValidateSchemaResponse {}))
+    }
+
+    async fn validate_message(&self, r: Request<ValidateMessageRequest>) -> Result<Resp<ValidateMessageResponse>, Status> {
+        let ctx = self.ctx(&r)?;
+        let q = r.into_inner();
+        let (kind, def) = match q.schema_spec {
+            Some(validate_message_request::SchemaSpec::Name(n)) => { let r = need_rev(&ctx, &n).await?; (r.kind, r.definition) }
+            Some(validate_message_request::SchemaSpec::Schema(s)) => { valid_def(&s)?; (s.r#type, s.definition) }
+            None => return Err(Status::invalid_argument("Name a schema or give one.")),
+        };
+        if q.encoding == 0 { return Err(Status::invalid_argument("encoding must be JSON or BINARY")) }
+        schema::validate(kind, &def, q.encoding, &q.message).map_err(|e| Status::invalid_argument(format!("Invalid data in message: Message failed schema validation. {e}")))?;
+        Ok(Resp::new(ValidateMessageResponse {}))
     }
 }
 
@@ -397,7 +849,7 @@ pub fn serve(envs: Envs, port: u16) {
         l.set_nonblocking(true).unwrap();
         let l = tokio::net::TcpListener::from_std(l).unwrap();
         let rest = Router::new().route("/v1/projects/{p}/topics/{t}", post(rest_publish)).with_state(envs.clone());
-        let routes = tonic::service::Routes::from(rest).add_service(PublisherServer::new(Svc(envs.clone()))).add_service(SubscriberServer::new(Svc(envs)));
+        let routes = tonic::service::Routes::from(rest).add_service(PublisherServer::new(Svc(envs.clone()))).add_service(SubscriberServer::new(Svc(envs.clone()))).add_service(SchemaServiceServer::new(Svc(envs)));
         let incoming = futures::stream::unfold(l, |l| async move { Some((l.accept().await.map(|(s, _)| s), l)) });
         let _ = tonic::transport::Server::builder().accept_http1(true).add_routes(routes).serve_with_incoming(incoming).await;
     });

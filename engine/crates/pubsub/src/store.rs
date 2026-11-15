@@ -1,13 +1,18 @@
 //! Topics, subscriptions, messages and each subscription's deliveries (pending, outstanding with an
-//! ack deadline, acked, dead-lettered). SQLite of the environment. Names are the full resource
-//! names: projects/<p>/topics/<t>, projects/<p>/subscriptions/<s>.
+//! ack deadline, acked, dead-lettered); schemas with their revisions, snapshots, and what BigQuery and
+//! Cloud Storage subscriptions wrote. SQLite of the environment. Names are the full resource names:
+//! projects/<p>/topics/<t>, projects/<p>/subscriptions/<s>. The settings beyond the columns (schema,
+//! retention, push, filter...) are the Topic and Subscription protos as sent, kept beside each row.
 
 use std::collections::{BTreeMap, HashSet};
 
+use prost::Message;
 use rand::Rng;
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde_json::{json, Value};
 use stuntman_core::{util, ApiError, Ctx};
+
+use crate::{filter, v1::{Subscription, Topic}};
 
 pub const SQL: &str = "
 CREATE TABLE IF NOT EXISTS pubsub_topics(name TEXT PRIMARY KEY, labels TEXT NOT NULL DEFAULT '{}', created INTEGER NOT NULL);
@@ -19,12 +24,31 @@ CREATE INDEX IF NOT EXISTS pubsub_messages_topic ON pubsub_messages(topic, id);
 CREATE TABLE IF NOT EXISTS pubsub_deliveries(sub TEXT NOT NULL, msg INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
   deadline INTEGER NOT NULL DEFAULT 0, ack_id TEXT NOT NULL DEFAULT '', acked INTEGER, PRIMARY KEY(sub, msg));
 CREATE INDEX IF NOT EXISTS pubsub_deliveries_ack ON pubsub_deliveries(ack_id);
+CREATE TABLE IF NOT EXISTS pubsub_topic_conf(name TEXT PRIMARY KEY, pb BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS pubsub_sub_conf(name TEXT PRIMARY KEY, pb BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS pubsub_schemas(seq INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, revision TEXT NOT NULL, kind INTEGER NOT NULL, definition TEXT NOT NULL, created INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS pubsub_snapshots(name TEXT PRIMARY KEY, topic TEXT NOT NULL, sub TEXT NOT NULL, labels TEXT NOT NULL DEFAULT '{}', created INTEGER NOT NULL,
+  expire INTEGER NOT NULL, last_msg INTEGER NOT NULL, msgs TEXT NOT NULL DEFAULT '[]');
+CREATE TABLE IF NOT EXISTS pubsub_bq_rows(id INTEGER PRIMARY KEY AUTOINCREMENT, sub TEXT NOT NULL, tbl TEXT NOT NULL, row TEXT NOT NULL, at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS pubsub_gcs_files(id INTEGER PRIMARY KEY AUTOINCREMENT, sub TEXT NOT NULL, bucket TEXT NOT NULL, object TEXT NOT NULL, data BLOB NOT NULL,
+  messages INTEGER NOT NULL, format TEXT NOT NULL, stored TEXT NOT NULL DEFAULT '', at INTEGER NOT NULL);
 ";
 
 /// What a subscription's topic becomes when the topic is deleted (as Pub/Sub does).
 pub const DELETED_TOPIC: &str = "_deleted-topic_";
+/// What a topic's schema becomes when the schema is deleted.
+pub const DELETED_SCHEMA: &str = "_deleted-schema_";
+pub const DAY_MS: i64 = 86_400_000;
 
 pub type Labels = BTreeMap<String, String>;
+
+pub fn dur_ms(d: &Option<prost_types::Duration>) -> Option<i64> {
+    d.as_ref().map(|d| d.seconds * 1000 + d.nanos as i64 / 1_000_000).filter(|x| *x > 0)
+}
+
+pub fn dur(ms: i64) -> prost_types::Duration {
+    prost_types::Duration { seconds: ms / 1000, nanos: (ms % 1000) as i32 * 1_000_000 }
+}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Sub {
@@ -35,6 +59,37 @@ pub struct Sub {
     pub dead_letter: String,
     pub max_attempts: i32,
     pub labels: Labels,
+    /// The whole subscription as last created or updated (push, BigQuery, filter, retention...).
+    pub pb: Subscription,
+}
+
+impl Sub {
+    /// The row a subscription proto makes, with Pub/Sub's defaults and bounds.
+    pub fn from_pb(mut pb: Subscription) -> Sub {
+        pb.ack_deadline_seconds = if pb.ack_deadline_seconds == 0 { 10 } else { pb.ack_deadline_seconds.clamp(10, 600) };
+        if let Some(d) = pb.dead_letter_policy.as_mut() {
+            d.max_delivery_attempts = if d.max_delivery_attempts == 0 { 5 } else { d.max_delivery_attempts.clamp(5, 100) };
+        }
+        if pb.dead_letter_policy.as_ref().is_some_and(|d| d.dead_letter_topic.is_empty()) { pb.dead_letter_policy = None }
+        if pb.push_config.as_ref().is_some_and(|p| p.push_endpoint.is_empty()) { pb.push_config = None }
+        let (dl, max) = pb.dead_letter_policy.as_ref().map(|d| (d.dead_letter_topic.clone(), d.max_delivery_attempts)).unwrap_or_default();
+        Sub { name: pb.name.clone(), topic: pb.topic.clone(), ack_deadline: pb.ack_deadline_seconds, ordering: pb.enable_message_ordering, dead_letter: dl, max_attempts: max,
+            labels: pb.labels.clone().into_iter().collect(), pb }
+    }
+
+    /// pull | push | bigquery | cloud_storage
+    pub fn kind(&self) -> &'static str {
+        if self.pb.bigquery_config.is_some() { "bigquery" } else if self.pb.cloud_storage_config.is_some() { "cloud_storage" } else if self.pb.push_config.is_some() { "push" } else { "pull" }
+    }
+
+    /// How long unacked (and, retained, acked) messages stay: 7 days unless set.
+    pub fn retention_ms(&self) -> i64 {
+        dur_ms(&self.pb.message_retention_duration).unwrap_or(7 * DAY_MS)
+    }
+
+    pub fn exactly_once(&self) -> bool {
+        self.pb.enable_exactly_once_delivery
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -58,36 +113,63 @@ fn labels(s: String) -> Labels {
 }
 
 fn sub_row(r: &rusqlite::Row) -> rusqlite::Result<Sub> {
-    Ok(Sub { name: r.get(0)?, topic: r.get(1)?, ack_deadline: r.get(2)?, ordering: r.get::<_, i64>(3)? != 0, dead_letter: r.get(4)?, max_attempts: r.get(5)?, labels: labels(r.get(6)?) })
+    let mut pb = Subscription::decode(r.get::<_, Vec<u8>>(7)?.as_slice()).unwrap_or_default();
+    let labels = labels(r.get(6)?);
+    pb.name = r.get(0)?;
+    pb.topic = r.get(1)?;
+    pb.labels = labels.clone().into_iter().collect();
+    Ok(Sub { name: pb.name.clone(), topic: pb.topic.clone(), ack_deadline: r.get(2)?, ordering: r.get::<_, i64>(3)? != 0, dead_letter: r.get(4)?, max_attempts: r.get(5)?, labels, pb })
 }
 
-const SUB_COLS: &str = "name, topic, ack_deadline, ordering, dead_letter, max_attempts, labels";
+const SUB_COLS: &str = "s.name, s.topic, s.ack_deadline, s.ordering, s.dead_letter, s.max_attempts, s.labels, COALESCE(c.pb, x'') FROM pubsub_subscriptions s LEFT JOIN pubsub_sub_conf c ON c.name=s.name";
 
-pub async fn create_topic(ctx: &Ctx, name: &str, l: &Labels) -> Result<bool, ApiError> {
-    let (n, l) = (name.to_string(), json!(l).to_string());
-    let made = ctx.db.call(move |cn| cn.execute("INSERT OR IGNORE INTO pubsub_topics(name, labels, created) VALUES(?1,?2,?3)", params![n, l, util::now_ms()]).map(|x| x > 0)).await?;
-    if made { ctx.live.send("pubsub.topics", name, "created"); }
+/// A topic with only a name (tools make them so).
+pub fn bare(name: &str) -> Topic {
+    Topic { name: name.into(), ..Default::default() }
+}
+
+fn topic_row(name: String, l: String, pb: Vec<u8>) -> Topic {
+    let mut t = Topic::decode(pb.as_slice()).unwrap_or_default();
+    t.name = name;
+    t.labels = labels(l).into_iter().collect();
+    t
+}
+
+pub async fn create_topic(ctx: &Ctx, t: &Topic) -> Result<bool, ApiError> {
+    let (n, l, pb) = (t.name.clone(), json!(t.labels.iter().collect::<BTreeMap<_, _>>()).to_string(), t.encode_to_vec());
+    let made = ctx.db.call(move |cn| {
+        let made = cn.execute("INSERT OR IGNORE INTO pubsub_topics(name, labels, created) VALUES(?1,?2,?3)", params![n, l, util::now_ms()])? > 0;
+        if made { cn.execute("INSERT OR REPLACE INTO pubsub_topic_conf(name, pb) VALUES(?1,?2)", params![n, pb])?; }
+        Ok(made)
+    }).await?;
+    if made { ctx.live.send("pubsub.topics", &t.name, "created"); }
     Ok(made)
 }
 
-pub async fn topic(ctx: &Ctx, name: &str) -> Result<Option<Labels>, ApiError> {
+pub async fn topic(ctx: &Ctx, name: &str) -> Result<Option<Topic>, ApiError> {
     let n = name.to_string();
-    Ok(ctx.db.call(move |cn| cn.query_row("SELECT labels FROM pubsub_topics WHERE name=?1", [n], |r| r.get::<_, String>(0)).optional()).await?.map(labels))
+    ctx.db.call(move |cn| cn.query_row("SELECT t.name, t.labels, COALESCE(c.pb, x'') FROM pubsub_topics t LEFT JOIN pubsub_topic_conf c ON c.name=t.name WHERE t.name=?1", [n],
+        |r| Ok(topic_row(r.get(0)?, r.get(1)?, r.get(2)?))).optional()).await
 }
 
 /// Topics whose name starts with `prefix` ("projects/acme-stg/topics/", or "" for all).
-pub async fn topics(ctx: &Ctx, prefix: &str) -> Result<Vec<(String, Labels)>, ApiError> {
+pub async fn topics(ctx: &Ctx, prefix: &str) -> Result<Vec<Topic>, ApiError> {
     let p = format!("{prefix}%");
     ctx.db.call(move |cn| {
-        let mut st = cn.prepare("SELECT name, labels FROM pubsub_topics WHERE name LIKE ?1 ORDER BY name")?;
-        let v = st.query_map([p], |r| Ok((r.get(0)?, labels(r.get(1)?))))?.filter_map(|x| x.ok()).collect();
+        let mut st = cn.prepare("SELECT t.name, t.labels, COALESCE(c.pb, x'') FROM pubsub_topics t LEFT JOIN pubsub_topic_conf c ON c.name=t.name WHERE t.name LIKE ?1 ORDER BY t.name")?;
+        let v = st.query_map([p], |r| Ok(topic_row(r.get(0)?, r.get(1)?, r.get(2)?)))?.filter_map(|x| x.ok()).collect();
         Ok(v)
     }).await
 }
 
-pub async fn set_topic_labels(ctx: &Ctx, name: &str, l: &Labels) -> Result<(), ApiError> {
-    let (n, l) = (name.to_string(), json!(l).to_string());
-    ctx.db.call(move |cn| cn.execute("UPDATE pubsub_topics SET labels=?2 WHERE name=?1", params![n, l]).map(|_| ())).await
+pub async fn save_topic(ctx: &Ctx, t: &Topic) -> Result<(), ApiError> {
+    let (n, l, pb) = (t.name.clone(), json!(t.labels.iter().collect::<BTreeMap<_, _>>()).to_string(), t.encode_to_vec());
+    ctx.db.call(move |cn| {
+        cn.execute("UPDATE pubsub_topics SET labels=?2 WHERE name=?1", params![n, l])?;
+        cn.execute("INSERT OR REPLACE INTO pubsub_topic_conf(name, pb) VALUES(?1,?2)", params![n, pb]).map(|_| ())
+    }).await?;
+    ctx.live.send("pubsub.topics", &t.name, "updated");
+    Ok(())
 }
 
 /// Deletes a topic; its subscriptions stay, detached (their topic reads _deleted-topic_).
@@ -95,6 +177,7 @@ pub async fn delete_topic(ctx: &Ctx, name: &str) -> Result<bool, ApiError> {
     let n = name.to_string();
     let gone = ctx.db.call(move |cn| {
         let k = cn.execute("DELETE FROM pubsub_topics WHERE name=?1", [&n])?;
+        cn.execute("DELETE FROM pubsub_topic_conf WHERE name=?1", [&n])?;
         cn.execute("UPDATE pubsub_subscriptions SET topic=?2 WHERE topic=?1", params![n, DELETED_TOPIC])?;
         Ok(k > 0)
     }).await?;
@@ -104,22 +187,39 @@ pub async fn delete_topic(ctx: &Ctx, name: &str) -> Result<bool, ApiError> {
 
 pub async fn create_sub(ctx: &Ctx, s: &Sub) -> Result<bool, ApiError> {
     let s2 = s.clone();
-    let made = ctx.db.call(move |cn| cn.execute("INSERT OR IGNORE INTO pubsub_subscriptions(name, topic, ack_deadline, ordering, dead_letter, max_attempts, labels, created) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-        params![s2.name, s2.topic, s2.ack_deadline, s2.ordering as i64, s2.dead_letter, s2.max_attempts, json!(s2.labels).to_string(), util::now_ms()]).map(|x| x > 0)).await?;
+    let made = ctx.db.call(move |cn| {
+        let made = cn.execute("INSERT OR IGNORE INTO pubsub_subscriptions(name, topic, ack_deadline, ordering, dead_letter, max_attempts, labels, created) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![s2.name, s2.topic, s2.ack_deadline, s2.ordering as i64, s2.dead_letter, s2.max_attempts, json!(s2.labels).to_string(), util::now_ms()])? > 0;
+        if made { cn.execute("INSERT OR REPLACE INTO pubsub_sub_conf(name, pb) VALUES(?1,?2)", params![s2.name, s2.pb.encode_to_vec()])?; }
+        Ok(made)
+    }).await?;
     if made { ctx.live.send("pubsub.subscriptions", &s.name, "created"); }
     Ok(made)
 }
 
+/// Writes an updated subscription (UpdateSubscription, ModifyPushConfig, DetachSubscription).
+pub async fn save_sub(ctx: &Ctx, s: &Sub) -> Result<(), ApiError> {
+    let s2 = s.clone();
+    ctx.db.call(move |cn| {
+        cn.execute("UPDATE pubsub_subscriptions SET ack_deadline=?2, ordering=?3, dead_letter=?4, max_attempts=?5, labels=?6 WHERE name=?1",
+            params![s2.name, s2.ack_deadline, s2.ordering as i64, s2.dead_letter, s2.max_attempts, json!(s2.labels).to_string()])?;
+        cn.execute("INSERT OR REPLACE INTO pubsub_sub_conf(name, pb) VALUES(?1,?2)", params![s2.name, s2.pb.encode_to_vec()]).map(|_| ())
+    }).await?;
+    ctx.live.send("pubsub.subscriptions", &s.name, "updated");
+    crate::ring();
+    Ok(())
+}
+
 pub async fn sub(ctx: &Ctx, name: &str) -> Result<Option<Sub>, ApiError> {
     let n = name.to_string();
-    ctx.db.call(move |cn| cn.query_row(&format!("SELECT {SUB_COLS} FROM pubsub_subscriptions WHERE name=?1"), [n], sub_row).optional()).await
+    ctx.db.call(move |cn| cn.query_row(&format!("SELECT {SUB_COLS} WHERE s.name=?1"), [n], sub_row).optional()).await
 }
 
 /// Subscriptions by name prefix, or of one topic.
 pub async fn subs(ctx: &Ctx, prefix: &str, topic: Option<&str>) -> Result<Vec<Sub>, ApiError> {
     let (p, t) = (format!("{prefix}%"), topic.map(String::from));
     ctx.db.call(move |cn| {
-        let mut st = cn.prepare(&format!("SELECT {SUB_COLS} FROM pubsub_subscriptions WHERE name LIKE ?1 AND (?2 IS NULL OR topic=?2) ORDER BY name"))?;
+        let mut st = cn.prepare(&format!("SELECT {SUB_COLS} WHERE s.name LIKE ?1 AND (?2 IS NULL OR s.topic=?2) ORDER BY s.name"))?;
         let v = st.query_map(params![p, t], sub_row)?.filter_map(|x| x.ok()).collect();
         Ok(v)
     }).await
@@ -129,6 +229,7 @@ pub async fn delete_sub(ctx: &Ctx, name: &str) -> Result<bool, ApiError> {
     let n = name.to_string();
     let gone = ctx.db.call(move |cn| {
         let k = cn.execute("DELETE FROM pubsub_subscriptions WHERE name=?1", [&n])?;
+        cn.execute("DELETE FROM pubsub_sub_conf WHERE name=?1", [&n])?;
         cn.execute("DELETE FROM pubsub_deliveries WHERE sub=?1", [&n])?;
         Ok(k > 0)
     }).await?;
@@ -136,13 +237,31 @@ pub async fn delete_sub(ctx: &Ctx, name: &str) -> Result<bool, ApiError> {
     Ok(gone)
 }
 
-/// One message onto a topic and a pending delivery for each of its subscriptions (only those that
-/// exist now: Pub/Sub does not give a new subscription older messages).
+/// Drops what a detached subscription held.
+pub async fn drop_deliveries(ctx: &Ctx, sub: &str) -> Result<(), ApiError> {
+    let n = sub.to_string();
+    ctx.db.call(move |cn| cn.execute("DELETE FROM pubsub_deliveries WHERE sub=?1", [n]).map(|_| ())).await
+}
+
+/// The subscriptions of a topic a message goes to: not detached, and its filter matches.
+fn takers(tx: &Transaction, topic: &str) -> rusqlite::Result<Vec<(String, String)>> {
+    let mut st = tx.prepare("SELECT s.name, COALESCE(c.pb, x'') FROM pubsub_subscriptions s LEFT JOIN pubsub_sub_conf c ON c.name=s.name WHERE s.topic=?1")?;
+    let v = st.query_map([topic], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)))?.filter_map(|x| x.ok())
+        .filter_map(|(n, pb)| { let pb = Subscription::decode(pb.as_slice()).unwrap_or_default(); (!pb.detached).then_some((n, pb.filter)) }).collect();
+    Ok(v)
+}
+
+/// One message onto a topic and a pending delivery for each subscription that takes it (only those
+/// that exist now: Pub/Sub does not give a new subscription older messages).
 fn insert(tx: &Transaction, topic: &str, data: &[u8], attrs: &Labels, key: &str, publisher: &str) -> rusqlite::Result<i64> {
     tx.execute("INSERT INTO pubsub_messages(topic, data, attributes, ordering_key, published, publisher) VALUES(?1,?2,?3,?4,?5,?6)",
         params![topic, data, json!(attrs).to_string(), key, util::now_ms(), publisher])?;
     let id = tx.last_insert_rowid();
-    tx.execute("INSERT INTO pubsub_deliveries(sub, msg) SELECT name, ?2 FROM pubsub_subscriptions WHERE topic=?1", params![topic, id])?;
+    for (sub, f) in takers(tx, topic)? {
+        if filter::matches(&f, attrs) {
+            tx.execute("INSERT INTO pubsub_deliveries(sub, msg) VALUES(?1,?2)", params![sub, id])?;
+        }
+    }
     Ok(id)
 }
 
@@ -160,12 +279,13 @@ pub async fn publish(ctx: &Ctx, topic: &str, msgs: Vec<(Vec<u8>, Labels, String)
     Ok(ids)
 }
 
-/// Hands out up to `max` messages: pending ones and outstanding ones whose deadline passed. With
-/// message ordering, a key with a message still out waits. A message delivered max_attempts times
-/// already goes to the dead-letter topic instead.
+/// Hands out up to `max` messages: pending ones and outstanding ones whose deadline passed, still in
+/// the retention window. With message ordering, a key with a message still out waits. A message
+/// delivered max_attempts times already goes to the dead-letter topic instead.
 pub async fn pull(ctx: &Ctx, sub: &Sub, max: usize, secs: i32) -> Result<Vec<Got>, ApiError> {
     let s = sub.clone();
     let now = util::now_ms();
+    let cutoff = now - sub.retention_ms();
     let (got, dead) = ctx.db.call(move |cn| {
         let tx = cn.transaction()?;
         let mut got = vec![];
@@ -179,12 +299,13 @@ pub async fn pull(ctx: &Ctx, sub: &Sub, max: usize, secs: i32) -> Result<Vec<Got
                 HashSet::new()
             };
             let mut st = tx.prepare("SELECT d.msg, d.attempts, m.data, m.attributes, m.ordering_key, m.published FROM pubsub_deliveries d JOIN pubsub_messages m ON m.id=d.msg
-                WHERE d.sub=?1 AND (d.state='pending' OR (d.state='outstanding' AND d.deadline<?2)) ORDER BY d.msg LIMIT 1000")?;
-            let rows = st.query_map(params![s.name, now], |r| Ok((Msg { id: r.get(0)?, data: r.get(2)?, attributes: labels(r.get(3)?), ordering_key: r.get(4)?, published: r.get(5)? }, r.get::<_, i32>(1)?)))?;
+                WHERE d.sub=?1 AND (d.state='pending' OR (d.state='outstanding' AND d.deadline<?2)) AND m.published>=?3 ORDER BY d.msg LIMIT 1000")?;
+            let rows = st.query_map(params![s.name, now, cutoff], |r| Ok((Msg { id: r.get(0)?, data: r.get(2)?, attributes: labels(r.get(3)?), ordering_key: r.get(4)?, published: r.get(5)? }, r.get::<_, i32>(1)?)))?;
+            let mut seen_keys = HashSet::new();
             for r in rows {
                 let (m, attempts) = r?;
                 if got.len() >= max { break }
-                if s.ordering && blocked.contains(&m.ordering_key) { continue }
+                if s.ordering && !m.ordering_key.is_empty() && (blocked.contains(&m.ordering_key) || (s.kind() == "push" && !seen_keys.insert(m.ordering_key.clone()))) { continue }
                 if s.max_attempts > 0 && attempts >= s.max_attempts { dead.push(m); continue }
                 let ack_id = format!("{}-{}-{:08x}", m.id, attempts + 1, rand::thread_rng().gen::<u32>());
                 got.push(Got { msg: m, ack_id, attempt: attempts + 1 });
@@ -217,57 +338,312 @@ pub async fn outstanding(ctx: &Ctx, sub: &str) -> Result<i64, ApiError> {
     ctx.db.call(move |cn| cn.query_row("SELECT COUNT(*) FROM pubsub_deliveries WHERE sub=?1 AND state='outstanding' AND deadline>=?2", params![s, util::now_ms()], |r| r.get(0))).await
 }
 
-/// Acks; with `duplicate`, a first delivery's ack does not stick and the message comes again.
-pub async fn ack(ctx: &Ctx, sub: &str, ids: Vec<String>, duplicate: bool) -> Result<usize, ApiError> {
-    if ids.is_empty() { return Ok(0) }
+/// (messages, bytes, oldest publish time) waiting for a subscription: what a Cloud Storage
+/// subscription batches.
+pub async fn backlog(ctx: &Ctx, sub: &Sub) -> Result<(i64, i64, Option<i64>), ApiError> {
+    let (s, now, cutoff) = (sub.name.clone(), util::now_ms(), util::now_ms() - sub.retention_ms());
+    ctx.db.call(move |cn| cn.query_row("SELECT COUNT(*), COALESCE(SUM(LENGTH(m.data)),0), MIN(m.published) FROM pubsub_deliveries d JOIN pubsub_messages m ON m.id=d.msg
+        WHERE d.sub=?1 AND (d.state='pending' OR (d.state='outstanding' AND d.deadline<?2)) AND m.published>=?3", params![s, now, cutoff], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))).await
+}
+
+/// Acks; answers the ack ids that matched nothing out (expired or unknown). With `duplicate`, a
+/// first delivery's ack does not stick and the message comes again. `strict` (exactly-once): an
+/// ack after the deadline does not count.
+pub async fn ack(ctx: &Ctx, sub: &str, ids: Vec<String>, duplicate: bool, strict: bool) -> Result<Vec<String>, ApiError> {
+    if ids.is_empty() { return Ok(vec![]) }
     let s = sub.to_string();
-    let n = ctx.db.call(move |cn| {
+    let (n, bad) = ctx.db.call(move |cn| {
         let tx = cn.transaction()?;
-        let mut n = 0;
+        let now = util::now_ms();
+        let floor = if strict { now } else { i64::MIN };
+        let (mut n, mut bad) = (0, vec![]);
         for id in &ids {
-            n += if duplicate {
-                tx.execute("UPDATE pubsub_deliveries SET state=CASE WHEN attempts<=1 THEN 'pending' ELSE 'acked' END, acked=CASE WHEN attempts<=1 THEN NULL ELSE ?3 END, ack_id='' WHERE sub=?1 AND ack_id=?2 AND state='outstanding'", params![s, id, util::now_ms()])?
+            let k = if duplicate {
+                tx.execute("UPDATE pubsub_deliveries SET state=CASE WHEN attempts<=1 THEN 'pending' ELSE 'acked' END, acked=CASE WHEN attempts<=1 THEN NULL ELSE ?3 END, ack_id='' WHERE sub=?1 AND ack_id=?2 AND state='outstanding' AND deadline>=?4", params![s, id, now, floor])?
             } else {
-                tx.execute("UPDATE pubsub_deliveries SET state='acked', acked=?3, ack_id='' WHERE sub=?1 AND ack_id=?2 AND state='outstanding'", params![s, id, util::now_ms()])?
+                tx.execute("UPDATE pubsub_deliveries SET state='acked', acked=?3, ack_id='' WHERE sub=?1 AND ack_id=?2 AND state='outstanding' AND deadline>=?4", params![s, id, now, floor])?
             };
+            n += k;
+            if k == 0 { bad.push(id.clone()) }
         }
         tx.commit()?;
-        Ok(n)
+        Ok((n, bad))
     }).await?;
     if n > 0 { ctx.live.send("pubsub.deliveries", sub, "updated"); }
     if duplicate { crate::ring(); }
-    Ok(n)
+    Ok(bad)
 }
 
-/// Moves the ack deadline of outstanding messages; 0 hands them back now (a nack).
-pub async fn modack(ctx: &Ctx, sub: &str, ids: Vec<(String, i32)>) -> Result<(), ApiError> {
-    if ids.is_empty() { return Ok(()) }
+/// Moves the ack deadline of outstanding messages; 0 hands them back now (a nack). Answers the ack
+/// ids that matched nothing out.
+pub async fn modack(ctx: &Ctx, sub: &str, ids: Vec<(String, i32)>, strict: bool) -> Result<Vec<String>, ApiError> {
+    if ids.is_empty() { return Ok(vec![]) }
     let s = sub.to_string();
-    let nacked = ctx.db.call(move |cn| {
+    let (nacked, bad) = ctx.db.call(move |cn| {
         let tx = cn.transaction()?;
         let now = util::now_ms();
-        let mut nacked = false;
+        let floor = if strict { now } else { i64::MIN };
+        let (mut nacked, mut bad) = (false, vec![]);
         for (id, secs) in &ids {
-            if *secs <= 0 {
-                nacked |= tx.execute("UPDATE pubsub_deliveries SET state='pending', ack_id='' WHERE sub=?1 AND ack_id=?2 AND state='outstanding'", params![s, id])? > 0;
+            let k = if *secs <= 0 {
+                let k = tx.execute("UPDATE pubsub_deliveries SET state='pending', ack_id='' WHERE sub=?1 AND ack_id=?2 AND state='outstanding' AND deadline>=?3", params![s, id, floor])?;
+                nacked |= k > 0;
+                k
             } else {
-                tx.execute("UPDATE pubsub_deliveries SET deadline=?3 WHERE sub=?1 AND ack_id=?2 AND state='outstanding'", params![s, id, now + (*secs).min(600) as i64 * 1000])?;
-            }
+                tx.execute("UPDATE pubsub_deliveries SET deadline=?3 WHERE sub=?1 AND ack_id=?2 AND state='outstanding' AND deadline>=?4", params![s, id, now + (*secs).min(600) as i64 * 1000, floor])?
+            };
+            if k == 0 { bad.push(id.clone()) }
         }
         tx.commit()?;
-        Ok(nacked)
+        Ok((nacked, bad))
     }).await?;
     if nacked { ctx.live.send("pubsub.deliveries", sub, "updated"); crate::ring(); }
+    Ok(bad)
+}
+
+/// A push that failed: the message stays out and comes again after `ms` (the push backoff).
+pub async fn retry_after(ctx: &Ctx, sub: &str, ack_id: &str, ms: i64) -> Result<(), ApiError> {
+    let (s, a) = (sub.to_string(), ack_id.to_string());
+    ctx.db.call(move |cn| cn.execute("UPDATE pubsub_deliveries SET deadline=?3 WHERE sub=?1 AND ack_id=?2 AND state='outstanding'", params![s, a, util::now_ms() + ms]).map(|_| ())).await?;
+    ctx.live.send("pubsub.deliveries", sub, "updated");
     Ok(())
 }
 
-/// Seek to a time: messages published from then on are unacked again, older ones acked.
-pub async fn seek(ctx: &Ctx, sub: &str, ms: i64) -> Result<(), ApiError> {
-    let s = sub.to_string();
-    ctx.db.call(move |cn| cn.execute("UPDATE pubsub_deliveries SET ack_id='', state=CASE WHEN (SELECT published FROM pubsub_messages WHERE id=msg)>=?2 THEN 'pending' ELSE 'acked' END WHERE sub=?1 AND state!='dead'", params![s, ms]).map(|_| ())).await?;
-    ctx.live.send("pubsub.deliveries", sub, "updated");
+/// Gives a subscription deliveries (acked, for a seek to decide) of its topic's messages it lacks:
+/// those of a snapshot, or still in the topic's retention.
+fn backfill(tx: &Transaction, sub: &str, topic: &str, filter: &str, cond: &str, p: i64) -> rusqlite::Result<()> {
+    let mut st = tx.prepare(&format!("SELECT id, attributes FROM pubsub_messages m WHERE topic=?1 AND {cond} AND NOT EXISTS (SELECT 1 FROM pubsub_deliveries d WHERE d.sub=?2 AND d.msg=m.id)"))?;
+    let rows: Vec<(i64, String)> = st.query_map(params![topic, sub, p], |r| Ok((r.get(0)?, r.get(1)?)))?.filter_map(|x| x.ok()).collect();
+    for (id, a) in rows {
+        if filter::matches(filter, &labels(a)) {
+            tx.execute("INSERT OR IGNORE INTO pubsub_deliveries(sub, msg, state) VALUES(?1,?2,'acked')", params![sub, id])?;
+        }
+    }
+    Ok(())
+}
+
+/// Seek to a time: messages published from then on are unacked again, older ones acked. Only what
+/// is retained replays: acked messages need retain_acked_messages or topic retention; nothing older
+/// than the retention window comes back. Topic retention also reaches messages published before the
+/// subscription existed.
+pub async fn seek(ctx: &Ctx, sub: &Sub, ms: i64, topic_retention: Option<i64>) -> Result<(), ApiError> {
+    let s = sub.clone();
+    let now = util::now_ms();
+    let window = topic_retention.unwrap_or(0).max(if s.pb.retain_acked_messages { s.retention_ms() } else { 0 });
+    let replay_acked = window > 0;
+    let cutoff = now - window.max(s.retention_ms());
+    ctx.db.call(move |cn| {
+        let tx = cn.transaction()?;
+        if let Some(r) = topic_retention { backfill(&tx, &s.name, &s.topic, &s.pb.filter, "published>=?3", ms.max(now - r))?; }
+        tx.execute("UPDATE pubsub_deliveries SET ack_id='', state=CASE
+              WHEN (SELECT published FROM pubsub_messages WHERE id=msg)<?2 THEN 'acked'
+              WHEN (SELECT published FROM pubsub_messages WHERE id=msg)>=?3 AND (state!='acked' OR ?4) THEN 'pending'
+              ELSE state END,
+            acked=CASE WHEN (SELECT published FROM pubsub_messages WHERE id=msg)<?2 THEN COALESCE(acked, ?5) ELSE acked END
+            WHERE sub=?1 AND state!='dead'", params![s.name, ms, cutoff, replay_acked, now])?;
+        tx.commit()
+    }).await?;
+    ctx.live.send("pubsub.deliveries", &sub.name, "updated");
     crate::ring();
     Ok(())
+}
+
+// ---------------------------------------------------------------- snapshots
+
+#[derive(Clone, Debug, Default)]
+pub struct Snap {
+    pub name: String,
+    pub topic: String,
+    pub sub: String,
+    pub labels: Labels,
+    pub created: i64,
+    pub expire: i64,
+    /// The newest message of the topic when it was taken: later ones are unacked in it.
+    pub last_msg: i64,
+    /// The messages unacked in the subscription when it was taken.
+    pub msgs: Vec<i64>,
+}
+
+fn snap_row(r: &rusqlite::Row) -> rusqlite::Result<Snap> {
+    Ok(Snap { name: r.get(0)?, topic: r.get(1)?, sub: r.get(2)?, labels: labels(r.get(3)?), created: r.get(4)?, expire: r.get(5)?, last_msg: r.get(6)?,
+        msgs: serde_json::from_str(&r.get::<_, String>(7)?).unwrap_or_default() })
+}
+
+const SNAP_COLS: &str = "name, topic, sub, labels, created, expire, last_msg, msgs";
+
+/// Takes a snapshot of a subscription's acks: None when the name is taken. It expires 7 days after
+/// its oldest unacked message was published.
+pub async fn create_snapshot(ctx: &Ctx, name: &str, sub: &Sub, l: &Labels) -> Result<Option<Snap>, ApiError> {
+    let (n, s, l) = (name.to_string(), sub.clone(), l.clone());
+    let now = util::now_ms();
+    let snap = ctx.db.call(move |cn| {
+        let tx = cn.transaction()?;
+        if tx.query_row("SELECT 1 FROM pubsub_snapshots WHERE name=?1 AND expire>?2", params![n, now], |_| Ok(())).optional()?.is_some() { return Ok(None) }
+        let msgs: Vec<(i64, i64)> = {
+            let mut st = tx.prepare("SELECT d.msg, m.published FROM pubsub_deliveries d JOIN pubsub_messages m ON m.id=d.msg WHERE d.sub=?1 AND d.state IN ('pending','outstanding') ORDER BY d.msg")?;
+            let v = st.query_map([&s.name], |r| Ok((r.get(0)?, r.get(1)?)))?.filter_map(|x| x.ok()).collect();
+            v
+        };
+        let last: i64 = tx.query_row("SELECT COALESCE(MAX(id),0) FROM pubsub_messages WHERE topic=?1", [&s.topic], |r| r.get(0))?;
+        let oldest = msgs.iter().map(|x| x.1).min().unwrap_or(now);
+        let snap = Snap { name: n.clone(), topic: s.topic.clone(), sub: s.name.clone(), labels: l, created: now, expire: oldest + 7 * DAY_MS, last_msg: last, msgs: msgs.iter().map(|x| x.0).collect() };
+        tx.execute(&format!("INSERT OR REPLACE INTO pubsub_snapshots({SNAP_COLS}) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)"),
+            params![snap.name, snap.topic, snap.sub, json!(snap.labels).to_string(), snap.created, snap.expire, snap.last_msg, json!(snap.msgs).to_string()])?;
+        tx.commit()?;
+        Ok(Some(snap))
+    }).await?;
+    if snap.is_some() { ctx.live.send("pubsub.snapshots", name, "created"); }
+    Ok(snap)
+}
+
+/// A snapshot that has not expired.
+pub async fn snapshot(ctx: &Ctx, name: &str) -> Result<Option<Snap>, ApiError> {
+    let n = name.to_string();
+    ctx.db.call(move |cn| cn.query_row(&format!("SELECT {SNAP_COLS} FROM pubsub_snapshots WHERE name=?1 AND expire>?2"), params![n, util::now_ms()], snap_row).optional()).await
+}
+
+/// Snapshots by name prefix, or of one topic, that have not expired.
+pub async fn snapshots(ctx: &Ctx, prefix: &str, topic: Option<&str>) -> Result<Vec<Snap>, ApiError> {
+    let (p, t) = (format!("{prefix}%"), topic.map(String::from));
+    ctx.db.call(move |cn| {
+        let mut st = cn.prepare(&format!("SELECT {SNAP_COLS} FROM pubsub_snapshots WHERE name LIKE ?1 AND (?2 IS NULL OR topic=?2) AND expire>?3 ORDER BY name"))?;
+        let v = st.query_map(params![p, t, util::now_ms()], snap_row)?.filter_map(|x| x.ok()).collect();
+        Ok(v)
+    }).await
+}
+
+pub async fn update_snapshot(ctx: &Ctx, s: &Snap) -> Result<(), ApiError> {
+    let (n, l, e) = (s.name.clone(), json!(s.labels).to_string(), s.expire);
+    ctx.db.call(move |cn| cn.execute("UPDATE pubsub_snapshots SET labels=?2, expire=?3 WHERE name=?1", params![n, l, e]).map(|_| ())).await?;
+    ctx.live.send("pubsub.snapshots", &s.name, "updated");
+    Ok(())
+}
+
+pub async fn delete_snapshot(ctx: &Ctx, name: &str) -> Result<bool, ApiError> {
+    let n = name.to_string();
+    let gone = ctx.db.call(move |cn| cn.execute("DELETE FROM pubsub_snapshots WHERE name=?1", [n]).map(|k| k > 0)).await?;
+    if gone { ctx.live.send("pubsub.snapshots", name, "deleted"); }
+    Ok(gone)
+}
+
+/// Seek to a snapshot: what was unacked when it was taken, and everything the topic got since, is
+/// unacked again; the rest acked.
+pub async fn seek_snapshot(ctx: &Ctx, sub: &Sub, snap: &Snap) -> Result<(), ApiError> {
+    let (s, snap) = (sub.clone(), snap.clone());
+    let now = util::now_ms();
+    ctx.db.call(move |cn| {
+        let tx = cn.transaction()?;
+        let set = json!(snap.msgs).to_string();
+        backfill(&tx, &s.name, &s.topic, &s.pb.filter, &format!("(id>?3 OR id IN (SELECT value FROM json_each('{set}')))"), snap.last_msg)?;
+        tx.execute("UPDATE pubsub_deliveries SET ack_id='', state=CASE WHEN msg>?2 OR msg IN (SELECT value FROM json_each(?3)) THEN 'pending' ELSE 'acked' END,
+            acked=CASE WHEN msg>?2 OR msg IN (SELECT value FROM json_each(?3)) THEN NULL ELSE COALESCE(acked, ?4) END WHERE sub=?1 AND state!='dead'", params![s.name, snap.last_msg, set, now])?;
+        tx.commit()
+    }).await?;
+    ctx.live.send("pubsub.deliveries", &sub.name, "updated");
+    crate::ring();
+    Ok(())
+}
+
+// ---------------------------------------------------------------- schemas
+
+#[derive(Clone, Debug, Default)]
+pub struct Rev {
+    pub name: String,
+    pub revision: String,
+    pub kind: i32,
+    pub definition: String,
+    pub created: i64,
+}
+
+fn rev_row(r: &rusqlite::Row) -> rusqlite::Result<Rev> {
+    Ok(Rev { name: r.get(0)?, revision: r.get(1)?, kind: r.get(2)?, definition: r.get(3)?, created: r.get(4)? })
+}
+
+/// A new revision of a schema (its first makes the schema).
+pub async fn add_rev(ctx: &Ctx, name: &str, kind: i32, def: &str) -> Result<Rev, ApiError> {
+    let r = Rev { name: name.into(), revision: format!("{:08x}", rand::thread_rng().gen::<u32>()), kind, definition: def.into(), created: util::now_ms() };
+    let r2 = r.clone();
+    ctx.db.call(move |cn| cn.execute("INSERT INTO pubsub_schemas(name, revision, kind, definition, created) VALUES(?1,?2,?3,?4,?5)", params![r2.name, r2.revision, r2.kind, r2.definition, r2.created]).map(|_| ())).await?;
+    ctx.live.send("pubsub.schemas", name, "updated");
+    Ok(r)
+}
+
+/// A schema's revisions, newest first (empty: no such schema).
+pub async fn revs(ctx: &Ctx, name: &str) -> Result<Vec<Rev>, ApiError> {
+    let n = name.to_string();
+    ctx.db.call(move |cn| {
+        let mut st = cn.prepare("SELECT name, revision, kind, definition, created FROM pubsub_schemas WHERE name=?1 ORDER BY seq DESC")?;
+        let v = st.query_map([n], rev_row)?.filter_map(|x| x.ok()).collect();
+        Ok(v)
+    }).await
+}
+
+/// The newest revision of each schema under a prefix.
+pub async fn schemas(ctx: &Ctx, prefix: &str) -> Result<Vec<Rev>, ApiError> {
+    let p = format!("{prefix}%");
+    ctx.db.call(move |cn| {
+        let mut st = cn.prepare("SELECT name, revision, kind, definition, created FROM pubsub_schemas s WHERE name LIKE ?1 AND seq=(SELECT MAX(seq) FROM pubsub_schemas x WHERE x.name=s.name) ORDER BY name")?;
+        let v = st.query_map([p], rev_row)?.filter_map(|x| x.ok()).collect();
+        Ok(v)
+    }).await
+}
+
+pub async fn delete_rev(ctx: &Ctx, name: &str, rev: &str) -> Result<bool, ApiError> {
+    let (n, r) = (name.to_string(), rev.to_string());
+    let gone = ctx.db.call(move |cn| cn.execute("DELETE FROM pubsub_schemas WHERE name=?1 AND revision=?2", params![n, r]).map(|k| k > 0)).await?;
+    ctx.live.send("pubsub.schemas", name, "updated");
+    Ok(gone)
+}
+
+pub async fn delete_schema(ctx: &Ctx, name: &str) -> Result<bool, ApiError> {
+    let n = name.to_string();
+    let gone = ctx.db.call(move |cn| cn.execute("DELETE FROM pubsub_schemas WHERE name=?1", [n]).map(|k| k > 0)).await?;
+    if gone { ctx.live.send("pubsub.schemas", name, "deleted"); }
+    Ok(gone)
+}
+
+// ---------------------------------------------------------------- BigQuery and Cloud Storage subscriptions
+
+pub async fn add_bq_row(ctx: &Ctx, sub: &str, table: &str, row: &Value) -> Result<(), ApiError> {
+    let (s, t, r) = (sub.to_string(), table.to_string(), row.to_string());
+    ctx.db.call(move |cn| cn.execute("INSERT INTO pubsub_bq_rows(sub, tbl, row, at) VALUES(?1,?2,?3,?4)", params![s, t, r, util::now_ms()]).map(|_| ())).await?;
+    ctx.live.send("pubsub.bigquery", table, "created");
+    Ok(())
+}
+
+/// Rows written to a table (or by a subscription), newest first.
+pub async fn bq_rows(ctx: &Ctx, table: Option<String>, sub: Option<String>, limit: i64) -> Result<Vec<Value>, ApiError> {
+    ctx.db.call(move |cn| {
+        let mut st = cn.prepare("SELECT sub, tbl, row, at FROM pubsub_bq_rows WHERE (?1 IS NULL OR tbl=?1) AND (?2 IS NULL OR sub=?2) ORDER BY id DESC LIMIT ?3")?;
+        let v = st.query_map(params![table, sub, limit], |r| Ok(json!({"subscription": r.get::<_, String>(0)?, "table": r.get::<_, String>(1)?,
+            "row": serde_json::from_str::<Value>(&r.get::<_, String>(2)?).unwrap_or(Value::Null), "writtenAt": r.get::<_, i64>(3)?})))?.filter_map(|x| x.ok()).collect();
+        Ok(v)
+    }).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn add_file(ctx: &Ctx, sub: &str, bucket: &str, object: &str, data: Vec<u8>, messages: i64, format: &str, stored: &str) -> Result<(), ApiError> {
+    let (s, b, o, f, st) = (sub.to_string(), bucket.to_string(), object.to_string(), format.to_string(), stored.to_string());
+    ctx.db.call(move |cn| cn.execute("INSERT INTO pubsub_gcs_files(sub, bucket, object, data, messages, format, stored, at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+        params![s, b, o, data, messages, f, st, util::now_ms()]).map(|_| ())).await?;
+    ctx.live.send("pubsub.storage", bucket, "created");
+    Ok(())
+}
+
+/// Files a Cloud Storage subscription wrote (in a bucket, or by a subscription), newest first, with
+/// their content (text as text, Avro as base64).
+pub async fn files(ctx: &Ctx, bucket: Option<String>, sub: Option<String>, limit: i64) -> Result<Vec<Value>, ApiError> {
+    use base64::Engine;
+    ctx.db.call(move |cn| {
+        let mut st = cn.prepare("SELECT sub, bucket, object, data, messages, format, stored, at FROM pubsub_gcs_files WHERE (?1 IS NULL OR bucket=?1) AND (?2 IS NULL OR sub=?2) ORDER BY id DESC LIMIT ?3")?;
+        let v = st.query_map(params![bucket, sub, limit], |r| {
+            let (data, format): (Vec<u8>, String) = (r.get(3)?, r.get(5)?);
+            let content = if format == "text" { json!(String::from_utf8_lossy(&data)) } else { json!(base64::engine::general_purpose::STANDARD.encode(&data)) };
+            Ok(json!({"subscription": r.get::<_, String>(0)?, "bucket": r.get::<_, String>(1)?, "object": r.get::<_, String>(2)?, "bytes": data.len(), "messages": r.get::<_, i64>(4)?,
+                "format": format, "storedIn": Some(r.get::<_, String>(6)?).filter(|x| !x.is_empty()), "writtenAt": r.get::<_, i64>(7)?, "content": content}))
+        })?.filter_map(|x| x.ok()).collect();
+        Ok(v)
+    }).await
 }
 
 /// (pending, outstanding, acked, dead) of a subscription; an expired outstanding one counts as pending.

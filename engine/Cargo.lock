@@ -5145,6 +5145,9 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "stuntman-core",
+ "stuntman-identity",
+ "stuntman-storage",
+ "stuntman-streams",
  "tokio",
  "tonic",
 ]

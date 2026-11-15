@@ -261,31 +261,65 @@ compatible.
 
 | | |
 |---|---|
-| **Speaks** | Google Cloud Pub/Sub's `google.pubsub.v1` gRPC on `:8085`, plaintext and without auth, as the official emulator: Publisher (CreateTopic, GetTopic, UpdateTopic for labels, ListTopics, ListTopicSubscriptions, DeleteTopic, Publish) and Subscriber (CreateSubscription, GetSubscription, ListSubscriptions, DeleteSubscription, Pull, StreamingPull, Acknowledge, ModifyAckDeadline, Seek to a time); `POST /v1/projects/{p}/topics/{t}:publish` over REST on the same port |
+| **Speaks** | Google Cloud Pub/Sub's `google.pubsub.v1` gRPC on `:8085`, plaintext and without auth, as the official emulator: Publisher (CreateTopic, GetTopic, UpdateTopic, ListTopics, ListTopicSubscriptions, ListTopicSnapshots, DeleteTopic, DetachSubscription, Publish), Subscriber (CreateSubscription, GetSubscription, UpdateSubscription, ListSubscriptions, DeleteSubscription, ModifyPushConfig, Pull, StreamingPull, Acknowledge, ModifyAckDeadline, CreateSnapshot, GetSnapshot, ListSnapshots, UpdateSnapshot, DeleteSnapshot, Seek to a time or a snapshot) and SchemaService (CreateSchema, GetSchema, ListSchemas, ListSchemaRevisions, CommitSchema, RollbackSchema, DeleteSchemaRevision, DeleteSchema, ValidateSchema, ValidateMessage); every List pages with `page_size`/`page_token`; `POST /v1/projects/{p}/topics/{t}:publish` over REST on the same port |
 | **Point your app at** | `PUBSUB_EMULATOR_HOST=localhost:8085`; in .NET, `EmulatorDetection = EmulatorDetection.EmulatorOrProduction` on the client builder |
-| **It keeps** | topics, pull subscriptions (ack deadline, message ordering, dead-letter topic), every message with its attributes and ordering key, and each subscription's state of it: pending, outstanding until its ack deadline, acked, dead-lettered; settings in `pubsub/config.yaml` |
+| **It keeps** | topics with labels, schema settings, message retention, message storage policy and KMS key name (the last two kept, no effect); subscriptions of four kinds — pull, push, BigQuery, Cloud Storage — with filter, ack deadline, message ordering, exactly-once delivery, retention and retain-acked, retry policy and dead-letter topic; schemas with their revisions; snapshots; every message with its attributes and ordering key, and each subscription's state of it: pending, outstanding until its ack deadline, acked, dead-lettered; the rows BigQuery subscriptions wrote and the files Cloud Storage subscriptions wrote; settings in `pubsub/config.yaml` |
 | **You can provoke** | `set_pubsub` with `provoke` on Publish: `unavailable`, `deadline_exceeded`, `resource_exhausted` (clients retry these), `not_found`, `slow_publish` (`delay_ms`, 3 s), `duplicate` (a message comes again after its first ack); `times` limits it to the next N publishes, `topic` to one topic |
 
-A message goes to the subscriptions its topic has when it is published. A nack (ModifyAckDeadline to 0) or a passed
-ack deadline delivers it again; with message ordering, a key waits while one of its messages is out. With a
-dead-letter policy, `delivery_attempt` is filled and a message delivered `max_delivery_attempts` times moves to the
-dead-letter topic. Deleting a topic leaves its subscriptions detached (`_deleted-topic_`). One port serves every
-environment: the default one answers, or the one the `x-stuntman-env` gRPC metadata names.
+A message goes to the subscriptions its topic has when it is published, unless the subscription's filter
+(`attributes.k = "v"`, `!=`, `attributes:k`, `hasPrefix(attributes.k, "x")`, `NOT`, `AND`, `OR`, parentheses) leaves
+it out. A nack (ModifyAckDeadline to 0) or a passed ack deadline delivers it again; with message ordering, a key waits
+while one of its messages is out. With a dead-letter policy, `delivery_attempt` is filled and a message delivered
+`max_delivery_attempts` times moves to the dead-letter topic. With exactly-once delivery, an ack or modack of an
+expired ack id fails with INVALID_ARGUMENT and a `google.rpc.ErrorInfo` (`EXACTLY_ONCE_ACKID_FAILURE`, each id mapped to
+`PERMANENT_FAILURE_INVALID_ACK_ID`), and StreamingPull confirms acks and modacks; the clients' `ack_with_response`
+reads both. Deleting a topic leaves its subscriptions on `_deleted-topic_`; a detached subscription gets nothing more
+and cannot be pulled. One port serves every environment: the default one answers, or the one the `x-stuntman-env`
+gRPC metadata names.
+
+Schemas: Avro (JSON and binary encodings) and Protocol Buffers (the `.proto` text is parsed: messages, nested
+messages and enums, oneofs, maps, repeated and packed fields; binary and proto3 JSON are validated). A topic with
+schema settings validates every publish against the revisions in its range, newest first, answers INVALID_ARGUMENT
+for a message none accepts, and stamps `googclient_schemaname`, `googclient_schemaencoding` and
+`googclient_schemarevisionid` on what subscribers receive.
+
+Push subscriptions POST each message to the endpoint: wrapped (`{"message": {data, attributes, messageId,
+publishTime, orderingKey}, "subscription"}`) or unwrapped (the data as the body; with `write_metadata`, the
+`x-goog-pubsub-*` headers and the attributes as headers). A 2xx acks; anything else retries with backoff (the retry
+policy, else 100 ms doubling to 60 s). With an OIDC token, `Authorization: Bearer` carries a JWT with `aud`, `email`
+and `email_verified`, signed RS256 by the environment's identity provider (a `google` flavour one first; its JWKS
+verifies it). With no identity provider, the token is an unsigned test token (`alg: none`, `iss:
+https://stuntman.invalid/pubsub-test-token`) that a real verifier refuses. BigQuery subscriptions write a row per
+message into a table Stuntman keeps (the topic schema's fields with `use_topic_schema`, else `data`; plus
+`subscription_name`, `message_id`, `publish_time`, `attributes` with `write_metadata`). Cloud Storage subscriptions
+batch messages into text or Avro files when `max_messages`, `max_bytes` or `max_duration` (5 min) is reached, named
+`<prefix><date time>_<uuid><suffix>`; when a Stuntman storage account has a container named like the bucket, the file
+lands there too. Snapshots keep what was unacked and everything published after; Seek to a snapshot or to a time
+replays only what is retained (acked messages need `retain_acked_messages` or topic retention; topic retention reaches
+messages published before the subscription existed).
 
 ```text
 create_pubsub_subscription {"subscription": "shipments-billing", "topic": "shipments", "dead_letter_topic": "shipments-dlq"}
+create_pubsub_subscription {"subscription": "shipments-push", "topic": "shipments", "push_endpoint": "http://localhost:5000/pubsub/push", "filter": "attributes.region = \"us-east\""}
+set_pubsub_schema          {"schema": "shipment-event", "type": "avro", "definition": {"type": "record", "name": "Shipment", "fields": [{"name": "shipment", "type": "string"}]}, "topic": "shipments"}
 pubsub_publish             {"topic": "shipments", "data": {"shipment": "SHP-1041"}, "attributes": {"source": "partner"}}
 set_pubsub                 {"provoke": "unavailable", "times": 2}
 ```
 
-Tools: `list_pubsub_topics`, `list_pubsub_messages`, `pubsub_publish`, `create_pubsub_subscription`,
-`wait_for_pubsub_message`, `set_pubsub`. Short names (`shipments`) find the topic of that name, else use the
-`project` of `set_pubsub` (`acme-stg`).
+Tools: `list_pubsub_topics` (topics, subscriptions with type and filter, snapshots, schemas), `list_pubsub_messages`,
+`pubsub_publish`, `create_pubsub_subscription`, `set_pubsub_schema`, `list_pubsub_bigquery_rows`,
+`list_pubsub_storage_files`, `wait_for_pubsub_message`, `set_pubsub`. Short names (`shipments`) find the topic of that
+name, else use the `project` of `set_pubsub` (`acme-stg`).
 
-Limits: pull subscriptions only (no push, BigQuery, Cloud Storage or Bigtable delivery); subscription filters are
-refused; no schemas (SchemaService), snapshots, UpdateSubscription, DetachSubscription or ModifyPushConfig (they answer
-UNIMPLEMENTED); no exactly-once delivery; message retention and subscription expiry are not enforced; list calls
-return a single page.
+Limits: no Bigtable subscriptions and no ingestion sources (Kinesis, Cloud Storage, Event Hubs, MSK, Confluent) —
+both are refused; message transforms (JavaScript UDFs) are kept but not run; KMS key and message storage policy have
+no effect; a subscription's expiration policy is kept but subscriptions never expire. BigQuery tables have no table
+schema: `use_table_schema` and `drop_unknown_fields` are kept, rows hold what the message has. Cloud Storage Avro
+files carry the data as bytes (`use_topic_schema` is not applied) and the minimums Pub/Sub sets on `max_messages` and
+`max_duration` are not enforced, so tests can use small batches. Protocol Buffer schemas cannot import (as in Pub/Sub,
+so no well-known types), proto2 groups are refused, and unknown fields in binary messages are accepted. The retry
+policy paces push and BigQuery retries; a nacked pull message comes back at once. Exactly-once never answers
+`TRANSIENT_FAILURE_*`. Flow control counts messages, not bytes.
 
 ## Identity
 

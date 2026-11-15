@@ -1,11 +1,15 @@
 //! Google Cloud Pub/Sub: the emulator apps reach with PUBSUB_EMULATOR_HOST (plaintext gRPC, no
 //! auth), speaking google.pubsub.v1 Publisher and Subscriber to the official clients (.NET, Python,
-//! Go, Java, Node). Topics, subscriptions with ack deadlines, redelivery, ordering keys and
-//! dead-letter topics; messages published as another service would; provoked UNAVAILABLE,
+//! Go, Java, Node) and SchemaService. Topics with schemas and retention, pull, push, BigQuery and
+//! Cloud Storage subscriptions with filters, ack deadlines, redelivery, ordering keys, exactly-once
+//! delivery and dead-letter topics, snapshots and seek; messages published as another service would; provoked UNAVAILABLE,
 //! DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED, NOT_FOUND, slow publishes and duplicate deliveries.
 
 pub mod config;
+pub mod deliver;
+pub mod filter;
 pub mod grpc;
+pub mod schema;
 pub mod store;
 pub mod tools;
 
@@ -59,6 +63,7 @@ impl Module for PubSub {
 
     fn listen(&self, envs: stuntman_core::env::Envs) {
         PORT.store(self.port, Ordering::Relaxed);
+        deliver::run(envs.clone());
         grpc::serve(envs, self.port);
     }
 }

@@ -125,6 +125,16 @@ pub fn decode(schema: &Value, b: &[u8]) -> Result<Value, String> {
     dec(&names, schema, &mut r)
 }
 
+/// Like decode, refusing bytes left after the datum (validating one message against a schema).
+pub fn decode_exact(schema: &Value, b: &[u8]) -> Result<Value, String> {
+    let mut names = HashMap::new();
+    collect(schema, &mut names);
+    let mut r = R::new(b);
+    let v = dec(&names, schema, &mut r)?;
+    if r.left() > 0 { return Err(format!("{} bytes left after the Avro datum", r.left())) }
+    Ok(v)
+}
+
 fn dec(names: &HashMap<String, Value>, s: &Value, r: &mut R) -> Result<Value, String> {
     let s = named(names, s);
     if let Value::Array(br) = s {

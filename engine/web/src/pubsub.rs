@@ -1,6 +1,7 @@
 //! A20 · Pub/Sub: the emulator (gRPC, PUBSUB_EMULATOR_HOST=localhost:8085). Topics with their
-//! messages and the state of each in every subscription, subscriptions with ack counts, publishing
-//! as another service would, creating a subscription, provocations on Publish.
+//! schema, messages and the state of each in every subscription, subscriptions with their type
+//! (pull, push, BigQuery, Cloud Storage), filter and ack counts, snapshots, publishing as another
+//! service would, creating a subscription, provocations on Publish.
 
 use leptos::prelude::*;
 use leptos_router::hooks::use_query_map;
@@ -14,6 +15,17 @@ fn short(full: &str) -> String {
 
 fn project(full: &str) -> String {
     full.split('/').nth(1).unwrap_or_default().to_string()
+}
+
+/// pull | push | BigQuery | Cloud Storage, as the subscription delivers.
+fn kind_label(x: &Value) -> String {
+    match s(x, "type").as_str() { "push" => "push".into(), "bigquery" => "BigQuery".into(), "cloud_storage" => "Cloud Storage".into(), _ => "pull".into() }
+}
+
+/// Where a push, BigQuery or Cloud Storage subscription writes.
+fn kind_detail(x: &Value) -> String {
+    let d = &x["delivery"];
+    match s(x, "type").as_str() { "push" => s(d, "endpoint"), "bigquery" => s(d, "table"), "cloud_storage" => format!("gs://{} · {}", s(d, "bucket"), s(d, "format")), _ => String::new() }
 }
 
 #[component]
@@ -69,14 +81,24 @@ pub fn PubSub() -> impl IntoView {
                         counts=Signal::derive(move || { let x = topic(); vec![("messages", api::thousands(n(&x, "messages"))), ("subscriptions", x["subscriptions"].as_array().map(|a| a.len()).unwrap_or(0).to_string())] })
                         active=if tb == "subscriptions" { "subscriptions" } else { "messages" }/> } }}
                 <div class="body" style="flex-direction:column;overflow:auto;padding:16px 24px;gap:10px">
+                    {move || { let x = topic(); (!x["schema"].is_null()).then(|| view! {
+                        <div class="small"><span class="caps">"Schema  "</span><span class="mono">{format!("{} · {}", short(&s(&x["schema"], "name")), s(&x["schema"], "encoding"))}</span>
+                            <span class="cap">"  ·  every publish is validated; subscribers get googclient_schemaname, googclient_schemarevisionid"</span></div> }) }}
                     {move || if tab.get() == "subscriptions" {
                         view! {
-                            <table class="tbl"><tr><th>"Subscription"</th><th>"Ack deadline"</th><th>"Ordering"</th><th>"Dead-letter"</th><th>"Pending"</th><th>"Outstanding"</th><th>"Acked"</th><th>"Dead"</th></tr>
-                                {topic()["subscriptions"].as_array().cloned().unwrap_or_default().into_iter().map(|x| view! { <tr><td class="mono" title=s(&x, "name")>{short(&s(&x, "name"))}</td>
+                            <table class="tbl"><tr><th>"Subscription"</th><th>"Type"</th><th>"Filter"</th><th>"Ack deadline"</th><th>"Ordering"</th><th>"Dead-letter"</th><th>"Pending"</th><th>"Outstanding"</th><th>"Acked"</th><th>"Dead"</th></tr>
+                                {topic()["subscriptions"].as_array().cloned().unwrap_or_default().into_iter().map(|x| view! { <tr><td class="mono" title=s(&x, "name")>{short(&s(&x, "name"))}{x["detached"].as_bool().unwrap_or(false).then(|| view! { <span class="small cap">" · detached"</span> })}</td>
+                                    <td>{kind_label(&x)}{(!kind_detail(&x).is_empty()).then(|| view! { <div class="mono small cap">{kind_detail(&x)}</div> })}</td><td class="mono small">{if x["filter"].is_null() { "—".to_string() } else { s(&x, "filter") }}</td>
                                     <td class="mono">{format!("{} s", n(&x, "ackDeadlineSeconds"))}</td><td>{if x["messageOrdering"].as_bool().unwrap_or(false) { "ordered" } else { "—" }}</td>
                                     <td class="mono">{if x["deadLetterTopic"].is_null() { "—".to_string() } else { format!("{} · {}", short(&s(&x, "deadLetterTopic")), n(&x, "maxDeliveryAttempts")) }}</td>
                                     <td class="mono">{n(&x, "pending").to_string()}</td><td class="mono">{n(&x, "outstanding").to_string()}</td><td class="mono">{n(&x, "acked").to_string()}</td>
                                     <td class="mono" class:danger={n(&x, "deadLettered") > 0}>{n(&x, "deadLettered").to_string()}</td></tr> }).collect_view()}</table>
+                            {move || { let t = cur.get(); let snaps: Vec<Value> = data.get()["snapshots"].as_array().cloned().unwrap_or_default().into_iter().filter(|x| s(x, "topic") == t).collect();
+                                (!snaps.is_empty()).then(|| view! {
+                                    <div class="caps" style="margin-top:12px">"Snapshots"</div>
+                                    <table class="tbl"><tr><th>"Snapshot"</th><th>"Taken from"</th><th>"Unacked then"</th><th>"Taken"</th><th>"Expires"</th></tr>
+                                        {snaps.into_iter().map(|x| view! { <tr><td class="mono" title=s(&x, "name")>{short(&s(&x, "name"))}</td><td class="mono">{short(&s(&x, "subscription"))}</td>
+                                            <td class="mono">{n(&x, "unackedAtSnapshot").to_string()}</td><td class="mono">{api::hms(n(&x, "createdAt"))}</td><td class="mono">{api::hms(n(&x, "expiresAt"))}</td></tr> }).collect_view()}</table> }) }}
                             <div class="caps" style="margin-top:12px">"Create a subscription"</div>
                             <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
                                 <input class="input mono" style="width:200px" placeholder="new subscription" prop:value=move || sub_name.get() on:input=move |e| sub_name.set(event_target_value(&e))/>

@@ -10,6 +10,8 @@ services:
     environment:
       STUNTMAN_HOST: ${STUNTMAN_HOST:-localhost:8025}
       STUNTMAN_ENV: ${STUNTMAN_ENV:-stg-a}
+      STUNTMAN_KAFKA_ADVERTISED_HOST: ${STUNTMAN_KAFKA_ADVERTISED_HOST:-localhost}
+      STUNTMAN_FTP_PASSIVE_HOST: ${STUNTMAN_FTP_PASSIVE_HOST:-127.0.0.1}
     volumes:
       - stuntman-data:/data
     ports:
@@ -25,5 +27,16 @@ services:
       - "${BIND:-127.0.0.1}:9000:9000"   # S3
       - "${BIND:-127.0.0.1}:4317:4317"   # OTLP gRPC
       - "${BIND:-127.0.0.1}:4318:4318"   # OTLP HTTP
+      - "${BIND:-127.0.0.1}:3389:3389"   # LDAP
+      - "${BIND:-127.0.0.1}:2121:2121"   # FTP / FTPS
+      - "${BIND:-127.0.0.1}:30000-30009:30000-30009" # FTP passive data
+      - "${BIND:-127.0.0.1}:2222:2222"   # SFTP
+      - "${BIND:-127.0.0.1}:1143:1143"   # IMAP
+      - "${BIND:-127.0.0.1}:1110:1110"   # POP3
+      - "${BIND:-127.0.0.1}:9092:9092"   # Kafka (advertised as STUNTMAN_KAFKA_ADVERTISED_HOST)
+      - "${BIND:-127.0.0.1}:8081:8081"   # Schema Registry
+      - "${BIND:-127.0.0.1}:15672:15672" # RabbitMQ management API
+      - "${BIND:-127.0.0.1}:12201:12201/udp" # GELF
+      - "${BIND:-127.0.0.1}:8125:8125/udp"   # StatsD
 volumes:
   stuntman-data:

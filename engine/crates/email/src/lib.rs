@@ -3,10 +3,13 @@
 
 pub mod config;
 pub mod events;
+pub mod imap;
 pub mod inbox;
 pub mod ingest;
 pub mod lifecycle;
+pub mod mailbox;
 pub mod message;
+pub mod pop3;
 pub mod sendgrid;
 pub mod smtp;
 pub mod tools;
@@ -23,6 +26,8 @@ use stuntman_core::{ApiError, Ctx, Module, Tool};
 pub struct Email {
     /// SMTP port for the first service created on an empty data folder.
     pub smtp_port: u16,
+    pub imap_port: u16,
+    pub pop3_port: u16,
 }
 
 impl Module for Email {
@@ -35,7 +40,14 @@ impl Module for Email {
     }
 
     fn tools(&self) -> Vec<Tool> {
-        tools::all()
+        let mut t = tools::all();
+        t.extend(mailbox::tools());
+        t
+    }
+
+    fn listen(&self, envs: stuntman_core::env::Envs) {
+        imap::serve(envs.clone(), self.imap_port);
+        pop3::serve(envs, self.pop3_port);
     }
 
     fn extra_routes(&self) -> Router<Ctx> {

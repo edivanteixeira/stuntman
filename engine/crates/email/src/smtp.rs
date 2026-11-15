@@ -82,7 +82,7 @@ pub async fn reconcile(ctx: &Ctx) {
     }
 }
 
-fn tls() -> Arc<tokio_rustls::TlsAcceptor> {
+pub(crate) fn tls() -> Arc<tokio_rustls::TlsAcceptor> {
     static T: OnceLock<Arc<tokio_rustls::TlsAcceptor>> = OnceLock::new();
     T.get_or_init(|| {
         let ck = rcgen::generate_simple_self_signed(vec!["localhost".into(), "stuntman.local".into()]).unwrap();

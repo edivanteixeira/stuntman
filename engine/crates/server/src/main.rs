@@ -25,7 +25,7 @@ fn modules() -> Vec<Box<dyn Module>> {
     let otlp_http = env("STUNTMAN_OTLP_HTTP_PORT", "4318").parse().unwrap_or(4318);
     let otlp_grpc = env("STUNTMAN_OTLP_GRPC_PORT", "4317").parse().unwrap_or(4317);
     vec![
-        Box::new(stuntman_email::Email { smtp_port }),
+        Box::new(stuntman_email::Email { smtp_port, imap_port: env("STUNTMAN_IMAP_PORT", "1143").parse().unwrap_or(1143), pop3_port: env("STUNTMAN_POP3_PORT", "1110").parse().unwrap_or(1110) }),
         Box::new(stuntman_webhook::Webhook { port: hooks_port }),
         Box::new(stuntman_telemetry::Telemetry { http_port: otlp_http, grpc_port: otlp_grpc, gelf_port: env("STUNTMAN_GELF_PORT", "12201").parse().unwrap_or(12201), statsd_port: env("STUNTMAN_STATSD_PORT", "8125").parse().unwrap_or(8125) }),
         Box::new(stuntman_apis::Apis { port: env("STUNTMAN_APIS_PORT", "8028").parse().unwrap_or(8028), tls_port: env("STUNTMAN_APIS_TLS_PORT", "8443").parse().unwrap_or(8443) }),

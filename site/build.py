@@ -196,6 +196,44 @@ def chip(color, text):
     return f'<span class="chip" style="--c:var(--line-{color})" aria-hidden="true"></span>{text}'
 
 
+def anchor(name):
+    return name.lower().replace(" ", "-")
+
+
+# Every provider Stuntman simulates, by area: (color, area, anchor on /providers, names).
+SIMULATED = [
+    ("orange", "AI models", "ai-models", ["OpenAI", "Azure OpenAI", "Anthropic", "Google Gemini", "OpenRouter", "DeepSeek"]),
+    ("red", "SMS, chat and push", "sms", ["Zenvia SMS", "WhatsApp Cloud API", "Comtele SMS", "OneSignal", "Microsoft Teams bots"]),
+    ("amber", "Email", "email", ["SMTP", "SendGrid", "Resend", "IMAP", "POP3"]),
+    ("graphite", "Payments", "http-apis", ["Stripe", "Bank gateway (boletos)"]),
+    ("brown", "Storage and files", "storage", ["Azure Blob Storage", "Amazon S3", "Google Drive", "FTP", "FTPS", "SFTP"]),
+    ("teal", "Queues and streams", "messaging", ["Azure Service Bus", "RabbitMQ", "RabbitMQ management API", "Apache Kafka", "Confluent Schema Registry"]),
+    ("green", "Identity and secrets", "identity", ["Microsoft Entra ID", "Google sign-in", "Okta", "Any OIDC provider", "SAML 2.0", "LDAP",
+                                                  "Azure Key Vault", "reCAPTCHA", "Cloudflare Turnstile"]),
+    ("blue", "Brazil: signatures and tax", "http-apis", ["SERPRO Datavalid", "BirdID", "VIDaaS", "REST PKI", "ICP-Brasil certificates", "SEFAZ NF-e",
+                                                        "ReceitaWS"]),
+    ("graphite", "Maps and documents", "http-apis", ["Google Maps", "OSRM", "Nominatim (OpenStreetMap)", "OCR.space"]),
+    ("teal", "Workplace and dev tools", "http-apis", ["Microsoft Graph", "Calendly", "lemlist", "Azure DevOps", "New Relic"]),
+    ("red", "Analytics and observability", "product-events", ["PostHog", "Segment", "Mixpanel", "Google Analytics 4", "OpenTelemetry", "Graylog (GELF)",
+                                                             "StatsD"]),
+    ("blue", "Any other API", "http-apis", ["Your REST or GraphQL API", "SOAP from a WSDL", "OpenAPI and Swagger", "WireMock mappings",
+                                           "A recorded sandbox", "MCP servers", "Webhook inboxes"]),
+]
+
+
+def roster(page):
+    """Right after the home hero: every provider Stuntman simulates, by area."""
+    total = sum(len(n) for _, area, _, n in SIMULATED if area != "Any other API")
+    areas = "".join(f'<li style="--c:var(--line-{c})"><h3><a href="{rel(page, "providers")}#{a}">{area}</a></h3>'
+                    f'<ul class="roster__names">{"".join(f"<li>{n}</li>" for n in names)}</ul></li>' for c, area, a, names in SIMULATED)
+    return (f'<section class="wrap section roster" aria-labelledby="roster-h">'
+            f'<div class="roster__head"><p class="roster__count display" aria-hidden="true">{total}</p>'
+            f'<div><h2 class="display" id="roster-h"><span class="sr-only">{total} </span>Providers, simulated. And any other API.</h2>'
+            f'<p class="lead">Real protocols and real APIs: your app keeps its SDK and only the base URL changes. '
+            f'All of it runs in one container, and your agent can break any of them on purpose.</p></div></div>'
+            f'<ul class="roster__list">{areas}</ul></section>')
+
+
 # ------------------------------------------------------------------ pages
 def home():
     p = "index"
@@ -207,6 +245,7 @@ def home():
       "Claude Code, Codex, Gemini CLI, OpenCode or any agent that speaks MCP or plain HTTP. Stuntman stands in for the "
       "providers your app calls, so the agent can set up staging, break those providers on purpose, read what your app "
       "did and leave the proof where you can see it.")}
+{roster(p)}
 {agents_strip(p)}
 <section class="wrap section"><div class="split">
   {head(2, "It tests the whole app. No one clicks.", "The agent runs the loop on its own, as many times as the change needs. Each lap leaves calls on the timeline under the agent's name.")}
@@ -328,9 +367,9 @@ def agents():
 {next_link(p)}""")
 
 
-def providers():
-    p = "providers"
-    L = [("blue", "HTTP APIs", "REST · GraphQL · OAuth2 · Basic · session cookies · mTLS · browser steps · streamed answers · MCP servers",
+def provider_list():
+    """Every kind of provider: (color, name, flavors, keeps, provoke, screen, how to point at it)."""
+    return [("blue", "HTTP APIs", "REST · GraphQL · OAuth2 · Basic · session cookies · mTLS · browser steps · streamed answers · MCP servers",
           "Routes, state per route and data tables, written in YAML; webhooks signed like Stripe, Svix, GitHub or CloudEvents; idempotency keys; scenarios.",
           "Named answers, latency, 5xx, reset, timeout, cut streams, expired tokens, rate limits, badly signed or repeated webhooks.", "route-editor",
           f"Point your app at <code>http://localhost:8028/&lt;service&gt;</code>. 26 plugins in the catalog, from Stripe to Microsoft Graph. <a href='{DOCS}/plugins.md'>Plugins guide</a>."),
@@ -383,9 +422,14 @@ def providers():
           "400, 413, 429, a slow collector, half the events lost.", "events", "SDK host <code>http://localhost:8025/posthog</code>, <code>…/segment</code>, <code>…/mixpanel</code>, <code>…/ga4</code>."),
          ("amber", "Telemetry", "OpenTelemetry: OTLP logs, traces, metrics · GELF · StatsD", "Spans joined to the provider calls that caused them.",
           "A collector that refuses, rejects, throttles, slows or drops half; hosts still called directly.", "traces", "<code>OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318</code> · GELF <code>:12201/udp</code> · StatsD <code>:8125/udp</code>.")]
+
+
+def providers():
+    p = "providers"
+    L = provider_list()
     secs = []
     for i, (c, name, flav, keeps, prov, sc, point) in enumerate(L):
-        txt = (f'<div class="stack"><p>{chip(c, "")}</p><h2 class="display" id="{name.lower().replace(" ", "-")}">{name}</h2>'
+        txt = (f'<div class="stack"><p>{chip(c, "")}</p><h2 class="display" id="{anchor(name)}">{name}</h2>'
                f'<p class="mono" style="color:var(--text-{c if c not in ("graphite",) else "red"});font-size:var(--text-sm)">{flav}</p>'
                f'<p class="body"><b style="color:var(--color-ink)">It keeps.</b> {keeps}</p>'
                f'<p class="body"><b style="color:var(--color-ink)">You can provoke.</b> {prov}</p><p class="note">{point}</p></div>')

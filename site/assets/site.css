@@ -129,6 +129,22 @@ pre.code .c { color: var(--color-caption); } pre.code.dark .c { color: var(--col
 .doors h3, .trio h3 { font-size: var(--text-md); font-weight: 600; margin-bottom: var(--space-sm); }
 .trio { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-xl); }
 
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* every simulated provider, right after the home hero */
+.roster__head { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--space-xl); align-items: end; margin-bottom: var(--space-2xl, 3rem); }
+.roster__count { font-size: clamp(5rem, 14vw, 11rem); line-height: .8; letter-spacing: -0.05em; margin: 0; }
+.roster__head .lead { margin-top: var(--space-sm); max-width: 40rem; }
+.roster__list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 19rem), 1fr));
+  gap: var(--space-xl); }
+.roster__list > li { border-top: 3px solid var(--c); padding-top: var(--space-md); }
+.roster__list h3 { font-size: var(--text-sm); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 var(--space-sm); }
+.roster__list h3 a { color: var(--color-text-2); text-decoration: none; }
+.roster__list h3 a:hover, .roster__list h3 a:focus-visible { color: var(--color-ink); text-decoration: underline; text-underline-offset: 3px; }
+.roster__names { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.roster__names li { padding: 4px 10px; border: var(--rule); border-radius: 999px; font-size: var(--text-sm); line-height: 1.4; background: var(--color-paper); }
+@media (max-width: 720px) { .roster__head { grid-template-columns: minmax(0, 1fr); gap: var(--space-sm); } }
+
 /* tables */
 .table { width: 100%; border-collapse: collapse; }
 .table th, .table td { text-align: left; vertical-align: top; padding: var(--space-md) var(--space-md) var(--space-md) 0; border-top: var(--rule); }

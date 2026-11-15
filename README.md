@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>The stunt double for every provider your app calls.</strong><br>
-  SMS, WhatsApp, email, mailboxes, storage, file servers, queues, Kafka, identity, secrets, AI models,<br>
+  SMS, WhatsApp, email, mailboxes, storage, file servers, queues, Kafka, Pub/Sub, identity, secrets, AI models,<br>
   product analytics, webhooks and any HTTP API,<br>
   answering like the real thing, so you and your coding agents can test the hard cases end to end.
 </p>
@@ -52,7 +52,7 @@ callbacks back and **fails exactly when you ask it to**.
 
 <p align="center"><img src="docs/images/agent-loop.png" alt="The loop an agent runs on its own: read the code, set up Stuntman, change the code, run the real flow, provoke failures, read what the app sent, check the result" width="100%"></p>
 
-Every action in Stuntman is a tool: **356 of them**, each one both an **MCP tool** and an **HTTP route**.
+Every action in Stuntman is a tool: **376 of them**, each one both an **MCP tool** and an **HTTP route**.
 Claude Code, Codex, Gemini CLI, OpenCode, Cursor, GitHub Copilot or a plain test script can:
 
 1. **Set it up.** Find the providers your app calls, install the matching plugins, point the base URLs at Stuntman.
@@ -84,8 +84,8 @@ open http://localhost:8025          # the web UI; the HTTP API is /api, MCP is /
 ```
 
 The image is on Docker Hub as [`edivanteixeira/stuntman`](https://hub.docker.com/r/edivanteixeira/stuntman)
-(`linux/amd64` and `linux/arm64`). Publish more ports for more lines (all of them are in
-[Configuration](docs/configuration.md#ports)), or run every port at once with Docker Compose:
+(`linux/amd64` and `linux/arm64`). Publish more ports for more lines (`-p 127.0.0.1:8085:8085` for Pub/Sub,
+`-p 127.0.0.1:61616:61616` for ActiveMQ; all of them are in [Configuration](docs/configuration.md#ports)), or run every port at once with Docker Compose:
 `cd engine && docker compose up -d`.
 
 Point your app's provider URLs at it (examples):
@@ -102,6 +102,7 @@ Point your app's provider URLs at it (examples):
 | OpenAI, Anthropic, Gemini… | `http://localhost:8025/openai/v1`, `…/anthropic`, `…/gemini` |
 | Kafka | `localhost:9092` (Schema Registry `http://localhost:8081`) |
 | Google Cloud Pub/Sub | `PUBSUB_EMULATOR_HOST=localhost:8085` |
+| ActiveMQ (OpenWire) | `tcp://localhost:61616` (NMS: `activemq:tcp://localhost:61616`) |
 
 Connect Claude Code:
 
@@ -122,7 +123,7 @@ claude mcp add --transport http stuntman http://localhost:8025/mcp
 | **Email** | SMTP (STARTTLS) and SendGrid v3, signed event webhook; IMAP and POP3 mailboxes the app reads | bounce, defer, drop, hold; open, click, spam report, unsubscribe events; logins refused, mailbox busy, dropped fetches |
 | **Storage** | Azure Blob (SharedKey, SAS) and Amazon S3 (SigV4) | 503 on the first N attempts, 403/404, slow reads, bad MD5, expired or tampered links, lost or duplicated events |
 | **Files** | FTP, FTPS and SFTP servers over shared folders | logins refused, disk full, permission denied, transfers cut or slow, a changed host key |
-| **Messaging** | Azure Service Bus and RabbitMQ over AMQP, RabbitMQ management API | lost locks, duplicates, held, dropped, dead-lettered or out-of-order messages, refused or busy namespace |
+| **Messaging** | Azure Service Bus and RabbitMQ over AMQP, RabbitMQ management API; ActiveMQ "Classic" over OpenWire (queues, topics, local and XA transactions, durable subscriptions, selectors, exclusive and priority consumers, message groups, scheduled delivery, ActiveMQ.DLQ, advisories) | lost locks, duplicates, held, dropped, dead-lettered or out-of-order messages, refused or busy namespace; refused logins, dropped connections, slow dispatch, lost acks, failed commits |
 | **Streams** | Kafka (SASL, consumer groups) and Confluent Schema Registry with Avro | leader not available, SASL refused, slow fetches, duplicates, rebalances, registry down |
 | **Pub/Sub** | Google Cloud Pub/Sub emulator over gRPC (StreamingPull, ack deadlines, ordering keys, dead-letter topics, schemas, snapshots and seek, filters, push, BigQuery, Cloud Storage and Bigtable subscriptions, import topics, JavaScript and AI inference transforms, exactly-once) | unavailable, deadline exceeded, quota exhausted, topic not found, slow publishes, duplicate deliveries |
 | **Identity** | OIDC / OAuth2 (Microsoft Entra ID, Google, Okta, generic OIDC, password grant), SAML 2.0, LDAP, Bot Framework | MFA, consent, user cancels, wrong tenant, expired tokens, bad signature, IdP down, broken discovery or JWKS, locked accounts |
@@ -168,7 +169,7 @@ claude mcp add --transport http stuntman http://localhost:8025/mcp
 | [Environments](docs/environments.md) | One environment per branch: clone, pause, expire, route requests |
 | [Configuration](docs/configuration.md) | Environment variables, ports, Docker, data layout |
 | [Security](docs/security.md) | What is and is not protected today |
-| [Tool reference](docs/reference/tools.md) | All 356 tools, generated from the source |
+| [Tool reference](docs/reference/tools.md) | All 376 tools, generated from the source |
 
 ## How it is built
 
@@ -184,7 +185,7 @@ engine/
   crates/apis       the HTTP plugin engine (YAML + expressions) — plugins/ is the catalog
   crates/email      SMTP, SendGrid, IMAP, POP3   crates/sms        SMS (Zenvia)
   crates/whatsapp   WhatsApp Cloud API           crates/storage    Azure Blob and S3
-  crates/messaging  Service Bus, RabbitMQ        crates/identity   OIDC, SAML, LDAP, Bot Framework
+  crates/messaging  Service Bus, RabbitMQ, AMQ   crates/identity   OIDC, SAML, LDAP, Bot Framework
   crates/keyvault   Key Vault, managed id.       crates/webhook    webhook inboxes
   crates/telemetry  OTLP, GELF, StatsD           crates/ai         AI model APIs
   crates/events     product analytics            crates/files      FTP, FTPS, SFTP

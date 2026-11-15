@@ -170,7 +170,7 @@ Tools: `list_file_servers`, `set_file_server`, `list_files`, `get_file`, `put_fi
 
 | | |
 |---|---|
-| **Speaks** | AMQP for Azure Service Bus and RabbitMQ, on `:5673` (and `:5671` with TLS) |
+| **Speaks** | AMQP for Azure Service Bus and RabbitMQ, on `:5673` (and `:5671` with TLS); ActiveMQ over OpenWire on `:61616` ([below](#activemq-openwire)) |
 | **Point your app at** | Service Bus: `Endpoint=sb://<namespace>.<env base domain>:5673;…` (any key); RabbitMQ: `<host>:5673`, vhost `<env>/<namespace>` |
 | **It keeps** | namespaces, queues, topics, subscriptions, every message with its deliveries, consumers and their locks |
 | **You can provoke** | lost locks, duplicates, held, dropped, dead-lettered or out-of-order messages; a namespace that refuses, times out, rejects the key or is busy |
@@ -255,7 +255,7 @@ list_activemq_destinations                                              → dura
 ```
 
 Tools: `list_activemq_destinations`, `list_activemq_messages`, `activemq_send`, `set_activemq`, `cancel_activemq_scheduled`,
-`wait_for_activemq_ack`.
+`wait_for_activemq_ack`. In the web UI: **Queues › ActiveMQ**.
 
 ## Streams (Kafka and Schema Registry)
 
@@ -390,7 +390,7 @@ expiry, snapshots, schemas, BigQuery tables), `list_pubsub_messages`, `pubsub_pu
 `set_pubsub_bigtable_table`,
 `list_pubsub_bigquery_rows`, `list_pubsub_bigtable_rows`, `list_pubsub_storage_files`, `wait_for_pubsub_message`,
 `set_pubsub`. Short names (`shipments`) find the topic of that
-name, else use the `project` of `set_pubsub` (`acme-stg`).
+name, else use the `project` of `set_pubsub` (`acme-stg`). In the web UI: **Pub/Sub**.
 
 Limits: Kinesis and Event Hubs have no Stuntman backend, so those import topics only get what `pubsub_ingest` feeds;
 AI inference has no 60-second timeout to hit: the simulator answers

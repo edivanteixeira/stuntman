@@ -5,7 +5,7 @@ pasted a short prompt that sent you here. Your job: **set Stuntman up for the pr
 directory, end to end, and leave the developer with a working staging environment that never calls a real provider.**
 
 Stuntman stands in for the external providers an app calls (SMS, WhatsApp, email and mailboxes, storage, file
-servers, queues, Kafka, identity, secrets, AI models, product analytics, webhooks, telemetry and any REST, GraphQL or
+servers, queues (Service Bus, RabbitMQ, ActiveMQ), Kafka, Google Cloud Pub/Sub, identity, secrets, AI models, product analytics, webhooks, telemetry and any REST, GraphQL or
 SOAP API through YAML plugins). It answers like the provider, keeps state,
 sends callbacks and fails on cue. Every action is an MCP tool and an HTTP route.
 
@@ -71,12 +71,13 @@ docker run -d --name stuntman --restart unless-stopped \
   -p 127.0.0.1:10000:10000 -p 127.0.0.1:9000:9000 -p 127.0.0.1:4317:4317 -p 127.0.0.1:4318:4318 \
   -p 127.0.0.1:3389:3389 -p 127.0.0.1:2121:2121 -p 127.0.0.1:30000-30009:30000-30009 -p 127.0.0.1:2222:2222 \
   -p 127.0.0.1:1143:1143 -p 127.0.0.1:1110:1110 -p 127.0.0.1:9092:9092 -p 127.0.0.1:8081:8081 \
-  -p 127.0.0.1:15672:15672 -p 127.0.0.1:12201:12201/udp -p 127.0.0.1:8125:8125/udp \
+  -p 127.0.0.1:8085:8085 -p 127.0.0.1:15672:15672 -p 127.0.0.1:61616:61616 \
+  -p 127.0.0.1:12201:12201/udp -p 127.0.0.1:8125:8125/udp \
   -v stuntman-data:/data edivanteixeira/stuntman
 ```
 
    The second half of the ports (LDAP, FTP and its passive range, SFTP, IMAP, POP3, Kafka, Schema Registry,
-   RabbitMQ management, GELF, StatsD) is only needed when the project uses those lines; leave them in when unsure.
+   Pub/Sub, RabbitMQ management, ActiveMQ, GELF, StatsD) is only needed when the project uses those lines; leave them in when unsure.
 
 4. Wait until `http://localhost:8025/api/env` answers `200` (poll every 2 s, up to 60 s).
 5. If a container named `stuntman` already exists but is stopped, run `docker start stuntman` instead.
@@ -121,6 +122,8 @@ hosts, SDK packages and setting names. Do not print secret values you come acros
 | **Amazon S3 / R2** | `s3.amazonaws.com`, `AWS_ENDPOINT_URL`, aws-sdk S3 clients, `boto3.client("s3")`, R2 endpoints |
 | **Azure Service Bus** | `servicebus.windows.net`, `Azure.Messaging.ServiceBus`, `@azure/service-bus` |
 | **RabbitMQ** | `amqp://`, `RabbitMQ.Client`, `amqplib`, `pika`, `bunny`; the management API (`:15672`, MassTransit) |
+| **ActiveMQ** | `tcp://…:61616`, `activemq:tcp://…`, `failover:(tcp://…)` broker URLs, `Apache.NMS.ActiveMQ`, `activemq-client` / `activemq-all`, `spring.activemq.*`, `ConnectionFactory` with OpenWire, `BrokerURL` settings; an `ActiveMQ.DLQ` or `AMQ_SCHEDULED_*` in the code (Stuntman speaks OpenWire; STOMP/AMQP-only ActiveMQ clients are not covered) |
+| **Google Cloud Pub/Sub** | `PUBSUB_EMULATOR_HOST`, `google-cloud-pubsub`, `@google-cloud/pubsub`, `Google.Cloud.PubSub.V1`, `cloud.google.com/go/pubsub`, `spring-cloud-gcp-starter-pubsub`, `pubsub.googleapis.com`, `projects/<p>/topics/<t>` names |
 | **Kafka** | `bootstrap.servers`, `Confluent.Kafka`, `kafkajs`, `kafka-python`, `confluent-kafka`, `schema.registry.url` |
 | **File servers** | `ftp://`, `sftp://`, FluentFTP, SSH.NET, paramiko, `ssh2-sftp-client`, EDI drop folders |
 | **Identity** | `login.microsoftonline.com` (Entra ID), `accounts.google.com`, `*.okta.com`, OIDC `Authority` / `issuer` settings; SAML metadata URLs and ACS settings; `ldap://`, `DirectoryServices`, `ldap3`; Bot Framework / Teams bots (`MicrosoftAppId`) |
@@ -154,6 +157,8 @@ Use the default environment (`stg-a`) unless the developer asks for another one.
 | Email, SMS, WhatsApp, Webhook inboxes, Telemetry, AI models, Product events | Built in; nothing to install. Create webhook inboxes with `create_webhook_inbox` when the app sends its own webhooks. For AI models, add a few rules with `set_ai_rule` so the app's prompts get useful answers; for analytics, write the expected events as a plan with `set_event_plan`. |
 | Mailboxes | `set_mailbox` for each address the app reads; `put_mail` to drop a test message. |
 | File servers | `set_file_server` with the users and folders the app uses; `put_file` for files a partner would drop. |
+| ActiveMQ | Usually nothing: queues and topics appear when the app uses them. `set_activemq {"users": {...}}` when the app logs in with a fixed user (with no users, any login works); `activemq_send` for messages another system would send. |
+| Google Cloud Pub/Sub | `set_pubsub {"project": "<the app's project id>"}`; `create_pubsub_subscription` (it makes the topic too) for what the app expects to exist, or let the app create them; `set_pubsub_schema` for schema-bound topics. |
 | Kafka | `create_topic` for the topics the app uses (or let clients create them); `register_schema` for Avro subjects. |
 | Azure Blob / S3 | `create_account` (service `azure-blob` or `s3`) with the account and containers the app uses; `add_container` for more. |
 | Service Bus / RabbitMQ | Create the namespace and the queues or topics the app uses (see the Messaging tools in the reference). |
@@ -197,6 +202,8 @@ Change **base URLs only**; the app keeps its code and SDKs.
 | FTP / FTPS / SFTP | `localhost:2121` / `localhost:2222`, users from `set_file_server` |
 | Kafka / Schema Registry | `bootstrap.servers=localhost:9092`, `schema.registry.url=http://localhost:8081` |
 | RabbitMQ management API | `http://localhost:15672` |
+| ActiveMQ (OpenWire) | `tcp://localhost:61616` (Java, Spring `spring.activemq.broker-url`) / `activemq:tcp://localhost:61616` (Apache.NMS.ActiveMQ); keep a `failover:(…)` wrapper if the app has one, with only this URL inside |
+| Google Cloud Pub/Sub | `PUBSUB_EMULATOR_HOST=localhost:8085` (no credentials needed; in .NET also `EmulatorDetection = EmulatorDetection.EmulatorOrProduction`) |
 | SAML 2.0 | IdP metadata `http://localhost:8025/login/<tenant>/saml/metadata` |
 | LDAP | `ldap://localhost:3389`, base DN from `set_provider` |
 
@@ -215,7 +222,7 @@ it: explain and propose an environment-variable override instead.
    the app for a minute.
 2. Read what arrived: `list_api_calls`, `list_messages`, `list_sms`, `list_whatsapp_messages`, `list_objects`,
    `list_deliveries`, `list_traces`, `list_ai_calls`, `list_product_events`, `list_transfers`,
-   `list_mailbox_messages`, `list_stream_messages` — whichever lines apply.
+   `list_mailbox_messages`, `list_stream_messages`, `list_pubsub_messages`, `list_activemq_messages` — whichever lines apply.
 3. Check for leaks: `real_provider_calls` (needs telemetry) and `list_unmatched`. Anything listed still goes
    to a real provider or has no route: fix it or tell the developer.
 4. Show one small provocation, then undo it. For example: `force_sms_failure {"answer": "500", "count": 1}`,
@@ -264,6 +271,8 @@ Keep the frame, translate the words, fill in the real values and list only what 
 | Port already in use | `lsof -i :<port>`; ask whether to stop that process or map Stuntman to another host port (`-p 127.0.0.1:18025:8025`) and use that port in every URL. |
 | Azure SDK rejects the blob endpoint | Use `http` and `127.0.0.1` (not `localhost`), exactly as in the table. |
 | Kafka clients connect, then time out | The broker advertises `localhost`. When the app runs in another container, start Stuntman with `-e STUNTMAN_KAFKA_ADVERTISED_HOST=<name the app uses>`. |
+| Pub/Sub client calls the real Google API or asks for credentials | `PUBSUB_EMULATOR_HOST` is not set in the app's process (or, in .NET, `EmulatorDetection` is missing). The project id must match `set_pubsub`'s `project` for short names in tools. |
+| ActiveMQ client fails with a SecurityException | `set_activemq` has users and the app logs in with another one, or `refuse_login` is on: `set_activemq {"reset": true}`. |
 | FTP listings hang | Passive mode needs ports `30000-30009` published as well as `2121`. |
 | TLS errors (Key Vault, `:8443`, AMQPS, FTPS) | Trust the Stuntman Test CA (`/api/test-ca.pem`) for the app's process only — never system-wide on a machine that talks to real providers. |
 | A call shows up in `list_unmatched` | The plugin has no route for it: add the route with `put_plugin`. |

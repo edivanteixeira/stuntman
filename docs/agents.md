@@ -116,7 +116,7 @@ The tools it will use:
 |---|---|
 | See what can be installed | `list_plugins`, `get_catalog_plugin` |
 | Install | `install_plugin`, `install_collection`, `import_plugin` + `install_import` |
-| Providers with their own module | `set_provider` (identity, SAML, LDAP), `create_account` (storage), `create_webhook_inbox`, `set_mailbox`, `set_file_server`, `create_topic`, `set_ai_rule`, `set_event_plan`, and one set per line ([reference](reference/tools.md)) |
+| Providers with their own module | `set_provider` (identity, SAML, LDAP), `create_account` (storage), `create_webhook_inbox`, `set_mailbox`, `set_file_server`, `create_topic`, `create_pubsub_subscription`, `set_activemq`, `set_ai_rule`, `set_event_plan`, and one set per line ([reference](reference/tools.md)) |
 | Write a plugin that does not exist | `get_plugin`, `put_plugin`, `validate_plugin` |
 | Stand in for a provider from its OpenAPI spec | `import_spec`, `reimport_spec`, `set_route`, `try_route` |
 | Record the real provider and make the plugin | `start_recording`, `recording_status`, `stop_recording`, `make_plugin` |
@@ -126,13 +126,13 @@ The tools it will use:
 
 ## Tools by intent
 
-A sample; the full list of 356 is in the [tool reference](reference/tools.md).
+A sample; the full list of 376 is in the [tool reference](reference/tools.md).
 
 | Intent | Tools |
 |---|---|
-| **Watch** | `list_sms`, `list_whatsapp_messages`, `list_api_calls`, `list_traces`, `list_deliveries`, `list_ai_calls`, `list_product_events`, `list_transfers`, `list_stream_messages`, `list_pubsub_messages`, `wait_for_object`, `wait_for_api_call`, `wait_for_delivery`, `wait_for_ai_call`, `wait_for_event`, `wait_for_file`, `wait_for_pubsub_message` |
-| **Provoke** | `create_rule`, `set_rule_enabled`, `force_answer`, `force_sms_failure`, `force_whatsapp_failure`, `force_ai_failure`, `force_events_failure`, `expire_tokens`, `send_bad_webhook`, `provoke_sign_in`, `provoke_secret`, `rebalance` |
-| **Play the people** | `reply_as_user`, `reply_sms_as_user`, `simulate_recipient`, `put_mail`, `put_file`, `produce`, `send_bot_activity` |
+| **Watch** | `list_sms`, `list_whatsapp_messages`, `list_api_calls`, `list_traces`, `list_deliveries`, `list_ai_calls`, `list_product_events`, `list_transfers`, `list_stream_messages`, `list_pubsub_messages`, `list_activemq_messages`, `wait_for_object`, `wait_for_api_call`, `wait_for_delivery`, `wait_for_ai_call`, `wait_for_event`, `wait_for_file`, `wait_for_pubsub_message`, `wait_for_activemq_ack` |
+| **Provoke** | `create_rule`, `set_rule_enabled`, `force_answer`, `force_sms_failure`, `force_whatsapp_failure`, `force_ai_failure`, `force_events_failure`, `expire_tokens`, `send_bad_webhook`, `provoke_sign_in`, `provoke_secret`, `rebalance`, `set_pubsub`, `set_activemq` |
+| **Play the people** | `reply_as_user`, `reply_sms_as_user`, `simulate_recipient`, `put_mail`, `put_file`, `produce`, `pubsub_publish`, `activemq_send`, `send_bot_activity` |
 | **Move time** | `clock`, `advance_clock` ([the environment's clock](clock.md)) |
 | **Set up** | `list_plugins`, `install_plugin`, `install_collection`, `import_spec`, `start_recording`, `import_wsdl`, `put_plugin`, `set_provider`, `create_webhook_inbox`, `create_environment` |
 | **Check** | `real_provider_calls`, `validate_plugin`, `list_forced`, `would_fail`, `check_events`, `ai_spend`, `verify_xml_signature` |

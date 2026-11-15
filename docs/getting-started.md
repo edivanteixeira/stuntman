@@ -73,6 +73,8 @@ Change **base URLs only**. Your app keeps its code, its SDKs and its settings.
 | IMAP / POP3 mailboxes | host and port | `localhost:1143` / `localhost:1110`; the login is the mailbox address |
 | FTP / FTPS / SFTP | host and port | `localhost:2121` / `localhost:2222`; users from **Files** |
 | Kafka and Schema Registry | `bootstrap.servers`, `schema.registry.url` | `localhost:9092`, `http://localhost:8081` |
+| Google Cloud Pub/Sub | `PUBSUB_EMULATOR_HOST` | `localhost:8085` (gRPC, no auth) |
+| ActiveMQ (OpenWire) | broker URL | `tcp://localhost:61616` (NMS: `activemq:tcp://localhost:61616`); users from **Queues › ActiveMQ** |
 | RabbitMQ management | API URL | `http://localhost:15672` |
 | SAML 2.0 | IdP metadata URL | `http://localhost:8025/login/<tenant>/saml/metadata` |
 | LDAP / Active Directory | host and port | `localhost:3389`, base DN from **Identity › Protocols** |

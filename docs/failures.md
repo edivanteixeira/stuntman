@@ -75,6 +75,9 @@ named answers and `force_answer` instead.
 | Messaging | `set_namespace_reachability` | `refuse`, `timeout`, `401`, `busy` |
 | Streams | `set_streams` with `provoke` | `leader_not_available`, `sasl_refused`, `slow_fetch`, `duplicate`, `registry_down`; `none` stops it |
 | Streams | `rebalance`, `produce` with `bad_schema` | a consumer-group rebalance; a record with an unknown schema id |
+| Messaging (ActiveMQ) | `set_activemq` | `refuse_login` (SecurityException), `drop_after` N dispatches, `slow_dispatch`, `redeliver` (the next N acks are lost), `fail_commits` (the next N commits roll back), `max_redeliveries` and `individual_dlq` for the DLQ; `reset` stops it |
+| Messaging (ActiveMQ) | `activemq_send` with `ttl`, `delay`, `cron` | a message that expires (to `ActiveMQ.DLQ` when persistent), a scheduled or repeating delivery; `advance_clock` brings it forward |
+| Pub/Sub | `set_pubsub` with `provoke` | `unavailable`, `deadline_exceeded`, `resource_exhausted`, `not_found`, `slow_publish`, `duplicate`, `ack_transient` (exactly-once acks fail and are retried); `times=N`, one `topic`; `none` stops it |
 | Identity | `provoke_sign_in` | `mfa_required`, `mfa_fails`, `consent_required`, `user_cancels`, `wrong_tenant`, `expired`, `bad_signature`, `idp_down` |
 | Identity | `provoke_idp` | discovery, JWKS or token endpoint failures |
 | Identity (LDAP) | `set_provider` with `ldap_provoke` | `busy` (51), `unavailable` (52), `timeout`; `normal` stops it; locked or disabled users answer as Active Directory does |

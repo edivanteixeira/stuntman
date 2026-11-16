@@ -1,6 +1,7 @@
 //! Environments: N1 list, N2 new, N3 settings, plus the rail's switcher and the strip a paused or
 //! expiring environment shows on every screen.
 
+pub mod connections;
 pub mod list;
 pub mod new;
 pub mod settings;
@@ -88,13 +89,13 @@ pub fn Switcher() -> impl IntoView {
     view! {
         <div class="anchor envbox">
             <div class="env" on:click=show title="Switch environment">
-                <span class="dot" class:off=move || !live.connected.get() class:paused=move || env.get()["paused"] == true></span>
-                <span class="grow">{move || label(&s(&env.get(), "env"))}</span><span class="small cap">"▾"</span>
+                <span class="dot" class:off=move || { env.track(); !live.connected.get() || api::shared_root() } class:paused=move || env.get()["paused"] == true></span>
+                <span class="grow" class:cap=move || { env.track(); api::shared_root() } class:small=move || { env.track(); api::shared_root() }>{move || if api::shared_root() { "Choose an environment".to_string() } else { label(&s(&env.get(), "env")) }}</span><span class="small cap">"▾"</span>
             </div>
             <Pop open=open>
                 {move || list.get().into_iter().map(|e| {
                     let name = s(&e, "name");
-                    let here = name == s(&env.get_untracked(), "env");
+                    let here = name == s(&env.get_untracked(), "env") && !api::shared_root();
                     let state = if e["paused"] == true { "paused".to_string() } else if s(&e, "lifetime") == "expires" { lifetime(&e) } else { "running".into() };
                     let n2 = name.clone();
                     view! { <div class="mi" on:click=move |_| if !here { api::switch_env(&n2, "/notifications") }>

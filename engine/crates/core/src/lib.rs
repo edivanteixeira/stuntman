@@ -22,6 +22,23 @@ use std::{path::PathBuf, sync::Arc};
 
 pub use tools::{ApiError, Route, Tool, ToolResult};
 
+/// The main port (screens, API, MCP, sign-in pages).
+pub fn main_port() -> u16 {
+    std::env::var("STUNTMAN_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8025)
+}
+
+/// STUNTMAN_PUBLIC_URL: one public address for a shared Stuntman (https://stuntman.example.com).
+/// Its root lists the environments and each one lives under /e/<name>/.
+pub fn shared_public_url() -> Option<String> {
+    std::env::var("STUNTMAN_PUBLIC_URL").ok().map(|u| u.trim().trim_end_matches('/').to_string()).filter(|u| !u.is_empty())
+}
+
+tokio::task_local! {
+    /// The address the current request came by on the main port: scheme://host[/e/<name>]
+    /// (X-Forwarded-Proto and X-Forwarded-Host first, as a proxy sends them).
+    pub static REQUEST_BASE: String;
+}
+
 /// Everything a module needs at runtime. Cheap to clone.
 #[derive(Clone)]
 pub struct Ctx {
@@ -50,6 +67,35 @@ impl Ctx {
     /// "/e/<name>" for the others (their *.<base_domain> host names work too).
     pub fn prefix(&self) -> String {
         if self.envs.default_name() == *self.env { String::new() } else { format!("/e/{}", self.env) }
+    }
+
+    /// Where a browser reaches this environment's main port: its public_url, else the server's
+    /// STUNTMAN_PUBLIC_URL + /e/<name>, else the address the current request came by, else
+    /// http://localhost:<port><prefix>.
+    pub fn public_base(&self) -> String {
+        let u = self.state.file.read().unwrap().public_url.trim_end_matches('/').to_string();
+        if !u.is_empty() {
+            return u;
+        }
+        if let Some(p) = shared_public_url() {
+            return format!("{p}/e/{}", self.env);
+        }
+        REQUEST_BASE.try_with(|b| b.clone()).unwrap_or_else(|_| format!("http://localhost:{}{}", main_port(), self.prefix()))
+    }
+
+    /// http://<app host>:<port><prefix>: where the app under test reaches a port of this environment.
+    pub fn app_url(&self, port: u16) -> String {
+        let (h, p) = self.app_host();
+        format!("http://{h}:{port}{p}")
+    }
+
+    /// Host and path prefix an app uses for a port of this environment: its own base domain
+    /// (no prefix: the host names it), else the host shown everywhere (localhost) and /e/<name>.
+    pub fn app_host(&self) -> (String, String) {
+        match self.state.own_domain() {
+            Some(d) => (d, String::new()),
+            None => (self.host.split(':').next().unwrap_or("localhost").to_string(), self.prefix()),
+        }
     }
 }
 

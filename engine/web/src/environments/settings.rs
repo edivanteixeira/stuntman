@@ -13,7 +13,8 @@ use crate::{
 };
 
 /// Fields the form edits, with the YAML key that shows them.
-const FIELDS: [(&str, &str); 4] = [("/baseDomain", "base_domain"), ("/callbacks/default", "default"), ("/lifetime", "lifetime"), ("/paused", "paused")];
+const FIELDS: [(&str, &str); 6] = [("/baseDomain", "base_domain"), ("/publicUrl", "public_url"), ("/allowedEmailDomains", "allowed_email_domains"),
+    ("/callbacks/default", "default"), ("/lifetime", "lifetime"), ("/paused", "paused")];
 
 #[component]
 pub fn Settings() -> impl IntoView {
@@ -29,6 +30,8 @@ pub fn Settings() -> impl IntoView {
     let del = RwSignal::new(false);
     let typed = RwSignal::new(String::new());
     let gone = RwSignal::new(false);
+    let adding = RwSignal::new(false);
+    let new_domain = RwSignal::new(String::new());
 
     let dirty = Memo::new(move |_| {
         let (a, b) = (saved.get(), draft.get());
@@ -73,6 +76,8 @@ pub fn Settings() -> impl IntoView {
         let (d, sv) = (draft.get_untracked(), saved.get_untracked());
         let mut body = json!({});
         if d["baseDomain"] != sv["baseDomain"] { body["base_domain"] = d["baseDomain"].clone(); }
+        if d["publicUrl"] != sv["publicUrl"] { body["public_url"] = d["publicUrl"].clone(); }
+        if d["allowedEmailDomains"] != sv["allowedEmailDomains"] { body["allowed_email_domains"] = d["allowedEmailDomains"].clone(); }
         if d["callbacks"] != sv["callbacks"] { body["callbacks"] = d["callbacks"].clone(); }
         if d["lifetime"] != sv["lifetime"] { body["lifetime"] = json!(match s(&d, "lifetime").as_str() { "expires" => "24h".to_string(), l => l.to_string() }); }
         if d["paused"] != sv["paused"] { body["paused"] = d["paused"].clone(); }
@@ -110,6 +115,7 @@ pub fn Settings() -> impl IntoView {
                 <div class="top">
                     <h1><a class="crumb" href="/environments">"Environments"</a><span class="crumb" style="margin:0 12px">"/"</span>{move || label(&name())}</h1>
                     <span class="grow"></span>
+                    <a class="btn" href=move || format!("/environments/{}/connections", name())>"Connections"</a>
                     {move || { let d = dirty.get(); (d > 0).then(|| view! { <span class="small attn">{format!("{d} unsaved change{}", if d == 1 { "" } else { "s" })}</span>
                         <button class="btn" on:click=move |_| draft.set(saved.get_untracked())>"Discard"</button> }) }}
                     <button class="btn primary" disabled=move || dirty.get() == 0 || cb_bad() on:click=move |_| save(false)>"Save"</button>
@@ -137,7 +143,7 @@ pub fn Settings() -> impl IntoView {
                         let a = d["addresses"].clone();
                         let real: Vec<String> = d["realHosts"].as_array().cloned().unwrap_or_default().iter().map(|x| x.as_str().unwrap_or("").to_string()).collect();
                         let here = n == s(&env.get(), "env");
-                        let (mcp, mcp2, otlp) = (s(&a, "mcp"), s(&a, "localMcp"), s(&a, "otlp"));
+                        let (mcp, mcp2, otlp) = (s(&a, "publicMcp"), s(&a, "localMcp"), s(&a, "otlp"));
                         let (n_hosts, n_reset, n_resume) = (n.clone(), n.clone(), n.clone());
                         view! {
                             {(sv["paused"] == true).then(|| view! {
@@ -150,13 +156,33 @@ pub fn Settings() -> impl IntoView {
                                     <input class="input mono" style="width:260px" class:changed=move || saved.get()["baseDomain"] != draft.get()["baseDomain"] prop:value=s(&d, "baseDomain")
                                         on:change=move |e| set("/baseDomain", json!(event_target_value(&e).trim().to_lowercase()))/>
                                     <span class="small cap">"each service gets a name under it"</span></div>
+                                <div class="row" style="margin-bottom:10px"><span style="width:164px">"Public URL"</span>
+                                    <input class="input mono" style="width:340px" class:changed=move || saved.get()["publicUrl"] != draft.get()["publicUrl"] placeholder=s(&a, "public")
+                                        prop:value=s(&d, "publicUrl") on:change=move |e| set("/publicUrl", json!(event_target_value(&e).trim()))/>
+                                    <span class="small cap">"sign-in, issuer and links in pages use it"</span></div>
+                                <div class="row" style="margin-bottom:10px"><span style="width:164px">"Apps reach it at"</span><span class="mono" style="width:340px">{s(&a, "apps")}</span>
+                                    <span class="small cap">{if s(&a, "apps").starts_with("<service>") { "by name: no /e/ prefix, no hosts lines" } else { "a base domain of your own lets apps use names" }}</span></div>
                                 <div class="row" style="margin-bottom:6px"><span style="width:164px">"Real host names"</span>
                                     <span>{if real.is_empty() { "none: the app uses the names under the base domain".to_string() } else { format!("{} answered with the Stuntman Test CA ({})", real.len(), real.join(", ")) }}</span></div>
                                 <div class="row" style="margin-left:172px">
                                     <button class="link" style="font-size:13px" on:click=move |_| { let n = n_hosts.clone(); leptos::task::spawn_local(async move {
                                         match api::get(&format!("/environments/{n}/hosts")).await { Ok(v) => ui::copy(&s(&v, "hosts"), "Hosts entries"), Err(e) => ui::toast_err(e) } }) }>"Copy hosts entries"</button>
                                     <a class="link" style="font-size:13px;margin-left:18px" href=api::url("/api/keyvault/test-ca.pem") download="stuntman-test-ca.pem">"Download the test CA"</a></div>
-                                <div class="row" style="margin-top:10px"><span style="width:164px">"Without hosts entries"</span><span class="mono">{s(&a, "local")}</span></div>
+                            </div>
+                            <div class="block">
+                                <div class="caps" style="margin-bottom:14px">"Identity"</div>
+                                <div class="row wrap" style="gap:8px"><span style="width:164px">"Real e-mail domains"</span>
+                                    {move || draft.get()["allowedEmailDomains"].as_array().cloned().unwrap_or_default().into_iter().map(|x| { let dm = x.as_str().unwrap_or("").to_string(); let d2 = dm.clone(); view! {
+                                        <span class="chip">{dm}<button class="link cap" style="margin-left:8px" title="Remove" on:click=move |_| draft.update(|d| {
+                                            if let Some(a) = d["allowedEmailDomains"].as_array_mut() { a.retain(|v| v.as_str() != Some(&d2)); } })>"×"</button></span> } }).collect_view()}
+                                    {move || if adding.get() { view! {
+                                        <input class="input mono" style="width:200px" placeholder="example.org" prop:value=move || new_domain.get() on:input=move |e| new_domain.set(event_target_value(&e))
+                                            on:keydown=move |e| if e.key() == "Enter" { let v = new_domain.get_untracked().trim().trim_start_matches('@').to_lowercase(); if !v.is_empty() {
+                                                draft.update(|d| { if !d["allowedEmailDomains"].is_array() { d["allowedEmailDomains"] = json!([]); } if let Some(a) = d["allowedEmailDomains"].as_array_mut() { if !a.iter().any(|x| x.as_str() == Some(&v)) { a.push(json!(v)); } } }); }
+                                                new_domain.set(String::new()); adding.set(false); }/> }.into_any()
+                                    } else { view! { <button class="link" style="font-size:13px" on:click=move |_| adding.set(true)>"Add a domain"</button> }.into_any() }}
+                                </div>
+                                <div class="small cap" style="margin:8px 0 0 172px">"People of these domains can be added to this environment's identity providers, so an app whose database has real accounts signs them in. Every other address stays synthetic only."</div>
                             </div>
                             <div class="block">
                                 <div class="caps" style="margin-bottom:14px">"Callbacks"</div>
@@ -178,7 +204,9 @@ pub fn Settings() -> impl IntoView {
                                     <select class="select" class:changed=move || saved.get()["lifetime"] != draft.get()["lifetime"] on:change=move |e| set("/lifetime", json!(event_target_value(&e)))>
                                         {[("kept", "Kept"), ("expires", "Expires"), ("pr_closed", "When the pull request closes")].into_iter().map(|(v, l)| { let on = s(&d, "lifetime") == v; view! { <option value=v selected=on>{l}</option> } }).collect_view()}
                                     </select>
-                                    <span class="small cap">{lifetime(&sv)}</span></div>
+                                    <span class="small" class:attn=sv["lifetime"] == "expires" class:cap=sv["lifetime"] != "expires">{if sv["lifetime"] == "expires" { format!("{} {} · {}", super::day(api::n(&sv, "expiresAt")), api::hm(api::n(&sv, "expiresAt")), lifetime(&sv)) } else { lifetime(&sv) }}</span>
+                                    {(sv["lifetime"] == "expires").then(|| { let n = n.clone(); view! { <button class="link" style="font-size:13px;margin-left:18px" on:click=move |_| { let n = n.clone();
+                                        leptos::task::spawn_local(async move { act("POST", format!("/environments/{n}/extend"), json!({"by": "24h"}), "Extended by 24 h").await }) }>"Extend 24 h"</button> } })}</div>
                                 <div class="row" style="margin-bottom:12px"><span style="width:164px;display:flex;gap:10px;align-items:center"><Toggle on=Signal::derive(move || val("/paused") == true) set=move |v: bool| set("/paused", json!(v))/>"Paused"</span>
                                     <span class="small cap">"every service answers 503; state is kept"</span></div>
                                 <div class="row"><span style="width:164px">"Reset"</span>
@@ -197,7 +225,7 @@ pub fn Settings() -> impl IntoView {
                             <div class="block">
                                 <div class="caps" style="margin-bottom:14px">"Danger"</div>
                                 <div class="row"><button class="link danger" style="font-size:13px;width:164px;text-align:left" on:click=move |_| { typed.set(String::new()); del.set(true) }>{format!("Delete {}", label(&n))}</button>
-                                    <span class="small cap">"services, state and history; this can't be undone"</span></div>
+                                    <span class="small cap">"everything, at once: its folder, both databases, identity keys, vault certificates, SMTP listeners and host names. Expiry deletes the same way."</span></div>
                             </div>
                             {move || (!err.get().is_empty()).then(|| view! { <div class="err">{err.get()}</div> })}
                         }.into_any()

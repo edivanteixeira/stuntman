@@ -20,7 +20,8 @@ def free_port():
 
 
 class Stuntman:
-    def __init__(self, prefix="stuntman-e2e-"):
+    def __init__(self, prefix="stuntman-e2e-", env=None):
+        self.extra = env or {}
         self.ports = {k: free_port() for k in PORTS}
         self.data = tempfile.mkdtemp(prefix=prefix)
         self.log = self.data + ".log"
@@ -30,9 +31,27 @@ class Stuntman:
             return self.ports[k]
         raise AttributeError(k)
 
-    def __enter__(self):
+    def start(self):
         env = dict(os.environ, STUNTMAN_DATA=self.data, STUNTMAN_WEB="/nonexistent", STUNTMAN_ENV=os.environ.get("STUNTMAN_ENV", "stg-a"), **{f"STUNTMAN_{k}": str(v) for k, v in self.ports.items()})
-        self.proc = subprocess.Popen([BIN], env=env, stdout=open(self.log, "w"), stderr=subprocess.STDOUT)
+        env.update(self.extra)
+        self.proc = subprocess.Popen([BIN], env=env, stdout=open(self.log, "a"), stderr=subprocess.STDOUT)
+
+    def restart(self):
+        """Stops and starts again on the same data folder and ports (a new version deployed)."""
+        self.proc.terminate()
+        self.proc.wait(10)
+        self.start()
+        wait(lambda: self._up(), "Stuntman to start again", 30)
+
+    def _up(self):
+        try:
+            self.call("GET", "/env")
+            return True
+        except Exception:
+            return False
+
+    def __enter__(self):
+        self.start()
         end = time.time() + 30
         while time.time() < end:
             try:

@@ -65,7 +65,7 @@ pub fn all() -> Vec<Tool> {
                 out.push(json!({"name": v.name, "kind": v.kind, "url": format!("https://{}:{}", config::host(&ctx, &v.name), crate::port()), "secrets": s, "keys": k, "certificates": c, "anyToken": v.access.any_token}));
             }
             let env_secrets: Vec<String> = std::fs::read_to_string(ctx.path("secrets.yaml")).ok().and_then(|t| serde_yaml::from_str::<std::collections::BTreeMap<String, serde_yaml::Value>>(&t).ok()).map(|m| m.into_keys().collect()).unwrap_or_default();
-            Ok(json!({"vaults": out, "envSecrets": env_secrets, "urlTemplate": format!("https://{}:{}", config::host(&ctx, "{name}"), crate::port()), "imds": format!("http://localhost:{}{}/metadata/identity/oauth2/token", std::env::var("STUNTMAN_PORT").unwrap_or("8025".into()), ctx.prefix()), "port": crate::port(), "bindError": crate::tls::BIND_ERROR.lock().unwrap().clone()}))
+            Ok(json!({"vaults": out, "envSecrets": env_secrets, "urlTemplate": format!("https://{}:{}", config::host(&ctx, "{name}"), crate::port()), "imds": format!("{}/metadata/identity/oauth2/token", ctx.app_url(stuntman_core::main_port())), "port": crate::port(), "bindError": crate::tls::BIND_ERROR.lock().unwrap().clone()}))
         }).route("GET", "/keyvault/vaults"),
         // ---------------------------------------------------------------- K1 secrets
         Tool::new("list_secrets", "Secrets of a vault: names, current version, state, expiry and reads in the last hour.", |ctx, a| async move {
@@ -258,7 +258,7 @@ pub fn all() -> Vec<Tool> {
             let v = config::pick(&ctx, a.str("name").or(a.str("vault")))?;
             let imds = store::provoked(&ctx, "*", "imds", "").await?;
             Ok(json!({"vault": v, "url": format!("https://{}:{}", config::host(&ctx, &v.name), crate::port()), "yaml": config::text(&ctx, &v.name), "roles": config::ROLES.iter().map(|(k, l)| json!({"id": k, "label": l})).collect::<Vec<_>>(),
-                "imds": {"url": format!("http://localhost:{}{}/metadata/identity/oauth2/token", std::env::var("STUNTMAN_PORT").unwrap_or("8025".into()), ctx.prefix()), "provoked": imds.map(|x| x.0)},
+                "imds": {"url": format!("{}/metadata/identity/oauth2/token", ctx.app_url(stuntman_core::main_port())), "provoked": imds.map(|x| x.0)},
                 "deleted": {"secrets": store::deleted(&ctx, &v.name, SECRET).await?, "keys": store::deleted(&ctx, &v.name, KEY).await?, "certificates": store::deleted(&ctx, &v.name, CERT).await?}}))
         }).param("name", "vault name (default the first)").route("GET", "/keyvault/vaults/{name}"),
         Tool::new("set_vault", "Creates or changes a vault: any_token, throttle (2000/10s), latency, soft_delete_days, subscribers, seed_on_reset. A new vault imports this environment's secret:// values.", |ctx, a| async move {

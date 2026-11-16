@@ -12,9 +12,8 @@ fn since(a: &Args, default: &str) -> Result<i64, ApiError> {
 }
 
 pub fn endpoints(ctx: &Ctx) -> Value {
-    let host = ctx.host.split(':').next().unwrap_or("localhost").to_string();
+    let (host, p) = ctx.app_host();
     let (h, g) = crate::ports();
-    let p = ctx.prefix();
     let grpc_header = if p.is_empty() { String::new() } else { format!("\n# gRPC: OTEL_EXPORTER_OTLP_HEADERS=x-stuntman-env={}", ctx.env) };
     json!({"http": format!("http://{host}:{h}{p}"), "grpc": format!("{host}:{g}"),
            "env": format!("OTEL_EXPORTER_OTLP_ENDPOINT=http://{host}:{h}{p}\nOTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf\nOTEL_SERVICE_NAME=acme-api{grpc_header}")})

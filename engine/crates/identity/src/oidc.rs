@@ -19,20 +19,39 @@ use crate::{config::{self, Provider}, flow::{self, Next, Who}, page, store, toke
 
 pub fn routes() -> Router<Ctx> {
     Router::new()
-        .route("/login/{tenant}/v2.0/.well-known/openid-configuration", get(discovery))
-        .route("/login/{tenant}/.well-known/openid-configuration", get(discovery))
-        .route("/login/{tenant}/discovery/v2.0/keys", get(keys))
-        .route("/login/{tenant}/discovery/keys", get(keys))
+        .route("/login/{tenant}/v2.0/.well-known/openid-configuration", get(|s, p| async { open_cors(discovery(s, p).await) }).options(preflight))
+        .route("/login/{tenant}/.well-known/openid-configuration", get(|s, p| async { open_cors(discovery(s, p).await) }).options(preflight))
+        .route("/login/{tenant}/discovery/v2.0/keys", get(|s, p| async { open_cors(keys(s, p).await) }).options(preflight))
+        .route("/login/{tenant}/discovery/keys", get(|s, p| async { open_cors(keys(s, p).await) }).options(preflight))
         .route("/login/{tenant}/oauth2/v2.0/authorize", get(authorize).post(authorize_form))
-        .route("/login/{tenant}/oauth2/v2.0/token", post(token_ep))
-        .route("/login/{tenant}/oauth2/v2.0/logout", get(logout))
-        .route("/login/{tenant}/oidc/userinfo", get(userinfo))
+        .route("/login/{tenant}/oauth2/v2.0/token", post(token_ep).options(preflight))
+        .route("/login/{tenant}/oauth2/v2.0/logout", get(logout).options(preflight))
+        .route("/login/{tenant}/oidc/userinfo", get(|s, p, h| async { open_cors(userinfo(s, p, h).await) }).options(preflight))
         .route("/login/{tenant}/v1.0/me", get(graph_me))
         .route("/login/{tenant}/v1.0/users/{id}", get(graph_user))
         .route("/login/{tenant}/v1.0/users/{id}/memberOf", get(graph_member_of))
         .route("/login/{tenant}/v1.0/users/{id}/getMemberObjects", post(graph_member_of))
         .route("/oauth-clients/callback", get(client_callback))
         .route("/oauth-clients/{file}", get(client_metadata))
+}
+
+/// A browser (an SPA with MSAL) reads discovery and keys and redeems its code from another origin.
+async fn preflight(h: HeaderMap) -> Response {
+    let origin = h.get(header::ORIGIN).and_then(|v| v.to_str().ok()).unwrap_or("*").to_string();
+    let asked = h.get(header::ACCESS_CONTROL_REQUEST_HEADERS).and_then(|v| v.to_str().ok()).unwrap_or("content-type").to_string();
+    (StatusCode::NO_CONTENT, [(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin), (header::ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, OPTIONS".into()),
+        (header::ACCESS_CONTROL_ALLOW_HEADERS, asked), (header::ACCESS_CONTROL_MAX_AGE, "86400".into()), (header::VARY, "Origin".into())]).into_response()
+}
+
+fn open_cors(mut r: Response) -> Response {
+    r.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, header::HeaderValue::from_static("*"));
+    r
+}
+
+/// scheme://host[:port] of a URL.
+fn origin_of(u: &str) -> String {
+    let (scheme, rest) = u.split_once("://").unwrap_or(("", u));
+    format!("{scheme}://{}", rest.split(['/', '?', '#']).next().unwrap_or("")).to_lowercase()
 }
 
 fn not_found(tenant: &str) -> Response {
@@ -149,11 +168,31 @@ fn url_decode(s: &str) -> String {
 async fn token_ep(State(ctx): State<Ctx>, Path(tenant): Path<String>, h: HeaderMap, Form(f): Form<HashMap<String, String>>) -> Response {
     let Some(mut p) = provider(&ctx, &tenant).await else { return not_found(&tenant) };
     ctx.live.seen(&f.get("client_id").cloned().or(basic(&h).map(|x| x.0)).unwrap_or("app".into()), "Identity");
-    match flow::token(&ctx, &mut p, f, basic(&h)).await {
+    // From a browser: only an app of type spa redeems its code cross-origin, from one of its redirect origins.
+    let origin = h.get(header::ORIGIN).and_then(|v| v.to_str().ok()).map(|o| o.trim_end_matches('/').to_lowercase());
+    if let Some(o) = &origin {
+        let app = f.get("client_id").and_then(|id| p.app(id)).cloned();
+        let ok = app.as_ref().map(|a| a.kind == "spa" && a.redirect_uris.iter().any(|r| origin_of(r) == *o)).unwrap_or(false);
+        if !ok {
+            let why = if app.map(|a| a.kind == "spa").unwrap_or(false) { format!("AADSTS9002326: The origin {o} is not one of the app's Single-Page Application redirect URIs.") }
+                else { "AADSTS9002326: Cross-origin token redemption is permitted only for the 'Single-Page Application' client-type.".to_string() };
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid_request", "error_description": why, "error_codes": [9002326]}))).into_response();
+        }
+    }
+    let r = match flow::token(&ctx, &mut p, f, basic(&h)).await {
         Ok(v) => ([(header::CACHE_CONTROL, "no-store")], Json(v)).into_response(),
         Err(e) => (StatusCode::from_u16(e.status).unwrap_or(StatusCode::BAD_REQUEST), Json(json!({"error": e.error, "error_description": format!("{}: {}", e.code, e.message),
             "error_codes": [e.code.trim_start_matches("AADSTS").parse::<i64>().unwrap_or(0)], "timestamp": chrono_like(), "trace_id": stuntman_core::util::uuid(), "correlation_id": stuntman_core::util::uuid()}))).into_response(),
+    };
+    with_origin(r, origin)
+}
+
+fn with_origin(mut r: Response, origin: Option<String>) -> Response {
+    if let Some(v) = origin.and_then(|o| header::HeaderValue::from_str(&o).ok()) {
+        r.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, v);
+        r.headers_mut().insert(header::VARY, header::HeaderValue::from_static("Origin"));
     }
+    r
 }
 
 fn chrono_like() -> String {

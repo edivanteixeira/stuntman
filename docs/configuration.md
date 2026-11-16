@@ -10,6 +10,7 @@ default; most setups change nothing.
 | `STUNTMAN_DATA` | `data` (`/data` in Docker) | where environments, YAML, SQLite and keys live |
 | `STUNTMAN_ENV` | `staging` | the default environment |
 | `STUNTMAN_HOST` | `localhost:<STUNTMAN_PORT>` | the name apps and people use; shown in base URLs, links and MCP |
+| `STUNTMAN_PUBLIC_URL` | none | one public address for a shared Stuntman (`https://stuntman.example.com`): the root lists the environments, each one lives under `/e/<name>/`, and identity names `<url>/e/<name>` ([Environments](environments.md#a-shared-stuntman-one-public-address)) |
 | `STUNTMAN_WEB` | `web/dist` (`/app/web` in Docker) | the built screen |
 | `STUNTMAN_PLUGINS` | `plugins` next to the engine (`/app/plugins` in Docker) | the plugin catalog |
 | `STUNTMAN_PORT` | `8025` | screen, `/api`, `/mcp`, SMS, WhatsApp, SendGrid, identity, AI models, product events, GELF over HTTP |

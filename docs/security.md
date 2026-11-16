@@ -18,6 +18,11 @@ run next to your app in development, CI and staging.
    authenticates: a VPN, Cloudflare Access, `oauth2-proxy`, or a reverse proxy with sign-in.
 3. **Never point production at it,** and never trust the Stuntman Test CA on a machine that talks to real providers.
 4. **Use synthetic data.** Seeds and plugins use `example.com` addresses and made-up people; keep it that way.
+5. **A shared Stuntman with one public address** (`STUNTMAN_PUBLIC_URL`) exposes every environment's screens, API and
+   MCP to whoever reaches it. Put sign-in in front of `/`, `/e/*/api` and `/e/*/mcp` (Cloudflare Access, `oauth2-proxy`),
+   and leave open only what the app and the browser of the app under test need: `/e/*/login/` and the provider routes.
+6. **Real e-mail domains** (`allowed_email_domains`) put real people's addresses in an environment. Use them only
+   where that data may already be, delete the environment when the branch is done, and keep its data out of reports.
 
 ## The Test CA
 

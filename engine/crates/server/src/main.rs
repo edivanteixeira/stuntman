@@ -321,7 +321,8 @@ pub fn env_router(ctx: Ctx) -> Router {
         .route("/env", get(|s: State<App>| async move {
             let f = s.ctx.state.file.read().unwrap().clone();
             Json(json!({"env": &*s.ctx.env, "host": &*s.ctx.host, "prefix": s.ctx.prefix(), "paused": f.paused, "pausedSince": f.paused_since,
-                "lifetime": f.lifetime, "expiresAt": f.expires_at, "default": srv().envs.default_name(), "version": env!("CARGO_PKG_VERSION")}))
+                "lifetime": f.lifetime, "expiresAt": f.expires_at, "default": srv().envs.default_name(), "version": env!("CARGO_PKG_VERSION"),
+                "shared": stuntman_core::shared_public_url().is_some(), "publicUrl": s.ctx.public_base()}))
         }));
     let mut extra: Router<Ctx> = Router::new();
     for m in &s.mods {
@@ -344,12 +345,18 @@ async fn dispatch(req: axum::extract::Request) -> Response {
     use tower::ServiceExt;
     let s = srv();
     let path = req.uri().path().to_string();
+    // A proxy (an Ingress) sends the public host in X-Forwarded-Host and keeps or rewrites Host.
+    let (fwd, plain, proto) = {
+        let hv = |k: &str| req.headers().get(k).and_then(|v| v.to_str().ok()).map(|v| v.split(',').next().unwrap_or("").trim().to_string()).filter(|v| !v.is_empty());
+        (hv("x-forwarded-host"), hv("host"), hv("x-forwarded-proto").unwrap_or("http".into()))
+    };
+    let host = fwd.or(plain.clone()).unwrap_or(format!("localhost:{}", s.port));
     let (ctx, rest) = match path.strip_prefix("/e/") {
         Some(r) => {
             let (name, tail) = r.split_once('/').unwrap_or((r, ""));
             (s.envs.get(name), Some(format!("/{tail}")))
         }
-        None => (s.envs.by_host(req.headers().get("host").and_then(|v| v.to_str().ok())), None),
+        None => (s.envs.by_host(Some(&host)).or_else(|| s.envs.by_host(plain.as_deref())), None),
     };
     let Some(ctx) = ctx else {
         return ApiError::not_found("No Stuntman environment answers here").with(json!({"environments": s.envs.all().iter().map(|c| c.env.to_string()).collect::<Vec<_>>()})).into_response();
@@ -366,7 +373,8 @@ async fn dispatch(req: axum::extract::Request) -> Response {
     let Some(router) = s.routers.lock().unwrap().get(&*ctx.env).cloned() else {
         return ApiError::new(503, "This environment is starting").into_response();
     };
-    router.oneshot(req).await.into_response()
+    let base = format!("{proto}://{host}{}", if rest.is_some() { format!("/e/{}", ctx.env) } else { String::new() });
+    stuntman_core::REQUEST_BASE.scope(base, router.oneshot(req)).await.into_response()
 }
 
 fn reqwest_client() -> reqwest::Client {

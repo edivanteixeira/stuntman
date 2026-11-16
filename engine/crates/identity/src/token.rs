@@ -13,9 +13,11 @@ pub fn now_s() -> i64 {
     util::now_ms() / 1000
 }
 
-/// http://localhost:8025[/e/env]/login/<tenant>: what the app sets as its Authority (without /v2.0).
+/// <public base>/login/<tenant>: what the app sets as its Authority (without /v2.0). The public base
+/// is the environment's public_url, else the address the call came by (as Entra's discovery always
+/// names its public host), else http://localhost:8025[/e/env].
 pub fn base(ctx: &Ctx, p: &Provider) -> String {
-    format!("http://localhost:{}{}/login/{}", std::env::var("STUNTMAN_PORT").unwrap_or("8025".into()), ctx.prefix(), p.tenant)
+    format!("{}/login/{}", ctx.public_base(), p.tenant)
 }
 
 pub fn issuer(ctx: &Ctx, p: &Provider) -> String {

@@ -10,8 +10,9 @@ use serde_json::{json, Value};
 use crate::{config, store};
 
 pub fn url(ctx: &Ctx, name: &str) -> String {
-    let host = ctx.host.split(':').next().unwrap_or("localhost");
-    format!("http://{host}:{}{}/in/{name}", crate::port(), ctx.prefix())
+    // Where the app posts: the environment's own domain (no prefix), else localhost and /e/<name>.
+    let (host, prefix) = ctx.app_host();
+    format!("http://{host}:{}{prefix}/in/{name}", crate::port())
 }
 
 fn by(a: &Args) -> String {

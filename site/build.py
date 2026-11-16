@@ -692,6 +692,12 @@ def environments():
     <div><h3>By path prefix</h3>{code("localhost:8025/e/pr-5462/mcp")}</div>
     <div><h3>By gRPC metadata</h3>{code("x-stuntman-env: pr-5462")}</div></div>
 </section>
+<section class="wrap section">
+  {head(2, "One server for every branch.", "Make each environment from a template with its values, share one SMTP port, hand the app its settings by name, and give people one public address where each environment lives under /e/&lt;name&gt;/.")}
+  <div class="trio"><div><h3>From a template</h3>{code('{"name": "pr-5462", "from": "acme-preview",\n "vars": {"domain": "preview.acme.example"}}')}</div>
+    <div><h3>One public address</h3>{code("STUNTMAN_PUBLIC_URL=https://stuntman.example.com\n/e/pr-5462/        screens\n/e/pr-5462/mcp     MCP\n/e/pr-5462/login/  sign-in pages")}</div>
+    <div><h3>What the app sets</h3>{code("GET /api/environments/pr-5462/connections\nSMTP_USER=pr-5462\nIDENTITY_AUTHORITY=https://…/e/pr-5462/…")}</div></div>
+</section>
 <section class="wrap section"><div class="split">
   {head(2, "Clone, start empty or start from files.", "Pick what comes along: services and their files, rules, inboxes, secrets and, optionally, the state. Set how long it lives and where its callbacks go.")}
   {shot(p, "new-environment", "New environment: a copy, empty or from files")}

@@ -542,6 +542,8 @@ shard quota are not offered; the account is always `000000000000`.
 | **Speaks** | OIDC and OAuth2, in the flavor of Microsoft Entra ID (v2), Google, Okta, or generic OIDC |
 | **Point your app at** | the authority shown for the provider; discovery, JWKS and token endpoints are served per environment |
 | **It keeps** | tenants, app registrations and their redirect URIs, synthetic users with their claims, groups, roles and MFA |
+| **Public address** | issuer and discovery name the environment's public URL (or the address the call came by); a single-page app (MSAL) reads discovery and keys and redeems its code from the browser with CORS, from the origin of one of its `spa` redirect URIs ([Environments › A shared Stuntman](environments.md#a-shared-stuntman-one-public-address)) |
+| **Real e-mail domains** | people are synthetic by default; list a real domain in the environment's `allowed_email_domains` when the app only signs in accounts its database already has |
 | **You can provoke** | MFA required or failing, consent required, the user cancels, wrong tenant, tokens already expired, bad signatures, IdP down (`provoke_sign_in`); discovery, JWKS or token endpoint failures (`provoke_idp`) |
 
 A person, a test or an agent picks the simulated user on the sign-in page Stuntman serves.

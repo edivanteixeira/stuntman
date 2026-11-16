@@ -18,10 +18,11 @@ pub fn App() -> impl IntoView {
     provide_context(live);
     let env = RwSignal::new(Value::Null);
     provide_context(env);
+    api::keep_links_under_base();
     let load = move || {
         leptos::task::spawn_local(async move {
             match api::get("/env").await {
-                Ok(v) => env.set(v),
+                Ok(v) => { api::set_shared(v["shared"].as_bool() == Some(true)); env.set(v) }
                 // The environment picked in this browser was deleted: back to the default one.
                 Err(_) if api::stored_env().is_some() => api::switch_env("", "/environments"),
                 Err(_) => {}
@@ -37,7 +38,7 @@ pub fn App() -> impl IntoView {
         t
     });
     view! {
-        <Router>
+        <Router base=api::path_base()>
             <div class="app">
                 <Rail/>
                 <div class="main">
@@ -46,7 +47,14 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/environments") view=environments::list::List/>
                     <Route path=path!("/environments/new") view=environments::new::New/>
                     <Route path=path!("/environments/:name") view=environments::settings::Settings/>
-                    <Route path=path!("/") view=|| view! { <Redirect path="/timeline"/> }/>
+                    <Route path=path!("/environments/:name/connections") view=environments::connections::Connections/>
+                    <Route path=path!("/") view=move || {
+                        // Wait for /api/env: a shared Stuntman's root opens the list of environments.
+                        let e = env.get();
+                        if e.is_null() { ().into_any() }
+                        else if api::shared_root() { view! { <Redirect path="/environments"/> }.into_any() }
+                        else { view! { <Redirect path="/timeline"/> }.into_any() }
+                    }/>
                     <Route path=path!("/timeline") view=timeline::Timeline/>
                     <Route path=path!("/telemetry") view=|| view! { <Redirect path="/telemetry/traces"/> }/>
                     <Route path=path!("/telemetry/traces") view=telemetry::traces::Traces/>
@@ -244,6 +252,13 @@ fn Rail() -> impl IntoView {
             {
                 let entry = entry.clone();
                 move || {
+                    if env.get()["shared"].as_bool() == Some(true) && api::path_base().is_empty() {
+                        // A shared Stuntman's root: no environment chosen, so only what is not per environment.
+                        return view! {
+                            {BOTTOM.iter().map(|(l, p, k)| entry(l, p, k, true)).collect_view()}
+                            <div class="small cap" style="margin:14px 20px;line-height:16px">"Services, Timeline and Telemetry belong to one environment: open one to see them."</div>
+                        }.into_any();
+                    }
                     let u = usage.get();
                     let (mut on, off): (Vec<_>, Vec<_>) = KINDS.iter().partition(|(_, _, k)| in_use(&u[*k]));
                     on.sort_by_key(|(_, _, k)| -api::n(&u[*k], "week"));
@@ -261,7 +276,7 @@ fn Rail() -> impl IntoView {
                             off.iter().map(|(l, p, k)| entry(l, p, k, false)).collect_view().into_any()
                         }}
                         <div class="rail-bottom">{BOTTOM.iter().map(|(l, p, k)| entry(l, p, k, true)).collect_view()}</div>
-                    }
+                    }.into_any()
                 }
             }
             <div class="connected">

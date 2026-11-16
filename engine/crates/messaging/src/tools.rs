@@ -44,12 +44,18 @@ pub fn connection(ctx: &Ctx, n: &config::Namespace) -> String {
     let policy = n.access.policies.keys().next().cloned().unwrap_or_default();
     let key = config::key_value(ctx, &n.namespace, &policy);
     if n.kind == config::SB {
-        // <ns>.localhost resolves to loopback without a hosts entry; the host names the namespace.
-        let host = if default { format!("{}.localhost", n.namespace) } else { format!("{}.{}.localhost", n.namespace, ctx.env) };
+        // The host names the namespace (and the environment): <ns>.<base domain> when the environment
+        // has a domain of its own, else <ns>[.<env>].localhost, loopback with no hosts entry.
+        let host = match ctx.state.own_domain() {
+            Some(b) => format!("{}.{b}", n.namespace),
+            None if default => format!("{}.localhost", n.namespace),
+            None => format!("{}.{}.localhost", n.namespace, ctx.env),
+        };
         format!("Endpoint=sb://{host}:{port};SharedAccessKeyName={policy};SharedAccessKey={key};UseDevelopmentEmulator=true")
     } else {
         let vhost = if default { n.namespace.clone() } else { format!("{}%2F{}", ctx.env, n.namespace) };
-        format!("amqp://{policy}:{}@localhost:{port}/{vhost}", key.replace('/', "%2F").replace('+', "%2B").replace('=', "%3D"))
+        let host = ctx.state.own_domain().unwrap_or("localhost".into());
+        format!("amqp://{policy}:{}@{host}:{port}/{vhost}", key.replace('/', "%2F").replace('+', "%2B").replace('=', "%3D"))
     }
 }
 

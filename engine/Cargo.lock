@@ -4938,7 +4938,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "stuntman"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "futures",
@@ -4971,7 +4971,7 @@ dependencies = [
 
 [[package]]
 name = "stuntman-ai"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -4989,7 +4989,7 @@ dependencies = [
 
 [[package]]
 name = "stuntman-apis"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -5030,7 +5030,7 @@ dependencies = [
 
 [[package]]
 name = "stuntman-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -5054,7 +5054,7 @@ dependencies = [
 
 [[package]]
 name = "stuntman-email"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -5078,7 +5078,7 @@ dependencies = [
 
 [[package]]
 name = "stuntman-events"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -5095,7 +5095,7 @@ dependencies = [
 
 [[package]]
 name = "stuntman-files"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -5117,7 +5117,7 @@ dependencies = [
 
 [[package]]
 name = "stuntman-identity"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -5141,7 +5141,7 @@ dependencies = [
 
 [[package]]
 name = "stuntman-keyvault"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -5171,7 +5171,7 @@ dependencies = [
 
 [[package]]
 name = "stuntman-kinesis"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -5188,7 +5188,7 @@ dependencies = [
 
 [[package]]
 name = "stuntman-messaging"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "amq-protocol",
  "axum",
@@ -5221,7 +5221,7 @@ dependencies = [
 
 [[package]]
 name = "stuntman-pubsub"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -5253,7 +5253,7 @@ dependencies = [
 
 [[package]]
 name = "stuntman-sms"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -5270,7 +5270,7 @@ dependencies = [
 
 [[package]]
 name = "stuntman-storage"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -5297,7 +5297,7 @@ dependencies = [
 
 [[package]]
 name = "stuntman-streams"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -5316,7 +5316,7 @@ dependencies = [
 
 [[package]]
 name = "stuntman-telemetry"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "flate2",
@@ -5337,7 +5337,7 @@ dependencies = [
 
 [[package]]
 name = "stuntman-web"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "console_error_panic_hook",
  "gloo-net",
@@ -5353,7 +5353,7 @@ dependencies = [
 
 [[package]]
 name = "stuntman-webhook"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -5372,7 +5372,7 @@ dependencies = [
 
 [[package]]
 name = "stuntman-whatsapp"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "base64 0.22.1",

@@ -121,6 +121,13 @@ A new version opens every environment in `/data` as it was, with its state. Data
 only add tables and columns, and new `environment.yaml` keys are optional: an older file reads as before. Pin the
 image tag (`edivanteixeira/stuntman:0.9.0`) and read the release notes before you move it.
 
+## Sizing
+
+Measured on the 0.9.0 image (arm64, Docker Desktop): six environments, each receiving OpenTelemetry traces from its
+app (about 550 spans per second in all) for a minute, used 25–33 MiB of memory and 3.5 % of one core on average
+(5.8 % at most); `/data` held 46 MB afterwards. Telemetry is the heaviest steady load; a 512 MiB limit leaves ample
+room for six environments.
+
 ## On disk
 
 Each environment is a folder you can read, diff and back up:

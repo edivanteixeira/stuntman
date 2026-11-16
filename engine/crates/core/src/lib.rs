@@ -34,9 +34,9 @@ pub fn shared_public_url() -> Option<String> {
 }
 
 tokio::task_local! {
-    /// The address the current request came by on the main port: scheme://host[/e/<name>]
-    /// (X-Forwarded-Proto and X-Forwarded-Host first, as a proxy sends them).
-    pub static REQUEST_BASE: String;
+    /// The current request on the main port: (scheme://host, the environment it reached, whether
+    /// it came by /e/<name>). X-Forwarded-Proto and X-Forwarded-Host first, as a proxy sends them.
+    pub static REQUEST_BASE: (String, String, bool);
 }
 
 /// Everything a module needs at runtime. Cheap to clone.
@@ -80,7 +80,10 @@ impl Ctx {
         if let Some(p) = shared_public_url() {
             return format!("{p}/e/{}", self.env);
         }
-        REQUEST_BASE.try_with(|b| b.clone()).unwrap_or_else(|_| format!("http://localhost:{}{}", main_port(), self.prefix()))
+        // The request's own environment keeps the way it came (prefix or not); another one is under /e/<name>.
+        REQUEST_BASE
+            .try_with(|(origin, env, prefixed)| if **env == *self.env { format!("{origin}{}", if *prefixed { format!("/e/{env}") } else { String::new() }) } else { format!("{origin}{}", self.prefix()) })
+            .unwrap_or_else(|_| format!("http://localhost:{}{}", main_port(), self.prefix()))
     }
 
     /// http://<app host>:<port><prefix>: where the app under test reaches a port of this environment.

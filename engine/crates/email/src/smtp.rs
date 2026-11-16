@@ -123,7 +123,7 @@ async fn shared(cands: Vec<(Ctx, String)>, sock: TcpStream) -> std::io::Result<(
     let starttls = svcs.iter().flatten().any(|s| s.intake.smtp.starttls);
     let size = svcs.iter().flatten().map(|s| s.limits.size_bytes()).max().unwrap_or(10 << 20);
     let mut rd = BufReader::new(Box::new(sock) as Box<dyn Io>);
-    rd.get_mut().write_all(format!("220 {host} ESMTP Stuntman (shared by {}: log in with the environment's name)\r\n", names.join(", ")).as_bytes()).await?;
+    rd.get_mut().write_all(format!("220 {host} ESMTP Stuntman (shared by {}: log in as the environment's name, or any address at its base domain)\r\n", names.join(", ")).as_bytes()).await?;
     let mut tls_on = false;
     let mut sni: Option<String> = None;
     let mut line = String::new();
@@ -159,11 +159,16 @@ async fn shared(cands: Vec<(Ctx, String)>, sock: TcpStream) -> std::io::Result<(
             // <env>, <env>/<service>; else the STARTTLS name's environment.
             let (env, svc) = user.split_once('/').map(|(e, s)| (e.to_lowercase(), Some(s.to_string()))).unwrap_or((user.to_lowercase(), None));
             let by_sni = sni.as_deref().and_then(|h| cands[0].0.envs.by_host(Some(h))).map(|c| c.env.to_string());
+            // An app that logs in with its sender address: <anyone>@<the environment's base domain>.
+            let by_domain = user.rsplit_once('@').map(|(_, d)| d.trim().trim_end_matches('.').to_lowercase()).and_then(|d| {
+                cands.iter().position(|(c, _)| { let b = c.state.file.read().unwrap().base_domain.to_lowercase(); d == b || d.ends_with(&format!(".{b}")) || d == format!("{}.localhost", c.env) })
+            });
             let pick = cands.iter().position(|(c, s)| *c.env == *env && svc.as_ref().map(|x| x == s).unwrap_or(true))
+                .or(by_domain)
                 .or_else(|| by_sni.as_ref().and_then(|e| cands.iter().position(|(c, _)| *c.env == **e)));
             let w = rd.get_mut();
             let Some(i) = pick else {
-                w.write_all(format!("535 5.7.8 No environment “{user}” on this port; log in as one of: {}\r\n", names.join(", ")).as_bytes()).await?;
+                w.write_all(format!("535 5.7.8 No environment “{user}” on this port; log in as one of: {} (or any address at its base domain)\r\n", names.join(", ")).as_bytes()).await?;
                 continue;
             };
             let (ctx, name) = cands[i].clone();

@@ -166,6 +166,7 @@ fn env(k: &str, d: &str) -> String {
     std::env::var(k).unwrap_or_else(|_| d.to_string())
 }
 
+mod auth;
 mod environments;
 mod timeline;
 
@@ -226,6 +227,7 @@ async fn main() {
     }
     tools.extend(environments::tools());
     tools.extend(timeline::tools());
+    tools.extend(auth::tools());
     let tools = shared_messaging_tools(shared_inbox_tools(tools));
     let mut seen = std::collections::HashSet::new();
     for t in &tools {
@@ -284,7 +286,11 @@ async fn main() {
         std::process::exit(0);
     });
 
-    let root_router = Router::new().fallback(dispatch);
+    // Sign-in, the central MCP's OAuth and its metadata live on the root, before any environment.
+    let root_router = auth::routes().fallback(dispatch);
+    if auth::on() {
+        println!("Sign-in on: {} · provider routes and /e/<name>/login stay open", auth::conf().unwrap().issuer);
+    }
     println!("Stuntman {} · environments {} · http://localhost:{port} · MCP http://localhost:{port}/mcp (others: /e/<name>/mcp) · data {}", env!("CARGO_PKG_VERSION"), names.join(", "), root.display());
     // Connection by connection (as the provider ports): a forced SMS or WhatsApp failure can reset
     // or close the socket the app sent on. serve returns only when the port cannot be bound.
@@ -362,6 +368,22 @@ async fn dispatch(req: axum::extract::Request) -> Response {
         return ApiError::not_found("No Stuntman environment answers here").with(json!({"environments": s.envs.all().iter().map(|c| c.env.to_string()).collect::<Vec<_>>()})).into_response();
     };
     let mut req = req;
+    // Only this server says who a request is: drop what a caller sent.
+    req.headers_mut().remove("x-stuntman-who");
+    req.headers_mut().remove("x-stuntman-central");
+    {
+        let p = rest.as_deref().unwrap_or(&path).split('?').next().unwrap_or("").to_string();
+        let full = req.uri().path_and_query().map(|x| x.to_string()).unwrap_or(path.clone());
+        match auth::gate(req.headers(), req.method().as_str(), &p, &ctx.env, rest.is_some(), &full) {
+            Ok(Some(w)) => { req.headers_mut().insert("x-stuntman-who", w.parse().unwrap()); }
+            Ok(None) => {}
+            Err(r) => return r,
+        }
+        // The central MCP: one address for everyone on a shared server; each session picks its environment.
+        if rest.is_none() && p == "/mcp" && (auth::on() || stuntman_core::shared_public_url().is_some()) {
+            req.headers_mut().insert("x-stuntman-central", "1".parse().unwrap());
+        }
+    }
     if let Some(p) = &rest {
         let q = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
         *req.uri_mut() = format!("{p}{q}").parse().unwrap_or_default();
@@ -373,7 +395,7 @@ async fn dispatch(req: axum::extract::Request) -> Response {
     let Some(router) = s.routers.lock().unwrap().get(&*ctx.env).cloned() else {
         return ApiError::new(503, "This environment is starting").into_response();
     };
-    let base = format!("{proto}://{host}{}", if rest.is_some() { format!("/e/{}", ctx.env) } else { String::new() });
+    let base = (format!("{proto}://{host}"), ctx.env.to_string(), rest.is_some());
     stuntman_core::REQUEST_BASE.scope(base, router.oneshot(req)).await.into_response()
 }
 
@@ -416,6 +438,9 @@ async fn http_tool(State(app): State<App>, name: &'static str, Path(p): Path<Has
         app.ctx.live.seen(by.trim_start_matches("api:"), "API");
     }
     args.insert("_by".into(), json!(by));
+    if let Some(w) = h.get("x-stuntman-who").and_then(|v| v.to_str().ok()) {
+        args.insert("_who".into(), json!(w));
+    }
     let tool = srv().tools.iter().find(|t| t.name == name).unwrap();
     let a = Value::Object(args);
     let r = tool.call(app.ctx.clone(), a.clone()).await;
@@ -478,13 +503,26 @@ async fn mcp(State(app): State<App>, h: HeaderMap, body: Bytes) -> Response {
     }
 }
 
+/// MCP session id → the environment the session picked with use_environment (central MCP).
+fn session_envs() -> &'static Mutex<HashMap<String, String>> {
+    static M: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    M.get_or_init(Default::default)
+}
+
+fn env_names() -> String {
+    srv().envs.all().iter().map(|c| c.env.to_string()).collect::<Vec<_>>().join(", ")
+}
+
 async fn mcp_one(app: &App, h: &HeaderMap, req: Value) -> (Option<Value>, Option<String>) {
     let id = req.get("id").cloned();
     let method = req["method"].as_str().unwrap_or("");
     let session = h.get("mcp-session-id").and_then(|v| v.to_str().ok()).map(String::from);
     let client = session.as_ref().and_then(|s| srv().sessions.lock().unwrap().get(s).cloned()).unwrap_or("agent".into());
+    let who = h.get("x-stuntman-who").and_then(|v| v.to_str().ok()).map(String::from);
+    let central = h.get("x-stuntman-central").is_some();
     let ok = |r: Value| Some(json!({"jsonrpc": "2.0", "id": id, "result": r}));
     let err = |code: i64, m: String| Some(json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": m}}));
+    let text = |t: String, is_error: bool| Some(json!({"jsonrpc": "2.0", "id": id, "result": {"content": [{"type": "text", "text": t}], "isError": is_error}}));
     match method {
         "initialize" => {
             let name = req["params"]["clientInfo"]["name"].as_str().unwrap_or("agent").to_string();
@@ -492,40 +530,80 @@ async fn mcp_one(app: &App, h: &HeaderMap, req: Value) -> (Option<Value>, Option
             srv().sessions.lock().unwrap().insert(sid.clone(), name.clone());
             app.ctx.live.seen(&name, "MCP");
             let pv = req["params"]["protocolVersion"].as_str().unwrap_or("2025-03-26").to_string();
-            (
-                ok(json!({"protocolVersion": pv, "capabilities": {"tools": {"listChanged": false}},
-                    "serverInfo": {"name": "stuntman", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": format!("Stuntman stands in for external providers in environment {}. Tools act on this environment only; another environment has its own MCP at /e/<name>/mcp (list_environments shows them).", app.ctx.env)})),
-                Some(sid),
-            )
+            let instructions = if central {
+                format!("Stuntman stands in for external providers. This is the central MCP of a shared Stuntman: each call works in one environment ({}). \
+                    Pick it with use_environment, or pass environment on a tool; every answer starts with [name], the environment it used.", env_names())
+            } else {
+                format!("Stuntman stands in for external providers in environment {}. Tools act on this environment only; another environment has its own MCP at /e/<name>/mcp (list_environments shows them).", app.ctx.env)
+            };
+            (ok(json!({"protocolVersion": pv, "capabilities": {"tools": {"listChanged": false}}, "serverInfo": {"name": "stuntman", "version": env!("CARGO_PKG_VERSION")}, "instructions": instructions})), Some(sid))
         }
         m if m.starts_with("notifications/") => (None, None),
         "ping" => (ok(json!({})), None),
-        "tools/list" => (
-            ok(json!({"tools": srv().tools.iter().map(|t| json!({"name": t.name, "description": t.description, "inputSchema": t.schema()})).collect::<Vec<_>>()})),
-            None,
-        ),
+        "tools/list" => {
+            let mut tools: Vec<Value> = srv().tools.iter().map(|t| {
+                let mut schema = t.schema();
+                if central {
+                    schema["properties"]["environment"] = json!({"type": "string", "description": "the environment this call works in (default: the session's, see use_environment)"});
+                }
+                json!({"name": t.name, "description": t.description, "inputSchema": schema})
+            }).collect();
+            if central {
+                tools.insert(0, json!({"name": "use_environment", "description": "This MCP session works in that environment from now on (list_environments shows them).",
+                    "inputSchema": {"type": "object", "properties": {"name": {"type": "string", "description": "environment name"}}, "required": ["name"]}}));
+            }
+            (ok(json!({"tools": tools})), None)
+        }
         "tools/call" => {
             app.ctx.live.seen(&client, "MCP");
             let name = req["params"]["name"].as_str().unwrap_or("");
-            let Some(t) = srv().tools.iter().find(|t| t.name == name) else {
-                return (err(-32602, format!("Unknown tool {name}")), None);
-            };
             let mut args = match req["params"]["arguments"].clone() {
                 Value::Object(o) => o,
                 _ => Map::new(),
             };
             args = args.into_iter().map(|(k, v)| (snake(&k), v)).collect();
+            if central && name == "use_environment" {
+                let n = args.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if srv().envs.get(&n).is_none() {
+                    return (text(format!("No environment “{n}”. Pick one of: {}", env_names()), true), None);
+                }
+                if let Some(s) = &session { session_envs().lock().unwrap().insert(s.clone(), n.clone()); }
+                return (text(format!("[{n}] this session works in {n} from now on"), false), None);
+            }
+            let Some(t) = srv().tools.iter().find(|t| t.name == name) else {
+                return (err(-32602, format!("Unknown tool {name}")), None);
+            };
+            // Which environment: the argument, else the session's, else the person's (Use in MCP); no silent default.
+            let ctx = if central {
+                let asked = args.remove("environment").and_then(|v| v.as_str().map(String::from));
+                let from_session = session.as_ref().and_then(|s| session_envs().lock().unwrap().get(s).cloned());
+                let person = who.as_deref().and_then(|w| w.split_once(':')).filter(|(k, _)| *k == "person" || *k == "agent").and_then(|(_, e)| auth::current_env(e));
+                let pick = asked.clone().or(from_session.clone()).or(person);
+                match pick.as_deref().and_then(|n| srv().envs.get(n)) {
+                    Some(c) => c,
+                    None => {
+                        if let (Some(s), Some(_)) = (&session, &from_session) { session_envs().lock().unwrap().remove(s); }
+                        let gone = pick.map(|p| format!("[{p}] no longer exists. ")).unwrap_or_default();
+                        return (text(format!("{gone}Pick an environment: {}. Call use_environment(\"<name>\"), or pass environment on the tool.", env_names()), true), None);
+                    }
+                }
+            } else {
+                app.ctx.clone()
+            };
+            if central && auth::on() && matches!(name, "create_environment" | "delete_environment") && who.as_deref() != Some("admin") {
+                return (text(format!("[{}] {name} needs the admin key: people make and delete environments in the pipeline", ctx.env), true), None);
+            }
             let by = format!("mcp:{client}");
             args.insert("_by".into(), json!(by));
+            if let Some(w) = &who { args.insert("_who".into(), json!(w)); }
             let a = Value::Object(args);
-            let r = t.call(app.ctx.clone(), a.clone()).await;
-            acted(&app.ctx, t, &by, &a, r.as_ref().err()).await;
-            let (text, is_error) = match r {
+            let r = t.call(ctx.clone(), a.clone()).await;
+            acted(&ctx, t, &by, &a, r.as_ref().err()).await;
+            let (body, is_error) = match r {
                 Ok(v) => (serde_json::to_string_pretty(&v).unwrap(), false),
                 Err(e) => (serde_json::to_string_pretty(&json!({"error": e.message, "status": e.status, "detail": e.detail})).unwrap(), true),
             };
-            (ok(json!({"content": [{"type": "text", "text": text}], "isError": is_error})), None)
+            (text(if central { format!("[{}] {body}", ctx.env) } else { body }, is_error), None)
         }
         _ => (err(-32601, format!("Method not found: {method}")), None),
     }

@@ -144,7 +144,7 @@ def run(s):
     except smtplib.SMTPAuthenticationError as e:
         assert e.smtp_code == 535 and b"a, b, stg-a" in e.smtp_error, e
     smtp_send(port, "a", "emma@acme.example", "for a")
-    smtp_send(port, "b", "liam@acme.example", "for b")
+    smtp_send(port, "noreply@b.localhost", "liam@acme.example", "for b")  # the sender address at b's base domain picks b
     wait(lambda: a.call("GET", "/messages")["messages"], "the message in a")
     ma = [m["subject"] for m in a.call("GET", "/messages")["messages"]]
     mb = [m["subject"] for m in b.call("GET", "/messages")["messages"]]
@@ -185,6 +185,11 @@ def run(s):
         kc.request("GET", "/secrets/smtp-password?api-version=7.4", headers={"Authorization": "Bearer t", "User-Agent": "acme-api/1.0"})
         r = kc.getresponse(); v = json.loads(r.read())
         assert r.status == 200 and v["value"] == want, (n, r.status, v)
+
+    # ---- connections asked through another environment still name this one's address
+    v = stg.call("GET", "/environments/a/connections")
+    auth = [i["value"] for i in v["items"] if i["key"] == "IDENTITY_AUTHORITY"][0]
+    assert auth == f"http://127.0.0.1:{s.PORT}/e/a/login/contoso-stg/v2.0", auth
 
     # ---- 1.1 the address identity names: the one the call came by, else public_url
     disc_url = f"{a.base}/login/contoso-stg/v2.0/.well-known/openid-configuration"

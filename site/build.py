@@ -372,7 +372,7 @@ def home():
 <section class="wrap section">
   {faq([("What does my app point at?", "Its provider base URLs. Stuntman answers on them with the provider's own paths, bodies and status codes."),
         ("Can each pull request get its own?", "Yes. A pipeline clones <code>stg-a</code> into <code>pr-5462</code> for its agent, and the copy expires by itself."),
-        ("Is it safe to expose?", "Not yet. There is no sign-in. Keep it on a private network or behind a proxy that authenticates.")])}
+        ("Is it safe to expose?", "Turn sign-in on first: any OIDC provider and a list of people, an admin key for pipelines and a token per environment. The app's provider routes stay open. Without it, keep Stuntman on a private network.")])}
 </section>
 """)
 

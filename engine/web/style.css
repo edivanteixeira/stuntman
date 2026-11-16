@@ -65,6 +65,8 @@ a { color: var(--link); text-decoration: none; }
 .rail .client > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail .client .via { margin-left: auto; font: 400 11px var(--mono); color: var(--caption); }
 .rail .foot { padding: 20px 20px 0; font: 400 11px var(--mono); color: var(--caption); }
+.rail .me { margin: 14px 20px 0; padding-top: 12px; border-top: 1px solid var(--rule); font-size: 13px; }
+.mcpbar { gap: 16px; align-items: center; background: var(--soft); border-radius: 8px; padding: 12px 20px; margin-bottom: 16px; }
 
 .page { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 .head { height: 88px; border-bottom: 1px solid var(--rule); padding: 0 24px; display: flex; flex-direction: column; justify-content: space-between; flex: none; }

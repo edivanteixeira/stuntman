@@ -10,6 +10,10 @@ default; most setups change nothing.
 | `STUNTMAN_DATA` | `data` (`/data` in Docker) | where environments, YAML, SQLite and keys live |
 | `STUNTMAN_ENV` | `staging` | the default environment |
 | `STUNTMAN_HOST` | `localhost:<STUNTMAN_PORT>` | the name apps and people use; shown in base URLs, links and MCP |
+| `STUNTMAN_AUTH_ISSUER` | none (sign-in off) | the OIDC provider people sign in with, e.g. `https://login.microsoftonline.com/<tenant>/v2.0`; turns sign-in on ([Environments › Sign-in](environments.md#sign-in-the-central-mcp-and-tokens)) |
+| `STUNTMAN_AUTH_CLIENT_ID`, `STUNTMAN_AUTH_CLIENT_SECRET` | none | the app registered at that provider; its redirect URI is `<public url>/auth/callback` |
+| `STUNTMAN_AUTH_ALLOWED_DOMAINS`, `STUNTMAN_AUTH_ALLOWED_EMAILS` | none | who may sign in (comma separated); checked on every request |
+| `STUNTMAN_ADMIN_KEY` | none | `Authorization: Bearer <key>` on any route, for a pipeline that makes and deletes environments |
 | `STUNTMAN_PUBLIC_URL` | none | one public address for a shared Stuntman (`https://stuntman.example.com`): the root lists the environments, each one lives under `/e/<name>/`, and identity names `<url>/e/<name>` ([Environments](environments.md#a-shared-stuntman-one-public-address)) |
 | `STUNTMAN_WEB` | `web/dist` (`/app/web` in Docker) | the built screen |
 | `STUNTMAN_PLUGINS` | `plugins` next to the engine (`/app/plugins` in Docker) | the plugin catalog |

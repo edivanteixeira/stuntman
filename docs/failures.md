@@ -95,7 +95,7 @@ Arguments for each tool are in the [tool reference](reference/tools.md).
 ## Callbacks your app must verify
 
 Stuntman signs callbacks the way each provider does: SendGrid's Event Webhook with ECDSA, Meta's webhooks with
-your app secret, your own inboxes with HMAC, and plugin webhooks in the Stripe, Svix, GitHub or CloudEvents format
+your app secret, your own inboxes with HMAC, and plugin webhooks in the Stripe, Svix, GitHub, CloudEvents, Twilio, Slack, Shopify or HubSpot format
 ([Plugins › Webhook signing](plugins.md#webhook-signing)). Ask for a badly signed, unsigned or replayed one and check that your
 app rejects it:
 

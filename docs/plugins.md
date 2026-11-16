@@ -135,10 +135,10 @@ Conditions and templates use a small, side-effect-free language (a CEL-like subs
 
 | | |
 |---|---|
-| **Read** | `body.x` (JSON, form fields, `multipart/form-data` fields, or the JSON part of a `multipart/related` upload), `files` (the uploaded parts: `field`, `filename`, `size`, `contentType`), `query.x`, `path.x`, `headers.x`, `raw` (the body as text), `state.<collection>`, `data.<table>`, the `let` names (`person.x`), `caller`, `client_cert` and `client_cnpj` (mTLS), `scenario`; on GraphQL routes `variables` and `operation`; in `send`, `answer` |
+| **Read** | `body.x` (JSON, form fields, `multipart/form-data` fields, or the JSON part of a `multipart/related` upload), `files` (the uploaded parts: `field`, `filename`, `size`, `contentType`), `query.x`, `path.x`, `headers.x`, `raw` (the body as text; a `Content-Encoding: gzip` body arrives decompressed), `state.<collection>`, `data.<table>`, the `let` names (`person.x`), `caller`, `client_cert` and `client_cnpj` (mTLS), `scenario`; on GraphQL routes `variables` and `operation`; in `send`, `answer` |
 | **Operators** | `==`, `!=`, `<`, `>`, `<=`, `>=`, `+`, `-`, `*`, `/`, `%`, `&&`, `\|\|`, `!`, `in`, `cond ? a : b`, `x[0]`, `x['key']`; lists `[1, 2]` and maps `{'n': 2}` |
 | **Methods** | `.startsWith()`, `.endsWith()`, `.contains()`, `.matches()`, `.size()`, `.upper()`, `.lower()`, `.digits()`, `.mask()`, `.sha256()`, `.base64url()`, `.cpf_ok()`, `.string()`, `.int()` |
-| **Functions** | `size`, `exists` (or `has`), `default`, `string`, `int`, `double`, `upper`, `lower`, `trim`, `replace(s, from, to)`, `split(s, sep)`, `join(list, sep)`, `substring(s, start, end)`, `digits`, `mask`, `cpf_ok`, `sha256`, `base64`, `base64url`, `uuid`, `random_id`, `now`, `now_ms`, `matches(s, regex)`, `json`, `cookie(header, name)`, `lookup(table, field, value)` |
+| **Functions** | `size`, `exists` (or `has`), `default`, `string`, `int`, `double`, `upper`, `lower`, `trim`, `replace(s, from, to)`, `split(s, sep)`, `join(list, sep)`, `substring(s, start, end)`, `digits`, `mask`, `cpf_ok`, `sha256`, `base64`, `base64url`, `uuid`, `random_id`, `now`, `now_ms`, `matches(s, regex)`, `json`, `cookie(header, name)`, `lookup(table, field, value)`, `iso(ms, zone)` (a kept time as ISO 8601), `crc16(s)` (CRC16/CCITT, the end of a Pix BR Code), `gzip_base64(text)` and `gunzip_base64(b64)` (documents sent gzipped in base64), `parse_json(text)`, `hmac(alg, key, message, enc)` (`sha256` or `sha1`; a key written `hex:…` is hex bytes; `hex` or `base64` out), `jwt(claims, key)` and `jwks(key)` (an RS256 JWT signed with the plugin's own key of that name, and the JWKS that verifies it) |
 | **Template filters** | `{{ value \| default('x') }}`, `mask`, `json`, `round(2)`, `tz('America/New_York')` (a short list of zones, fixed offsets), and any one-argument function (`\| trim`, `\| upper`) |
 
 Templates use `{{ }}` inside answer bodies, sentences, callback URLs, headers and secrets. `split` and `join`
@@ -256,11 +256,15 @@ the web UI shows them on the service's **Tools** tab, and calls appear as `MCP <
 | `svix` | `svix-id`, `svix-timestamp`, `svix-signature: v1,<base64>`; the secret is `whsec_<base64>` |
 | `github` | `X-Hub-Signature-256: sha256=<hex>` |
 | `cloudevents` | `ce-specversion`, `ce-type` (the send's `event`), `ce-source`, `ce-id`, `ce-time`; an HMAC into `header` when both `secret` and `header` are set |
+| `twilio` | `X-Twilio-Signature`: HMAC-SHA1 of the callback URL followed by the sorted form parameters (name + value), base64 |
+| `slack` | `X-Slack-Request-Timestamp`, and `X-Slack-Signature: v0=<hex>`: HMAC-SHA256 of `v0:{timestamp}:{body}` |
+| `shopify` | `X-Shopify-Hmac-Sha256`: HMAC-SHA256 of the body, base64 |
+| `hubspot` | `X-HubSpot-Request-Timestamp` (ms), and `X-HubSpot-Signature-v3`: HMAC-SHA256 of method + URL + body + timestamp, base64 |
 
 `header` renames the signature header, `secret` is a literal or `secret://name`, and `tolerance` (default 300 s)
 is how old a timestamp the app should accept. `provoke` breaks every send while it is set: `wrong_signature`,
 `old_timestamp` (past the tolerance), `no_signature`, `twice` (each webhook sent two times) and `out_of_order` (the
-first webhook of a route waits 2 s, so the next one arrives first). A send's own `sign` overrides the service's.
+first webhook of a route waits 2 s, so the next one arrives first). A send's own `sign` overrides the service's. A send that sets its own `Content-Type` header (a form-encoded callback) replaces the JSON default.
 
 ```yaml
 service:

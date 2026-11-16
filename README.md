@@ -116,7 +116,7 @@ claude mcp add --transport http stuntman http://localhost:8025/mcp
 
 | Line | Providers today | You can provoke |
 |---|---|---|
-| **HTTP APIs** | Any REST, GraphQL or SOAP API, described as a YAML plugin: OAuth2, Basic, session cookies, mTLS (ICP-Brasil e-CNPJ too), browser steps, streamed answers, signed webhooks, idempotency keys, an MCP server. Made from an OpenAPI spec, a WSDL, WireMock mappings, or by recording the real provider. 26 plugins in the catalog | named answers, SOAP faults, XML signatures, latency, 5xx, reset, timeout, cut streams, expired tokens, badly signed or repeated webhooks, billing and rate limits |
+| **HTTP APIs** | Any REST, GraphQL or SOAP API, described as a YAML plugin: OAuth2, Basic, session cookies, mTLS (ICP-Brasil e-CNPJ too), browser steps, streamed answers, signed webhooks, idempotency keys, an MCP server. Made from an OpenAPI spec, a WSDL, WireMock mappings, or by recording the real provider. 45 plugins in the catalog | named answers, SOAP faults, XML signatures, latency, 5xx, reset, timeout, cut streams, expired tokens, badly signed or repeated webhooks, billing and rate limits |
 | **AI models** | OpenAI, Azure OpenAI, Anthropic, Gemini, OpenRouter, DeepSeek: chat, Responses, messages, embeddings, streaming, tool calls | 429, 500, 529, content filter, cut by max_tokens, broken tool arguments, slow or cut streams; spend per provider |
 | **SMS** | Zenvia API v2 | 500, 400, reset, empty reply, timeout; the person texts back, STOP / START |
 | **WhatsApp** | Meta WhatsApp Cloud API (Graph) | 500, 400, connection failures, expired tokens, user replies, badly signed or replayed webhooks |

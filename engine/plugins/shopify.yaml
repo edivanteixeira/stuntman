@@ -1,0 +1,345 @@
+# Shopify Admin API for the acme-store shop: REST (products, orders, customers) and GraphQL (shop,
+# products, order, productCreate), X-Shopify-Access-Token auth (shpat_/shpca_/shpua_ tokens), the call-limit
+# header on every REST answer, 429 with Retry-After when throttled, and webhooks signed as Shopify signs
+# them (X-Shopify-Hmac-Sha256: base64 HMAC-SHA256 of the raw body) with the app's client secret in
+# secret://shopify-webhook-secret. Point the app at http://localhost:8028/shopify (or resolve
+# acme-store.myshopify.com to Stuntman); webhooks go to data.settings webhook_url.
+#
+# Listing (GET products.json, the products query) shows the shop's catalog in data.products; created
+# objects are read back by id. An order's totals come from its first line item.
+service:
+  name: shopify
+  title: Shopify
+  origin: community
+  description: Admin REST and GraphQL for a shop, with signed webhooks
+  base_url: https://acme-store.myshopify.com
+  real_host: acme-store.myshopify.com
+  limits:
+    latency: 90ms..300ms
+  webhooks:
+    sign: shopify
+    secret: secret://shopify-webhook-secret
+routes:
+  # ---------------------------------------------------------------- products
+  - route: GET ~/admin/api/(?P<v>[0-9]{4}-[0-9]{2})/products\.json
+    let: &lets
+      token: "default(headers['x-shopify-access-token'], '')"
+      authok: "token.startsWith('shpat_') || token.startsWith('shpca_') || token.startsWith('shpua_')"
+      p_id: "default(path.id, string(8200000000001 + size(default(state.products, {}))))"
+      p_src: "has(path.id) ? state.products[path.id].body.product : body.product"
+      p_at: "has(path.id) ? state.products[path.id].at : now_ms()"
+      p_price: "default(default(default(p_src.variants, [{}])[0], {}).price, '0.00')"
+      product_json: >-
+        {"id": int(p_id), "title": p_src.title, "body_html": default(p_src.body_html, null), "vendor": default(p_src.vendor, 'Acme'),
+        "product_type": default(p_src.product_type, ''), "created_at": now(), "handle": lower(replace(default(p_src.title, ''), ' ', '-')),
+        "updated_at": now(), "published_at": now(), "template_suffix": null, "published_scope": "web", "tags": default(p_src.tags, ''),
+        "status": default(p_src.status, 'active'), "admin_graphql_api_id": 'gid://shopify/Product/' + p_id,
+        "variants": [{"id": int(int(p_id) + 1000000000000), "product_id": int(p_id), "title": "Default Title", "price": p_price,
+          "sku": default(default(default(p_src.variants, [{}])[0], {}).sku, ''), "position": int(1), "inventory_policy": "deny",
+          "compare_at_price": null, "option1": "Default Title", "option2": null, "option3": null, "created_at": now(), "updated_at": now(),
+          "taxable": true, "barcode": null, "fulfillment_service": "manual", "grams": int(0), "inventory_management": "shopify",
+          "requires_shipping": true, "weight": 0.5, "weight_unit": "kg", "inventory_item_id": int(int(p_id) + 2000000000000),
+          "inventory_quantity": int(0), "old_inventory_quantity": int(0), "admin_graphql_api_id": 'gid://shopify/ProductVariant/' + string(int(int(p_id) + 1000000000000))}],
+        "options": [{"id": int(int(p_id) + 3000000000000), "product_id": int(p_id), "name": "Title", "position": int(1), "values": ["Default Title"]}],
+        "images": [], "image": null}
+      o_id: "default(path.id, string(5800000000001 + size(default(state.orders, {}))))"
+      o_src: "has(path.id) ? state.orders[path.id].body.order : body.order"
+      o_n: "int(o_id) - 5800000000000 + 1000"
+      o_li: "default(default(o_src.line_items, [{}])[0], {})"
+      o_variant: "has(o_li.variant_id) ? lookup('products', 'variant_id', o_li.variant_id) : null"
+      o_price: "default(o_li.price, default(o_variant.price, '0.00'))"
+      o_cents: "int(double(o_price) * 100 * int(default(o_li.quantity, 1)) + 0.5)"
+      o_total: "string(int(o_cents / 100)) + '.' + substring('0' + string(int(o_cents % 100)), -2)"
+      o_email: "default(o_src.email, default(o_src.customer, {}).email)"
+      order_json: >-
+        {"id": int(o_id), "admin_graphql_api_id": 'gid://shopify/Order/' + o_id, "name": '#' + string(o_n), "order_number": o_n, "number": int(o_n - 1000),
+        "email": o_email, "contact_email": o_email, "created_at": now(), "updated_at": now(), "processed_at": now(), "closed_at": null, "cancelled_at": null,
+        "currency": default(o_src.currency, 'USD'), "presentment_currency": default(o_src.currency, 'USD'),
+        "financial_status": default(o_src.financial_status, 'paid'), "fulfillment_status": null, "confirmed": true, "test": default(o_src.test, false),
+        "subtotal_price": o_total, "total_price": o_total, "total_tax": "0.00", "total_discounts": "0.00", "total_line_items_price": o_total,
+        "taxes_included": false, "tags": default(o_src.tags, ''), "note": default(o_src.note, null),
+        "line_items": [{"id": int(int(o_id) + 1000000000000), "variant_id": default(o_li.variant_id, null), "product_id": default(o_variant.id, null),
+          "title": default(o_li.title, default(o_variant.title, 'Item')), "quantity": int(default(o_li.quantity, 1)), "price": o_price, "sku": default(o_variant.sku, ''),
+          "requires_shipping": true, "taxable": true, "gift_card": false, "fulfillment_status": null, "admin_graphql_api_id": 'gid://shopify/LineItem/' + string(int(int(o_id) + 1000000000000))}],
+        "customer": has(o_email) ? {"id": int('71' + substring(digits(sha256(lower(o_email))), 0, 11)), "email": o_email, "admin_graphql_api_id": 'gid://shopify/Customer/71' + substring(digits(sha256(lower(o_email))), 0, 11)} : null,
+        "order_status_url": 'https://acme-store.myshopify.com/90000001/orders/' + sha256(o_id) + '/authenticate?key=' + substring(sha256(o_id + 'k'), 0, 32)}
+      c_email: "lower(default(default(body.customer, {}).email, ''))"
+      c_id: "default(path.id, '71' + substring(digits(sha256(c_email)), 0, 11))"
+      c_src: "has(path.id) ? state.customers[path.id].body.customer : body.customer"
+      customer_json: >-
+        {"id": int(c_id), "email": c_src.email, "created_at": now(), "updated_at": now(), "first_name": default(c_src.first_name, null),
+        "last_name": default(c_src.last_name, null), "orders_count": int(0), "state": "disabled", "total_spent": "0.00", "last_order_id": null,
+        "note": default(c_src.note, null), "verified_email": default(c_src.verified_email, true), "multipass_identifier": null, "tax_exempt": false,
+        "tags": default(c_src.tags, ''), "last_order_name": null, "currency": "USD", "phone": default(c_src.phone, null), "addresses": [],
+        "email_marketing_consent": {"state": "not_subscribed", "opt_in_level": "single_opt_in", "consent_updated_at": null}, "sms_marketing_consent": null,
+        "admin_graphql_api_id": 'gid://shopify/Customer/' + c_id}
+    decide:
+      - when: "!authok"
+        answer: invalid_token
+      - answer: products
+  - route: POST ~/admin/api/(?P<v>[0-9]{4}-[0-9]{2})/products\.json
+    let: *lets
+    keep:
+      state: products
+      key: p_id
+    decide:
+      - when: "!authok"
+        answer: invalid_token
+      - when: "!has(body.product)"
+        answer: product_required
+      - when: "!has(body.product.title) || body.product.title == ''"
+        answer: title_blank
+      - answer: product_created
+    send:
+      - url: "{{ answer == 'product_created' ? data.settings[0].webhook_url : '' }}"
+        event: products/create
+        headers: &hookheaders
+          X-Shopify-Topic: "{{ __path.contains('/orders') ? 'orders/create' : __path.contains('/customers') ? 'customers/create' : 'products/create' }}"
+          X-Shopify-Shop-Domain: acme-store.myshopify.com
+          X-Shopify-API-Version: "{{ path.v }}"
+          X-Shopify-Webhook-Id: "{{ uuid() }}"
+          X-Shopify-Event-Id: "{{ uuid() }}"
+          X-Shopify-Triggered-At: "{{ now() }}"
+          User-Agent: Shopify-Captain-Hook
+        body: '{{ json(product_json) }}'
+  - route: GET ~/admin/api/(?P<v>[0-9]{4}-[0-9]{2})/products/(?P<id>[0-9]+)\.json
+    let: *lets
+    decide:
+      - when: "!authok"
+        answer: invalid_token
+      - when: "!has(state.products[path.id]) && !has(lookup('products', 'id', path.id))"
+        answer: not_found
+      - when: "!has(state.products[path.id])"
+        answer: seed_product
+      - answer: product
+  # ---------------------------------------------------------------- orders
+  - route: POST ~/admin/api/(?P<v>[0-9]{4}-[0-9]{2})/orders\.json
+    let: *lets
+    keep:
+      state: orders
+      key: o_id
+    decide:
+      - when: "!authok"
+        answer: invalid_token
+      - when: "!has(body.order)"
+        answer: order_required
+      - when: "!has(body.order.line_items) || size(body.order.line_items) == 0"
+        answer: line_items_blank
+      - when: "has(o_li.variant_id) && !has(o_variant)"
+        answer: variant_not_found
+      - answer: order_created
+    send:
+      - url: "{{ answer == 'order_created' ? data.settings[0].webhook_url : '' }}"
+        event: orders/create
+        headers: *hookheaders
+        body: '{{ json(order_json) }}'
+  - route: GET ~/admin/api/(?P<v>[0-9]{4}-[0-9]{2})/orders/(?P<id>[0-9]+)\.json
+    let: *lets
+    decide:
+      - when: "!authok"
+        answer: invalid_token
+      - when: "!has(state.orders[path.id])"
+        answer: not_found
+      - answer: order
+  # ---------------------------------------------------------------- customers
+  - route: POST ~/admin/api/(?P<v>[0-9]{4}-[0-9]{2})/customers\.json
+    let: *lets
+    keep:
+      state: customers
+      key: c_id
+    decide:
+      - when: "!authok"
+        answer: invalid_token
+      - when: "!has(body.customer)"
+        answer: customer_required
+      - when: "c_email != '' && !c_email.contains('@')"
+        answer: email_invalid
+      - when: "c_id in state.customers"
+        answer: email_taken
+      - answer: customer_created
+    send:
+      - url: "{{ answer == 'customer_created' ? data.settings[0].webhook_url : '' }}"
+        event: customers/create
+        headers: *hookheaders
+        body: '{{ json(customer_json) }}'
+  - route: GET ~/admin/api/(?P<v>[0-9]{4}-[0-9]{2})/customers/(?P<id>[0-9]+)\.json
+    let: *lets
+    decide:
+      - when: "!authok"
+        answer: invalid_token
+      - when: "!has(state.customers[path.id])"
+        answer: not_found
+      - answer: customer
+  # ---------------------------------------------------------------- GraphQL
+  - route: POST ~/admin/api/(?P<v>[0-9]{4}-[0-9]{2})/graphql\.json
+    graphql: shop
+    let: *lets
+    decide: &gqlauth
+      - when: "!authok"
+        answer: invalid_token
+      - answer: gql_shop
+  - route: POST ~/admin/api/(?P<v>[0-9]{4}-[0-9]{2})/graphql\.json
+    graphql: products
+    let: *lets
+    decide:
+      - when: "!authok"
+        answer: invalid_token
+      - answer: gql_products
+  - route: POST ~/admin/api/(?P<v>[0-9]{4}-[0-9]{2})/graphql\.json
+    graphql: order
+    let:
+      token: "default(headers['x-shopify-access-token'], '')"
+      authok: "token.startsWith('shpat_') || token.startsWith('shpca_') || token.startsWith('shpua_')"
+      oid: "replace(default(variables.id, ''), 'gid://shopify/Order/', '')"
+      o: "state.orders[oid].body.order"
+    decide:
+      - when: "!authok"
+        answer: invalid_token
+      - answer: gql_order
+  - route: POST ~/admin/api/(?P<v>[0-9]{4}-[0-9]{2})/graphql\.json
+    graphql: productCreate
+    let:
+      token: "default(headers['x-shopify-access-token'], '')"
+      authok: "token.startsWith('shpat_') || token.startsWith('shpca_') || token.startsWith('shpua_')"
+      input: "default(variables.product, variables.input)"
+      gid: "'gid://shopify/Product/' + string(8200000000001 + size(default(state.products, {})))"
+    keep:
+      state: products
+      key: "replace(gid, 'gid://shopify/Product/', '')"
+    decide:
+      - when: "!authok"
+        answer: invalid_token
+      - when: "!has(input.title) || input.title == ''"
+        answer: gql_title_blank
+      - answer: gql_product_created
+answers:
+  - name: products
+    headers: &limit {X-Shopify-Shop-Api-Call-Limit: "1/40", X-Request-Id: "{{ uuid() }}"}
+    sentence: "Listed {{ size(data.products) }} products"
+    body: '{"products": {{ data.products | json }}}'
+  - name: product_created
+    status: 201
+    headers: *limit
+    sentence: "Product {{ p_id }} created: {{ body.product.title }}"
+    body: '{"product": {{ product_json | json }}}'
+  - name: product
+    headers: *limit
+    sentence: "Product {{ path.id }}"
+    body: '{"product": {{ product_json | json }}}'
+  - name: seed_product
+    headers: *limit
+    sentence: "Product {{ path.id }} ({{ lookup('products', 'id', path.id).title }})"
+    body: '{"product": {{ lookup(''products'', ''id'', path.id) | json }}}'
+  - name: order_created
+    status: 201
+    headers: *limit
+    sentence: "Order #{{ o_n }} created: {{ o_total }} {{ default(o_src.currency, 'USD') }}"
+    body: '{"order": {{ order_json | json }}}'
+  - name: order
+    headers: *limit
+    sentence: "Order {{ path.id }}"
+    body: '{"order": {{ order_json | json }}}'
+  - name: customer_created
+    status: 201
+    headers: *limit
+    sentence: "Customer {{ c_id }} created ({{ c_email }})"
+    body: '{"customer": {{ customer_json | json }}}'
+  - name: customer
+    headers: *limit
+    sentence: "Customer {{ path.id }}"
+    body: '{"customer": {{ customer_json | json }}}'
+  # ---- GraphQL: the cost extension on every answer
+  - name: gql_shop
+    sentence: "GraphQL shop"
+    body: '{"data": {"shop": {"id": "gid://shopify/Shop/90000001", "name": "Acme Store", "email": "owner@acme.example.com", "myshopifyDomain": "acme-store.myshopify.com", "currencyCode": "USD", "primaryDomain": {"url": "https://shop.acme.example.com", "host": "shop.acme.example.com"}, "plan": {"displayName": "Basic", "partnerDevelopment": false, "shopifyPlus": false}}}, "extensions": {"cost": {"requestedQueryCost": 1, "actualQueryCost": 1, "throttleStatus": {"maximumAvailable": 2000.0, "currentlyAvailable": 1999, "restoreRate": 100.0}}}}'
+  - name: gql_products
+    sentence: "GraphQL products"
+    body: |-
+      {"data": {"products": {"edges": [{{ join([json({"cursor": base64('p1'), "node": {"id": "gid://shopify/Product/" + string(data.products[0].id), "title": data.products[0].title, "handle": data.products[0].handle, "status": "ACTIVE", "totalInventory": int(25)} }), json({"cursor": base64('p2'), "node": {"id": "gid://shopify/Product/" + string(data.products[1].id), "title": data.products[1].title, "handle": data.products[1].handle, "status": "ACTIVE", "totalInventory": int(8)} })], ', ') }}],
+       "pageInfo": {"hasNextPage": false, "hasPreviousPage": false, "startCursor": "{{ base64('p1') }}", "endCursor": "{{ base64('p2') }}"}}},
+       "extensions": {"cost": {"requestedQueryCost": 12, "actualQueryCost": 4, "throttleStatus": {"maximumAvailable": 2000.0, "currentlyAvailable": 1996, "restoreRate": 100.0}}}}
+  - name: gql_order
+    sentence: "GraphQL order {{ variables.id }}{{ has(o) ? '' : ' (not found)' }}"
+    body: |-
+      {"data": {"order": {{ has(o) ? json({"id": variables.id, "name": '#' + string(int(oid) - 5800000000000 + 1000), "email": default(o.email, default(o.customer, {}).email), "displayFinancialStatus": upper(default(o.financial_status, 'paid')), "displayFulfillmentStatus": "UNFULFILLED", "totalPriceSet": {"shopMoney": {"amount": default(default(o.line_items[0], {}).price, '0.0'), "currencyCode": default(o.currency, 'USD')} } }) : 'null' }}},
+       "extensions": {"cost": {"requestedQueryCost": 3, "actualQueryCost": 3, "throttleStatus": {"maximumAvailable": 2000.0, "currentlyAvailable": 1997, "restoreRate": 100.0}}}}
+  - name: gql_product_created
+    sentence: "GraphQL productCreate: {{ input.title }}"
+    body: '{"data": {"productCreate": {"product": {"id": "{{ gid }}", "title": {{ input.title | json }}, "handle": "{{ lower(replace(input.title, '' '', ''-'')) }}", "status": "{{ upper(default(input.status, ''active'')) }}"}, "userErrors": []}}, "extensions": {"cost": {"requestedQueryCost": 10, "actualQueryCost": 10, "throttleStatus": {"maximumAvailable": 2000.0, "currentlyAvailable": 1990, "restoreRate": 100.0}}}}'
+  - name: gql_title_blank
+    note: a userErrors answer (HTTP 200), as GraphQL mutations report validation
+    sentence: "GraphQL productCreate refused: title blank"
+    body: '{"data": {"productCreate": {"product": null, "userErrors": [{"field": ["title"], "message": "Title can''t be blank"}]}}, "extensions": {"cost": {"requestedQueryCost": 10, "actualQueryCost": 10, "throttleStatus": {"maximumAvailable": 2000.0, "currentlyAvailable": 1990, "restoreRate": 100.0}}}}'
+  - name: gql_throttled
+    note: exists only to be forced; GraphQL throttling is a 200 with errors THROTTLED
+    sentence: "GraphQL throttled"
+    body: '{"errors": [{"message": "Throttled", "extensions": {"code": "THROTTLED", "documentation": "https://shopify.dev/api/usage/rate-limits"}}], "extensions": {"cost": {"requestedQueryCost": 12, "actualQueryCost": null, "throttleStatus": {"maximumAvailable": 2000.0, "currentlyAvailable": 4, "restoreRate": 100.0}}}}'
+  # ---- REST errors, in Shopify's shape
+  - name: invalid_token
+    status: 401
+    note: no X-Shopify-Access-Token, or not a shpat_/shpca_/shpua_ token
+    sentence: "Refused: invalid access token"
+    body: '{"errors": "[API] Invalid API key or access token (unrecognized login or wrong password)"}'
+  - name: not_found
+    status: 404
+    headers: *limit
+    sentence: "Not found: {{ __path }}"
+    body: '{"errors": "Not Found"}'
+  - name: product_required
+    status: 400
+    headers: *limit
+    sentence: "Refused: no product"
+    body: '{"errors": {"product": "Required parameter missing or invalid"}}'
+  - name: title_blank
+    status: 422
+    headers: *limit
+    sentence: "Refused: product title blank"
+    body: '{"errors": {"title": ["can''t be blank"]}}'
+  - name: order_required
+    status: 400
+    headers: *limit
+    sentence: "Refused: no order"
+    body: '{"errors": {"order": "Required parameter missing or invalid"}}'
+  - name: line_items_blank
+    status: 422
+    headers: *limit
+    sentence: "Refused: order without line items"
+    body: '{"errors": {"line_items": ["must have at least one line item"]}}'
+  - name: variant_not_found
+    status: 422
+    headers: *limit
+    sentence: "Refused: no variant {{ o_li.variant_id }}"
+    body: '{"errors": {"line_items": ["Unable to find variant with id {{ o_li.variant_id }}"]}}'
+  - name: customer_required
+    status: 400
+    headers: *limit
+    sentence: "Refused: no customer"
+    body: '{"errors": {"customer": "Required parameter missing or invalid"}}'
+  - name: email_invalid
+    status: 422
+    headers: *limit
+    sentence: "Refused: invalid email {{ c_email }}"
+    body: '{"errors": {"email": ["is invalid"]}}'
+  - name: email_taken
+    status: 422
+    headers: *limit
+    sentence: "Refused: {{ c_email }} has already been taken"
+    body: '{"errors": {"email": ["has already been taken"]}}'
+  - name: throttled
+    status: 429
+    note: exists only to be forced; the leaky bucket is full
+    headers: {Retry-After: "2.0", X-Shopify-Shop-Api-Call-Limit: "40/40"}
+    sentence: "Throttled (429, Retry-After 2.0)"
+    body: '{"errors": "Exceeded 2 calls per second for api client. Reduce request rates to resume uninterrupted service."}'
+  - name: unavailable
+    status: 503
+    note: exists only to be forced
+    sentence: "Shopify unavailable (503)"
+    body: '{"errors": "Unavailable Shop"}'
+data:
+  # Where the webhooks go (one subscription per topic would point here).
+  settings:
+    - {webhook_url: 'http://localhost:3000/webhooks/shopify'}
+  products:
+    - {id: 8100000000101, title: Acme Trail Bottle, handle: acme-trail-bottle, vendor: Acme, product_type: Drinkware, status: active, tags: 'outdoor, bestseller', variant_id: 4100000000101, price: '24.00', sku: ACME-TB-750, admin_graphql_api_id: 'gid://shopify/Product/8100000000101', variants: [{id: 4100000000101, product_id: 8100000000101, title: Default Title, price: '24.00', sku: ACME-TB-750, inventory_quantity: 25}]}
+    - {id: 8100000000202, title: Acme Canvas Tote, handle: acme-canvas-tote, vendor: Acme, product_type: Bags, status: active, tags: 'cotton', variant_id: 4100000000202, price: '18.50', sku: ACME-CT-01, admin_graphql_api_id: 'gid://shopify/Product/8100000000202', variants: [{id: 4100000000202, product_id: 8100000000202, title: Default Title, price: '18.50', sku: ACME-CT-01, inventory_quantity: 8}]}

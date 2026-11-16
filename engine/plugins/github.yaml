@@ -1,0 +1,406 @@
+# GitHub REST API for the acme organization: the authenticated user, repositories, issues and comments,
+# pull requests and check runs, with GitHub's rate-limit headers and error bodies, and webhooks as GitHub
+# sends them (X-GitHub-Event, X-GitHub-Delivery, X-Hub-Signature-256: sha256=<hex HMAC of the body>) with
+# secret://github-webhook-secret. Point the SDK at it: Github(base_url="http://localhost:8028/github")
+# (or resolve api.github.com to Stuntman). Tokens: ghp_…, github_pat_…, gho_…, ghs_…, ghu_… pass; any
+# other answers 401 Bad credentials.
+#
+# The url fields point back at the address the app called, so SDKs that follow them (PyGithub, Octokit)
+# keep talking to Stuntman. Issues and pull requests share one numbering, from 42, as on GitHub.
+service:
+  name: github
+  title: GitHub
+  origin: community
+  description: Repositories, issues, pull requests, check runs and signed webhooks
+  base_url: https://api.github.com
+  real_host: api.github.com
+  limits:
+    latency: 60ms..220ms
+  webhooks:
+    sign: github
+    secret: secret://github-webhook-secret
+routes:
+  - route: GET /user
+    let: &lets
+      api: "headers.host == 'api.github.com' ? 'https://api.github.com' : 'http://' + headers.host + '/github'"
+      token: "replace(replace(default(headers.authorization, ''), 'token ', ''), 'Bearer ', '')"
+      a_authok: "token.startsWith('ghp_') || token.startsWith('github_pat_') || token.startsWith('gho_') || token.startsWith('ghs_') || token.startsWith('ghu_')"
+      me: "data.users[0]"
+      repo: "lookup('repos', 'full_name', path.owner + '/' + path.repo)"
+      num: "int(size(default(state.issues, {})) + size(default(state.pulls, {})) + 42)"
+      key: "path.owner + '/' + path.repo + '#' + default(path.number, string(num))"
+      issue: "state.issues[key]"
+      upd: "state.issue_updates[key]"
+      pull: "state.pulls[key]"
+      ncomments: "int(size(default(state.comments, {})))"
+      cr: "state.check_runs[default(path.id, '')]"
+      crupd: "state.check_run_updates[default(path.id, '')]"
+      cr_id: "int(4000000001 + size(default(state.check_runs, {})))"
+      user_json: >-
+        {"login": me.login, "id": int(me.id), "node_id": me.node_id, "avatar_url": 'https://avatars.githubusercontent.com/u/' + me.id + '?v=4',
+        "gravatar_id": "", "url": api + '/users/' + me.login, "html_url": 'https://github.com/' + me.login, "type": "User", "site_admin": false}
+      repo_json: >-
+        {"id": int(repo.id), "node_id": repo.node_id, "name": repo.name, "full_name": repo.full_name, "private": repo.private,
+        "owner": {"login": "acme", "id": int(9100001), "node_id": "O_kgDOAcme01", "url": api + '/users/acme', "html_url": "https://github.com/acme", "type": "Organization", "site_admin": false},
+        "html_url": 'https://github.com/' + repo.full_name, "description": repo.description, "fork": false, "url": api + '/repos/' + repo.full_name,
+        "default_branch": repo.default_branch, "visibility": repo.private ? 'private' : 'public', "language": repo.language,
+        "stargazers_count": int(repo.stars), "watchers_count": int(repo.stars), "forks_count": int(0), "open_issues_count": int(repo.open_issues),
+        "has_issues": true, "archived": false, "disabled": false, "created_at": repo.created_at, "updated_at": repo.updated_at, "pushed_at": repo.updated_at,
+        "permissions": {"admin": true, "maintain": true, "push": true, "triage": true, "pull": true}}
+      i_src: "has(issue) ? issue.body : body"
+      i_patch: "__method == 'PATCH' ? body : has(upd) ? upd.body : {}"
+      i_state: "has(i_patch.state) ? i_patch.state : 'open'"
+      issue_json: >-
+        {"id": int(2000000000 + int(default(path.number, string(num)))), "node_id": 'I_kwDOAcme' + default(path.number, string(num)),
+        "url": api + '/repos/' + path.owner + '/' + path.repo + '/issues/' + default(path.number, string(num)),
+        "repository_url": api + '/repos/' + path.owner + '/' + path.repo,
+        "labels_url": api + '/repos/' + path.owner + '/' + path.repo + '/issues/' + default(path.number, string(num)) + '/labels{/name}',
+        "comments_url": api + '/repos/' + path.owner + '/' + path.repo + '/issues/' + default(path.number, string(num)) + '/comments',
+        "events_url": api + '/repos/' + path.owner + '/' + path.repo + '/issues/' + default(path.number, string(num)) + '/events',
+        "html_url": 'https://github.com/' + path.owner + '/' + path.repo + '/issues/' + default(path.number, string(num)),
+        "number": int(default(path.number, string(num))), "state": i_state, "state_reason": i_state == 'closed' ? default(i_patch.state_reason, 'completed') : null,
+        "title": default(i_patch.title, i_src.title), "body": default(i_patch.body, default(i_src.body, null)),
+        "user": user_json, "labels": [], "assignee": null, "assignees": [], "milestone": null, "locked": false, "comments": ncomments,
+        "created_at": now(), "updated_at": now(), "closed_at": i_state == 'closed' ? now() : null, "author_association": "MEMBER"}
+      p_src: "has(pull) ? pull.body : body"
+      pull_json: >-
+        {"id": int(1500000000 + int(default(path.number, string(num)))), "node_id": 'PR_kwDOAcme' + default(path.number, string(num)),
+        "url": api + '/repos/' + path.owner + '/' + path.repo + '/pulls/' + default(path.number, string(num)),
+        "html_url": 'https://github.com/' + path.owner + '/' + path.repo + '/pull/' + default(path.number, string(num)),
+        "issue_url": api + '/repos/' + path.owner + '/' + path.repo + '/issues/' + default(path.number, string(num)),
+        "number": int(default(path.number, string(num))), "state": "open", "locked": false, "title": p_src.title, "body": default(p_src.body, null),
+        "user": user_json, "draft": p_src.draft == true, "merged": false, "mergeable": true, "mergeable_state": "clean", "merged_at": null, "closed_at": null,
+        "created_at": now(), "updated_at": now(), "commits": int(1), "additions": int(12), "deletions": int(3), "changed_files": int(2),
+        "head": {"label": 'acme:' + p_src.head, "ref": p_src.head, "sha": substring(sha256(p_src.head), 0, 40), "user": user_json},
+        "base": {"label": 'acme:' + default(p_src.base, 'main'), "ref": default(p_src.base, 'main'), "sha": substring(sha256(default(p_src.base, 'main')), 0, 40), "user": user_json},
+        "author_association": "MEMBER"}
+      c_src: "has(cr) ? cr.body : body"
+      c_patch: "__method == 'PATCH' ? body : has(crupd) ? crupd.body : {}"
+      c_status: "has(c_patch.conclusion) ? 'completed' : has(c_patch.status) ? c_patch.status : default(c_src.status, has(c_src.conclusion) ? 'completed' : 'queued')"
+      check_json: >-
+        {"id": int(default(path.id, string(cr_id))), "node_id": 'CR_kwDOAcme' + default(path.id, string(cr_id)), "head_sha": c_src.head_sha,
+        "external_id": default(c_src.external_id, ''), "url": api + '/repos/' + path.owner + '/' + path.repo + '/check-runs/' + default(path.id, string(cr_id)),
+        "html_url": 'https://github.com/' + path.owner + '/' + path.repo + '/runs/' + default(path.id, string(cr_id)),
+        "details_url": default(c_src.details_url, null), "status": c_status,
+        "conclusion": default(c_patch.conclusion, default(c_src.conclusion, null)),
+        "started_at": now(), "completed_at": c_status == 'completed' ? now() : null,
+        "output": {"title": default(default(c_patch.output, {}).title, default(c_src.output, {}).title), "summary": default(default(c_patch.output, {}).summary, default(c_src.output, {}).summary), "text": null, "annotations_count": int(0), "annotations_url": api + '/repos/' + path.owner + '/' + path.repo + '/check-runs/' + default(path.id, string(cr_id)) + '/annotations'},
+        "name": c_src.name, "check_suite": {"id": int(3000000001)},
+        "app": {"id": int(100001), "slug": "acme-ci", "name": "Acme CI", "owner": {"login": "acme", "id": int(9100001), "type": "Organization"}},
+        "pull_requests": []}
+    decide: &auth
+      - when: "!has(headers.authorization)"
+        answer: requires_authentication
+      - when: "!a_authok"
+        answer: bad_credentials
+      - answer: user
+  - route: GET /repos/{owner}/{repo}
+    let: *lets
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: requires_authentication
+      - when: "!a_authok"
+        answer: bad_credentials
+      - when: "!has(repo)"
+        answer: not_found
+      - answer: repository
+  # ---------------------------------------------------------------- issues
+  - route: POST /repos/{owner}/{repo}/issues
+    let: *lets
+    keep:
+      state: issues
+      key: key
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: requires_authentication
+      - when: "!a_authok"
+        answer: bad_credentials
+      - when: "!has(repo)"
+        answer: not_found
+      - when: "!has(body.title) || body.title == ''"
+        answer: missing_title
+      - answer: issue_created
+    send:
+      - url: "{{ answer == 'issue_created' ? data.settings[0].webhook_url : '' }}"
+        event: issues
+        headers: &hookheaders
+          X-GitHub-Event: "{{ __path.contains('/check-runs') ? 'check_run' : __path.contains('/comments') ? 'issue_comment' : __path.contains('/pulls') ? 'pull_request' : 'issues' }}"
+          X-GitHub-Delivery: "{{ uuid() }}"
+          X-GitHub-Hook-ID: "470100001"
+          X-GitHub-Hook-Installation-Target-Type: repository
+          X-GitHub-Hook-Installation-Target-ID: "{{ repo.id }}"
+          User-Agent: GitHub-Hookshot/7a1f2c4
+        body: '{{ json({"action": "opened", "issue": issue_json, "repository": repo_json, "sender": user_json}) }}'
+  - route: GET /repos/{owner}/{repo}/issues/{number}
+    let: *lets
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: requires_authentication
+      - when: "!a_authok"
+        answer: bad_credentials
+      - when: "!has(issue)"
+        answer: not_found
+      - answer: issue
+  - route: PATCH /repos/{owner}/{repo}/issues/{number}
+    let: *lets
+    keep:
+      state: issue_updates
+      key: key
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: requires_authentication
+      - when: "!a_authok"
+        answer: bad_credentials
+      - when: "!has(issue)"
+        answer: not_found
+      - when: "has(body.state) && !(body.state in ['open', 'closed'])"
+        answer: invalid_state
+      - answer: issue_updated
+    send:
+      - url: "{{ answer == 'issue_updated' ? data.settings[0].webhook_url : '' }}"
+        event: issues
+        headers: *hookheaders
+        body: >-
+          {{ json({"action": body.state == 'closed' ? 'closed' : body.state == 'open' ? 'reopened' : 'edited', "issue": issue_json, "repository": repo_json, "sender": user_json}) }}
+  - route: POST /repos/{owner}/{repo}/issues/{number}/comments
+    let: *lets
+    keep:
+      state: comments
+      key: "key + '/' + string(ncomments + 1)"
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: requires_authentication
+      - when: "!a_authok"
+        answer: bad_credentials
+      - when: "!has(issue)"
+        answer: not_found
+      - when: "!has(body.body) || body.body == ''"
+        answer: missing_comment_body
+      - answer: comment_created
+    send:
+      - url: "{{ answer == 'comment_created' ? data.settings[0].webhook_url : '' }}"
+        event: issue_comment
+        headers: *hookheaders
+        body: >-
+          {{ json({"action": "created", "issue": issue_json, "comment": {"id": int(1900000001 + ncomments), "node_id": 'IC_kwDOAcme' + string(ncomments + 1),
+          "url": api + '/repos/' + path.owner + '/' + path.repo + '/issues/comments/' + string(1900000001 + ncomments),
+          "html_url": 'https://github.com/' + path.owner + '/' + path.repo + '/issues/' + path.number + '#issuecomment-' + string(1900000001 + ncomments),
+          "body": body.body, "user": user_json, "created_at": now(), "updated_at": now(), "author_association": "MEMBER"}, "repository": repo_json, "sender": user_json}) }}
+  # ---------------------------------------------------------------- pull requests
+  - route: POST /repos/{owner}/{repo}/pulls
+    let: *lets
+    keep:
+      state: pulls
+      key: key
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: requires_authentication
+      - when: "!a_authok"
+        answer: bad_credentials
+      - when: "!has(repo)"
+        answer: not_found
+      - when: "!has(body.head) || !has(body.base)"
+        answer: pull_invalid
+      - when: "body.head == body.base"
+        answer: pull_same_branch
+      - answer: pull_created
+    send:
+      - url: "{{ answer == 'pull_created' ? data.settings[0].webhook_url : '' }}"
+        event: pull_request
+        headers: *hookheaders
+        body: '{{ json({"action": "opened", "number": num, "pull_request": pull_json, "repository": repo_json, "sender": user_json}) }}'
+  - route: GET /repos/{owner}/{repo}/pulls/{number}
+    let: *lets
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: requires_authentication
+      - when: "!a_authok"
+        answer: bad_credentials
+      - when: "!has(pull)"
+        answer: not_found
+      - answer: pull
+  # ---------------------------------------------------------------- check runs
+  - route: POST /repos/{owner}/{repo}/check-runs
+    let: *lets
+    keep:
+      state: check_runs
+      key: string(cr_id)
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: requires_authentication
+      - when: "!a_authok"
+        answer: bad_credentials
+      - when: "!has(repo)"
+        answer: not_found
+      - when: "!has(body.name) || !has(body.head_sha)"
+        answer: check_invalid
+      - answer: check_run_created
+    send:
+      - url: "{{ answer == 'check_run_created' ? data.settings[0].webhook_url : '' }}"
+        event: check_run
+        headers: *hookheaders
+        body: '{{ json({"action": "created", "check_run": check_json, "repository": repo_json, "sender": user_json}) }}'
+  - route: PATCH /repos/{owner}/{repo}/check-runs/{id}
+    let: *lets
+    keep:
+      state: check_run_updates
+      key: path.id
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: requires_authentication
+      - when: "!a_authok"
+        answer: bad_credentials
+      - when: "!has(cr)"
+        answer: not_found
+      - answer: check_run_updated
+    send:
+      - url: "{{ answer == 'check_run_updated' && has(body.conclusion) ? data.settings[0].webhook_url : '' }}"
+        event: check_run
+        headers: *hookheaders
+        body: '{{ json({"action": "completed", "check_run": check_json, "repository": repo_json, "sender": user_json}) }}'
+  - route: GET /repos/{owner}/{repo}/check-runs/{id}
+    let: *lets
+    decide:
+      - when: "!has(headers.authorization)"
+        answer: requires_authentication
+      - when: "!a_authok"
+        answer: bad_credentials
+      - when: "!has(cr)"
+        answer: not_found
+      - answer: check_run
+answers:
+  - name: user
+    headers: &rl
+      X-RateLimit-Limit: "5000"
+      X-RateLimit-Remaining: "4987"
+      X-RateLimit-Used: "13"
+      X-RateLimit-Reset: "{{ int(now_ms() / 1000) + 3600 }}"
+      X-RateLimit-Resource: core
+      X-GitHub-Api-Version-Selected: "2022-11-28"
+      X-GitHub-Request-Id: "{{ upper(random_id()) }}:{{ upper(random_id()) }}"
+    sentence: "Authenticated as {{ me.login }}"
+    body: |-
+      {{ json({"login": me.login, "id": int(me.id), "node_id": me.node_id, "avatar_url": 'https://avatars.githubusercontent.com/u/' + me.id + '?v=4', "gravatar_id": "",
+        "url": api + '/users/' + me.login, "html_url": 'https://github.com/' + me.login, "type": "User", "site_admin": false, "name": me.name, "company": "@acme",
+        "blog": "", "location": "New York, NY", "email": me.email, "hireable": null, "bio": null, "twitter_username": null, "public_repos": int(2), "public_gists": int(0),
+        "followers": int(12), "following": int(3), "created_at": "2019-03-01T12:00:00Z", "updated_at": "2026-11-01T12:00:00Z"}) }}
+  - name: repository
+    headers: *rl
+    sentence: "Repository {{ repo.full_name }}"
+    body: '{{ json(repo_json) }}'
+  - name: issue_created
+    status: 201
+    headers: *rl
+    sentence: "Issue #{{ num }} opened in {{ path.owner }}/{{ path.repo }}: {{ body.title }}"
+    body: '{{ json(issue_json) }}'
+  - name: issue
+    headers: *rl
+    sentence: "Issue #{{ path.number }} in {{ path.owner }}/{{ path.repo }}: {{ i_state }}"
+    body: '{{ json(issue_json) }}'
+  - name: issue_updated
+    headers: *rl
+    sentence: "Issue #{{ path.number }} updated{{ has(body.state) ? ': ' + body.state : '' }}"
+    body: '{{ json(issue_json) }}'
+  - name: comment_created
+    status: 201
+    headers: *rl
+    sentence: "Comment on #{{ path.number }}: {{ substring(body.body, 0, 60) }}"
+    body: |-
+      {{ json({"id": int(1900000001 + ncomments), "node_id": 'IC_kwDOAcme' + string(ncomments + 1), "url": api + '/repos/' + path.owner + '/' + path.repo + '/issues/comments/' + string(1900000001 + ncomments),
+        "html_url": 'https://github.com/' + path.owner + '/' + path.repo + '/issues/' + path.number + '#issuecomment-' + string(1900000001 + ncomments),
+        "issue_url": api + '/repos/' + path.owner + '/' + path.repo + '/issues/' + path.number, "body": body.body, "user": user_json,
+        "created_at": now(), "updated_at": now(), "author_association": "MEMBER"}) }}
+  - name: pull_created
+    status: 201
+    headers: *rl
+    sentence: "Pull request #{{ num }} opened: {{ body.head }} → {{ body.base }}"
+    body: '{{ json(pull_json) }}'
+  - name: pull
+    headers: *rl
+    sentence: "Pull request #{{ path.number }}"
+    body: '{{ json(pull_json) }}'
+  - name: check_run_created
+    status: 201
+    headers: *rl
+    sentence: "Check run {{ body.name }} on {{ substring(body.head_sha, 0, 7) }}: {{ c_status }}"
+    body: '{{ json(check_json) }}'
+  - name: check_run_updated
+    headers: *rl
+    sentence: "Check run {{ path.id }}: {{ default(body.conclusion, default(body.status, 'updated')) }}"
+    body: '{{ json(check_json) }}'
+  - name: check_run
+    headers: *rl
+    sentence: "Check run {{ path.id }}: {{ c_status }}"
+    body: '{{ json(check_json) }}'
+  # ---- errors, in GitHub's shape
+  - name: requires_authentication
+    status: 401
+    sentence: "Refused: no token"
+    body: '{"message": "Requires authentication", "documentation_url": "https://docs.github.com/rest", "status": "401"}'
+  - name: bad_credentials
+    status: 401
+    sentence: "Refused: bad credentials"
+    body: '{"message": "Bad credentials", "documentation_url": "https://docs.github.com/rest", "status": "401"}'
+  - name: not_found
+    status: 404
+    note: no such repository, issue, pull request or check run (GitHub answers 404 for private ones too)
+    headers: *rl
+    sentence: "Not found: {{ __path }}"
+    body: '{"message": "Not Found", "documentation_url": "https://docs.github.com/rest", "status": "404"}'
+  - name: missing_title
+    status: 422
+    sentence: "Refused: issue without a title"
+    body: '{"message": "Invalid request.\n\n\"title\" wasn''t supplied.", "documentation_url": "https://docs.github.com/rest/issues/issues#create-an-issue", "status": "422"}'
+  - name: invalid_state
+    status: 422
+    sentence: "Refused: state {{ body.state }}"
+    body: '{"message": "Validation Failed", "errors": [{"resource": "Issue", "code": "invalid", "field": "state"}], "documentation_url": "https://docs.github.com/rest/issues/issues#update-an-issue", "status": "422"}'
+  - name: missing_comment_body
+    status: 422
+    sentence: "Refused: empty comment"
+    body: '{"message": "Validation Failed", "errors": [{"resource": "IssueComment", "code": "missing_field", "field": "body"}], "documentation_url": "https://docs.github.com/rest/issues/comments#create-an-issue-comment", "status": "422"}'
+  - name: pull_invalid
+    status: 422
+    sentence: "Refused: pull request without head or base"
+    body: '{"message": "Validation Failed", "errors": [{"resource": "PullRequest", "code": "missing_field", "field": "{{ has(body.head) ? ''base'' : ''head'' }}"}], "documentation_url": "https://docs.github.com/rest/pulls/pulls#create-a-pull-request", "status": "422"}'
+  - name: pull_same_branch
+    status: 422
+    sentence: "Refused: head and base are both {{ body.head }}"
+    body: '{"message": "Validation Failed", "errors": [{"resource": "PullRequest", "code": "custom", "message": "No commits between {{ body.base }} and {{ body.head }}"}], "documentation_url": "https://docs.github.com/rest/pulls/pulls#create-a-pull-request", "status": "422"}'
+  - name: check_invalid
+    status: 422
+    sentence: "Refused: check run without name or head_sha"
+    body: '{"message": "Invalid request.\n\nFor ''properties/name'', nil is not a string.", "documentation_url": "https://docs.github.com/rest/checks/runs#create-a-check-run", "status": "422"}'
+  - name: rate_limited
+    status: 403
+    note: exists only to be forced; the primary limit (X-RateLimit-Remaining 0)
+    headers:
+      X-RateLimit-Limit: "5000"
+      X-RateLimit-Remaining: "0"
+      X-RateLimit-Used: "5000"
+      X-RateLimit-Reset: "{{ int(now_ms() / 1000) + 1800 }}"
+      X-RateLimit-Resource: core
+    sentence: "Rate limit exceeded (403)"
+    body: '{"message": "API rate limit exceeded for user ID {{ data.users[0].id }}. If you reach out to GitHub Support for help, please include the request ID.", "documentation_url": "https://docs.github.com/rest/overview/rate-limits-for-the-rest-api", "status": "403"}'
+  - name: secondary_rate_limited
+    status: 429
+    note: exists only to be forced; the secondary limit, with Retry-After
+    headers: {Retry-After: "60"}
+    sentence: "Secondary rate limit (429)"
+    body: '{"message": "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.", "documentation_url": "https://docs.github.com/rest/overview/rate-limits-for-the-rest-api#about-secondary-rate-limits", "status": "429"}'
+  - name: server_error
+    status: 502
+    note: exists only to be forced
+    sentence: "GitHub 502"
+    headers: {Content-Type: text/html}
+    raw: true
+    body: '<html><body><h1>502 Bad Gateway</h1></body></html>'
+data:
+  # Where the webhooks go (one repository webhook for the organization).
+  settings:
+    - {webhook_url: 'http://localhost:3000/github/webhooks'}
+  users:
+    - {login: emma-acme, id: '5100001', node_id: U_kgDOAcme01, name: Emma Carter, email: emma.carter@acme.example.com}
+  repos:
+    - {id: '700100001', node_id: R_kgDOAcme01, name: storefront, full_name: acme/storefront, private: false, description: The Acme web shop, default_branch: main, language: TypeScript, stars: 128, open_issues: 7, created_at: '2023-02-01T12:00:00Z', updated_at: '2026-11-14T18:00:00Z'}
+    - {id: '700100002', node_id: R_kgDOAcme02, name: infra, full_name: acme/infra, private: true, description: Terraform and deploy scripts, default_branch: main, language: HCL, stars: 4, open_issues: 2, created_at: '2023-05-01T12:00:00Z', updated_at: '2026-11-10T09:00:00Z'}

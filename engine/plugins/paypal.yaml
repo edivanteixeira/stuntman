@@ -1,0 +1,391 @@
+# PayPal REST (sandbox) for the Acme merchant: OAuth2 client credentials (/v1/oauth2/token), Orders v2
+# (create, get, capture, authorize), captures of authorizations, refunds, PayPal-Request-Id idempotency,
+# negative testing with the PayPal-Mock-Response header ({"mock_application_codes": "INSTRUMENT_DECLINED"}),
+# PayPal's error bodies (name, details[].issue, debug_id), and webhooks with PayPal's event shape and
+# PAYPAL-TRANSMISSION-* headers, which the app verifies with POST /v1/notifications/verify-webhook-signature
+# (SUCCESS or FAILURE). Point the SDK at it: the sandbox base URL http://localhost:8028/paypal (or resolve
+# api-m.sandbox.paypal.com to Stuntman). Webhooks go to data.settings webhook_url.
+#
+# The buyer approves an order at its approve (or payer-action) link, https://www.sandbox.paypal.com/
+# checkoutnow?token=<id>; GET /paypal/checkoutnow?token=<id> here approves it as the sandbox buyer and
+# redirects to the order's return_url with token and PayerID, as PayPal does.
+#
+# The transmission signature is not PayPal's RSA signature (no certificate to check it with): it is an
+# HMAC only this verify endpoint checks, over transmission id, time, webhook id and the event id.
+service:
+  name: paypal
+  title: PayPal
+  origin: community
+  description: Orders v2, captures, refunds and webhooks you verify through the API
+  base_url: https://api-m.sandbox.paypal.com
+  real_host: api-m.sandbox.paypal.com
+  limits:
+    latency: 200ms..600ms
+  idempotency:
+    header: PayPal-Request-Id
+routes:
+  - route: POST /v1/oauth2/token
+    let:
+      c: "data.clients[0]"
+      ok: "headers.authorization == 'Basic ' + base64(c.client_id + ':' + c.client_secret) || (body.client_id == c.client_id && body.client_secret == c.client_secret)"
+      tok: "'A21AA' + random_id() + random_id() + random_id() + random_id() + random_id() + random_id()"
+    keep:
+      state: tokens
+      key: tok
+    decide:
+      - when: "!ok"
+        answer: invalid_client
+      - when: "body.grant_type != 'client_credentials'"
+        answer: unsupported_grant_type
+      - answer: token
+  # ---------------------------------------------------------------- orders
+  - route: POST /v2/checkout/orders
+    let: &lets
+      authok: "has(state.tokens[replace(default(headers.authorization, ''), 'Bearer ', '')])"
+      api: "headers.host == 'api-m.sandbox.paypal.com' ? 'https://api-m.sandbox.paypal.com' : 'http://' + headers.host + '/paypal'"
+      id: "default(path.id, upper(substring(random_id() + random_id() + random_id(), 0, 17)))"
+      o: "__method == 'POST' && __path == '/v2/checkout/orders' ? body : state.orders[id].body"
+      pu: "default(default(o.purchase_units, [{}])[0], {})"
+      ctx: "has(o.payment_source.paypal) ? default(o.payment_source.paypal.experience_context, {}) : default(o.application_context, {})"
+      payer_action: "has(o.payment_source.paypal)"
+      approved: "has(state.approvals[id])"
+      caps: "json(default(state.captures, {}))"
+      auths: "json(default(state.authorizations, {}))"
+      captured: "caps.contains('>' + id + '\"')"
+      authorized: "auths.contains('>' + id + '\"')"
+      cap_id: "upper(substring(sha256('capture' + id), 0, 17))"
+      auth_id: "upper(substring(sha256('authorization' + id), 0, 17))"
+      buyer: "data.buyers[0]"
+      mock: "default(headers['paypal-mock-response'], '')"
+      status: "captured || authorized ? 'COMPLETED' : approved ? 'APPROVED' : payer_action ? 'PAYER_ACTION_REQUIRED' : 'CREATED'"
+      links: >-
+        [{"href": api + '/v2/checkout/orders/' + id, "rel": "self", "method": "GET"},
+        {"href": 'https://www.sandbox.paypal.com/checkoutnow?token=' + id, "rel": payer_action ? 'payer-action' : 'approve', "method": "GET"},
+        {"href": api + '/v2/checkout/orders/' + id, "rel": "update", "method": "PATCH"},
+        {"href": api + '/v2/checkout/orders/' + id + (o.intent == 'AUTHORIZE' ? '/authorize' : '/capture'), "rel": o.intent == 'AUTHORIZE' ? 'authorize' : 'capture', "method": "POST"}]
+      payee: "{'email_address': data.settings[0].merchant_email, 'merchant_id': data.settings[0].merchant_id}"
+      capture_obj: >-
+        {"id": cap_id, "status": "COMPLETED", "amount": pu.amount, "final_capture": true, "disbursement_mode": "INSTANT",
+        "seller_protection": {"status": "ELIGIBLE", "dispute_categories": ["ITEM_NOT_RECEIVED", "UNAUTHORIZED_TRANSACTION"]},
+        "seller_receivable_breakdown": {"gross_amount": pu.amount, "paypal_fee": {"currency_code": pu.amount.currency_code, "value": "0.59"} },
+        "invoice_id": default(pu.invoice_id, null), "custom_id": default(pu.custom_id, null),
+        "links": [{"href": api + '/v2/payments/captures/' + cap_id, "rel": "self", "method": "GET"}, {"href": api + '/v2/payments/captures/' + cap_id + '/refund', "rel": "refund", "method": "POST"}, {"href": api + '/v2/checkout/orders/' + id, "rel": "up", "method": "GET"}],
+        "create_time": now(), "update_time": now()}
+      auth_obj: >-
+        {"id": auth_id, "status": "CREATED", "amount": pu.amount, "expiration_time": now(),
+        "seller_protection": {"status": "ELIGIBLE", "dispute_categories": ["ITEM_NOT_RECEIVED", "UNAUTHORIZED_TRANSACTION"]},
+        "links": [{"href": api + '/v2/payments/authorizations/' + auth_id, "rel": "self", "method": "GET"}, {"href": api + '/v2/payments/authorizations/' + auth_id + '/capture', "rel": "capture", "method": "POST"}, {"href": api + '/v2/payments/authorizations/' + auth_id + '/void', "rel": "void", "method": "POST"}, {"href": api + '/v2/checkout/orders/' + id, "rel": "up", "method": "GET"}],
+        "create_time": now(), "update_time": now()}
+      payments: "__path.endsWith('/capture') || (!__path.endsWith('/authorize') && captured) ? {'captures': [capture_obj]} : __path.endsWith('/authorize') || authorized ? {'authorizations': [auth_obj]} : null"
+      order: >-
+        {"id": id, "intent": o.intent, "status": __path.endsWith('/capture') || __path.endsWith('/authorize') ? 'COMPLETED' : status,
+        "payment_source": approved || payer_action ? {"paypal": {"email_address": buyer.email, "account_id": buyer.payer_id, "account_status": "VERIFIED", "name": {"given_name": buyer.given_name, "surname": buyer.surname}, "address": {"country_code": "US"}}} : null,
+        "purchase_units": [{"reference_id": default(pu.reference_id, 'default'), "amount": pu.amount, "payee": payee, "description": default(pu.description, null), "invoice_id": default(pu.invoice_id, null), "custom_id": default(pu.custom_id, null), "payments": payments}],
+        "payer": approved ? {"name": {"given_name": buyer.given_name, "surname": buyer.surname}, "email_address": buyer.email, "payer_id": buyer.payer_id, "address": {"country_code": "US"}} : null,
+        "create_time": now(), "update_time": now(), "links": links}
+      tx_id: "uuid()"
+      tx_time: "now()"
+      ev_id: "'WH-' + upper(random_id() + random_id()) + '-' + upper(random_id() + random_id())"
+      tx_sig: "hmac('sha256', data.settings[0].signing_key, tx_id + '|' + tx_time + '|' + data.settings[0].webhook_id + '|' + ev_id, 'base64')"
+    keep:
+      state: orders
+      key: id
+    decide:
+      - when: "!authok"
+        answer: authentication_failure
+      - when: "!has(body.intent)"
+        answer: intent_missing
+      - when: "!(body.intent in ['CAPTURE', 'AUTHORIZE'])"
+        answer: intent_invalid
+      - when: "!has(pu.amount) || !has(pu.amount.value) || !has(pu.amount.currency_code)"
+        answer: amount_missing
+      - answer: order_created
+  - route: GET /v2/checkout/orders/{id}
+    let: *lets
+    decide:
+      - when: "!authok"
+        answer: authentication_failure
+      - when: "!has(state.orders[id])"
+        answer: order_not_found
+      - answer: order
+  # The buyer's approval (the approve / payer-action link).
+  - route: GET /checkoutnow
+    let:
+      id: "default(query.token, '')"
+      o: "state.orders[id].body"
+      ctx: "has(o.payment_source.paypal) ? default(o.payment_source.paypal.experience_context, {}) : default(o.application_context, {})"
+      back: "default(ctx.return_url, 'https://www.sandbox.paypal.com/checkoutnow/done')"
+      buyer: "data.buyers[0]"
+      tx_id: "uuid()"
+      tx_time: "now()"
+      ev_id: "'WH-' + upper(random_id() + random_id()) + '-' + upper(random_id() + random_id())"
+      tx_sig: "hmac('sha256', data.settings[0].signing_key, tx_id + '|' + tx_time + '|' + data.settings[0].webhook_id + '|' + ev_id, 'base64')"
+    keep:
+      state: approvals
+      key: id
+    decide:
+      - when: "!has(o)"
+        answer: approve_unknown
+      - answer: approved_redirect
+    send:
+      - url: "{{ answer == 'approved_redirect' ? data.settings[0].webhook_url : '' }}"
+        event: CHECKOUT.ORDER.APPROVED
+        headers: &hookheaders
+          PAYPAL-TRANSMISSION-ID: "{{ tx_id }}"
+          PAYPAL-TRANSMISSION-TIME: "{{ tx_time }}"
+          PAYPAL-TRANSMISSION-SIG: "{{ tx_sig }}"
+          PAYPAL-CERT-URL: https://api.sandbox.paypal.com/v1/notifications/certs/CERT-360caa42-fca2a594-acme0001
+          PAYPAL-AUTH-ALGO: SHA256withRSA
+          PAYPAL-AUTH-VERSION: v2
+          User-Agent: PayPal/AUHD-214.0-58457913
+        body: >-
+          {{ json({"id": ev_id, "event_version": "1.0", "create_time": now(), "resource_type": "checkout-order", "resource_version": "2.0", "event_type": "CHECKOUT.ORDER.APPROVED",
+          "summary": "An order has been approved by buyer", "resource": {"id": id, "intent": o.intent, "status": "APPROVED", "purchase_units": o.purchase_units,
+          "payer": {"name": {"given_name": buyer.given_name, "surname": buyer.surname}, "email_address": buyer.email, "payer_id": buyer.payer_id}, "create_time": now()},
+          "links": [{"href": "https://api.sandbox.paypal.com/v1/notifications/webhooks-events/" + ev_id, "rel": "self", "method": "GET"}, {"href": "https://api.sandbox.paypal.com/v1/notifications/webhooks-events/" + ev_id + "/resend", "rel": "resend", "method": "POST"}]}) }}
+  - route: POST /v2/checkout/orders/{id}/capture
+    let: *lets
+    keep:
+      state: captures
+      key: "cap_id + '>' + id"
+    decide: &pay
+      - when: "!authok"
+        answer: authentication_failure
+      - when: "!has(state.orders[id])"
+        answer: order_not_found
+      - when: "__path.endsWith('/capture') && o.intent != 'CAPTURE' || __path.endsWith('/authorize') && o.intent != 'AUTHORIZE'"
+        answer: action_does_not_match_intent
+      - when: "!approved"
+        answer: order_not_approved
+      - when: "captured || authorized"
+        answer: order_already_completed
+      - when: "mock.contains('INSTRUMENT_DECLINED')"
+        answer: instrument_declined
+      - when: "mock.contains('TRANSACTION_REFUSED')"
+        answer: transaction_refused
+      - answer: order_completed
+    send:
+      - url: "{{ answer == 'order_completed' ? data.settings[0].webhook_url : '' }}"
+        event: PAYMENT.CAPTURE.COMPLETED
+        headers: *hookheaders
+        body: >-
+          {{ json({"id": ev_id, "event_version": "1.0", "create_time": now(), "resource_type": "capture", "resource_version": "2.0", "event_type": "PAYMENT.CAPTURE.COMPLETED",
+          "summary": "Payment completed for $ " + pu.amount.value + " " + pu.amount.currency_code, "resource": capture_obj,
+          "links": [{"href": "https://api.sandbox.paypal.com/v1/notifications/webhooks-events/" + ev_id, "rel": "self", "method": "GET"}, {"href": "https://api.sandbox.paypal.com/v1/notifications/webhooks-events/" + ev_id + "/resend", "rel": "resend", "method": "POST"}]}) }}
+  - route: POST /v2/checkout/orders/{id}/authorize
+    let: *lets
+    keep:
+      state: authorizations
+      key: "auth_id + '>' + id"
+    decide: *pay
+    send:
+      - url: "{{ answer == 'order_completed' ? data.settings[0].webhook_url : '' }}"
+        event: PAYMENT.AUTHORIZATION.CREATED
+        headers: *hookheaders
+        body: >-
+          {{ json({"id": ev_id, "event_version": "1.0", "create_time": now(), "resource_type": "authorization", "resource_version": "2.0", "event_type": "PAYMENT.AUTHORIZATION.CREATED",
+          "summary": "A payment authorization was created", "resource": auth_obj,
+          "links": [{"href": "https://api.sandbox.paypal.com/v1/notifications/webhooks-events/" + ev_id, "rel": "self", "method": "GET"}]}) }}
+  # ---------------------------------------------------------------- payments
+  - route: POST /v2/payments/authorizations/{auth}/capture
+    let:
+      authok: "has(state.tokens[replace(default(headers.authorization, ''), 'Bearer ', '')])"
+      api: "headers.host == 'api-m.sandbox.paypal.com' ? 'https://api-m.sandbox.paypal.com' : 'http://' + headers.host + '/paypal'"
+      found: "split(json(default(state.authorizations, {})), '\"' + path.auth + '>')"
+      order_id: "size(found) > 1 ? split(found[1], '\"')[0] : ''"
+      pu: "default(default(state.orders[order_id].body.purchase_units, [{}])[0], {})"
+      cap_id: "upper(substring(sha256('capture' + path.auth), 0, 17))"
+      done: "json(default(state.captures, {})).contains('\"' + cap_id + '>')"
+      amount: "default(body.amount, pu.amount)"
+    keep:
+      state: captures
+      key: "cap_id + '>' + order_id"
+    decide:
+      - when: "!authok"
+        answer: authentication_failure
+      - when: "order_id == ''"
+        answer: authorization_not_found
+      - when: "done"
+        answer: authorization_already_captured
+      - answer: authorization_captured
+  - route: POST /v2/payments/captures/{capture}/refund
+    let:
+      authok: "has(state.tokens[replace(default(headers.authorization, ''), 'Bearer ', '')])"
+      api: "headers.host == 'api-m.sandbox.paypal.com' ? 'https://api-m.sandbox.paypal.com' : 'http://' + headers.host + '/paypal'"
+      found: "split(json(default(state.captures, {})), '\"' + path.capture + '>')"
+      order_id: "size(found) > 1 ? split(found[1], '\"')[0] : ''"
+      pu: "default(default(state.orders[order_id].body.purchase_units, [{}])[0], {})"
+      amount: "default(body.amount, pu.amount)"
+      ref_id: "upper(substring(random_id() + random_id() + random_id(), 0, 17))"
+      too_much: "has(body.amount) && double(body.amount.value) > double(pu.amount.value)"
+      tx_id: "uuid()"
+      tx_time: "now()"
+      ev_id: "'WH-' + upper(random_id() + random_id()) + '-' + upper(random_id() + random_id())"
+      tx_sig: "hmac('sha256', data.settings[0].signing_key, tx_id + '|' + tx_time + '|' + data.settings[0].webhook_id + '|' + ev_id, 'base64')"
+      refund_obj: >-
+        {"id": ref_id, "status": "COMPLETED", "amount": amount, "note_to_payer": default(body.note_to_payer, null), "invoice_id": default(body.invoice_id, null),
+        "seller_payable_breakdown": {"gross_amount": amount, "paypal_fee": {"currency_code": amount.currency_code, "value": "0.00"}, "net_amount": amount},
+        "create_time": now(), "update_time": now(),
+        "links": [{"href": api + '/v2/payments/refunds/' + ref_id, "rel": "self", "method": "GET"}, {"href": api + '/v2/payments/captures/' + path.capture, "rel": "up", "method": "GET"}]}
+    keep:
+      state: refunds
+      key: ref_id
+    decide:
+      - when: "!authok"
+        answer: authentication_failure
+      - when: "order_id == ''"
+        answer: capture_not_found
+      - when: "too_much"
+        answer: refund_amount_exceeded
+      - answer: refunded
+    send:
+      - url: "{{ answer == 'refunded' ? data.settings[0].webhook_url : '' }}"
+        event: PAYMENT.CAPTURE.REFUNDED
+        headers: *hookheaders
+        body: >-
+          {{ json({"id": ev_id, "event_version": "1.0", "create_time": now(), "resource_type": "refund", "resource_version": "2.0", "event_type": "PAYMENT.CAPTURE.REFUNDED",
+          "summary": "A " + amount.value + " " + amount.currency_code + " capture payment was refunded", "resource": refund_obj,
+          "links": [{"href": "https://api.sandbox.paypal.com/v1/notifications/webhooks-events/" + ev_id, "rel": "self", "method": "GET"}]}) }}
+  # ---------------------------------------------------------------- webhook verification
+  - route: POST /v1/notifications/verify-webhook-signature
+    let:
+      authok: "has(state.tokens[replace(default(headers.authorization, ''), 'Bearer ', '')])"
+      want: "hmac('sha256', data.settings[0].signing_key, default(body.transmission_id, '') + '|' + default(body.transmission_time, '') + '|' + default(body.webhook_id, '') + '|' + default(default(body.webhook_event, {}).id, ''), 'base64')"
+      good: "body.webhook_id == data.settings[0].webhook_id && body.transmission_sig == want && body.auth_algo == 'SHA256withRSA'"
+    decide:
+      - when: "!authok"
+        answer: authentication_failure
+      - when: "!has(body.transmission_id) || !has(body.transmission_sig) || !has(body.webhook_id) || !has(body.webhook_event)"
+        answer: verify_invalid_request
+      - answer: verification
+answers:
+  - name: token
+    sentence: "Access token for {{ data.clients[0].client_id }}"
+    body: '{{ json({"scope": "https://uri.paypal.com/services/invoicing https://uri.paypal.com/services/payments/payment/authcapture https://uri.paypal.com/services/payments/refund https://uri.paypal.com/services/applications/webhooks openid", "access_token": tok, "token_type": "Bearer", "app_id": data.clients[0].app_id, "expires_in": 32400, "nonce": now() + random_id()}) }}'
+  - name: order_created
+    status: 201
+    sentence: "Order {{ id }} ({{ body.intent }}) for {{ pu.amount.value }} {{ pu.amount.currency_code }}: {{ status }}"
+    body: '{{ json(order) }}'
+  - name: order
+    sentence: "Order {{ id }}: {{ status }}"
+    body: '{{ json(order) }}'
+  - name: order_completed
+    status: 201
+    sentence: "Order {{ id }} {{ __path.endsWith('/capture') ? 'captured (' + cap_id + ')' : 'authorized (' + auth_id + ')' }}"
+    body: '{{ json(order) }}'
+  - name: approved_redirect
+    status: 302
+    note: the sandbox buyer approved; back to the return_url
+    sentence: "Buyer {{ buyer.email }} approved order {{ id }}"
+    headers: {Location: "{{ back }}{{ back.contains('?') ? '&' : '?' }}token={{ id }}&PayerID={{ buyer.payer_id }}", Content-Type: text/plain}
+    raw: true
+    body: ''
+  - name: approve_unknown
+    status: 404
+    sentence: "No order {{ query.token }} to approve"
+    headers: {Content-Type: text/html}
+    raw: true
+    body: '<html><body><h1>Sorry, this page is not available.</h1></body></html>'
+  - name: authorization_captured
+    status: 201
+    sentence: "Authorization {{ path.auth }} captured ({{ cap_id }})"
+    body: '{{ json({"id": cap_id, "status": "COMPLETED", "amount": amount, "final_capture": default(body.final_capture, true), "create_time": now(), "update_time": now(), "links": [{"href": api + "/v2/payments/captures/" + cap_id, "rel": "self", "method": "GET"}, {"href": api + "/v2/payments/captures/" + cap_id + "/refund", "rel": "refund", "method": "POST"}, {"href": api + "/v2/payments/authorizations/" + path.auth, "rel": "up", "method": "GET"}]}) }}'
+  - name: refunded
+    status: 201
+    sentence: "Refund {{ ref_id }} of {{ amount.value }} {{ amount.currency_code }} for capture {{ path.capture }}"
+    body: '{{ json(refund_obj) }}'
+  - name: verification
+    note: SUCCESS when the headers are the ones this service sent for this webhook id; FAILURE otherwise
+    sentence: "Webhook {{ default(body.webhook_event.id, '?') }} verified: {{ good ? 'SUCCESS' : 'FAILURE' }}"
+    body: '{"verification_status": "{{ good ? ''SUCCESS'' : ''FAILURE'' }}"}'
+  # ---- errors, in PayPal's shapes
+  - name: invalid_client
+    status: 401
+    sentence: "Refused: client authentication failed"
+    body: '{"error": "invalid_client", "error_description": "Client Authentication failed"}'
+  - name: unsupported_grant_type
+    status: 400
+    sentence: "Refused: grant_type {{ body.grant_type }}"
+    body: '{"error": "unsupported_grant_type", "error_description": "Grant Type is NULL"}'
+  - name: authentication_failure
+    status: 401
+    note: no Bearer token, or one this service did not issue
+    sentence: "Refused: authentication failed"
+    body: '{"name": "AUTHENTICATION_FAILURE", "message": "Authentication failed due to invalid authentication credentials or a missing Authorization header.", "links": [{"href": "https://developer.paypal.com/docs/api/overview/#error", "rel": "information_link"}]}'
+  - name: intent_missing
+    status: 400
+    sentence: "Refused: intent missing"
+    body: &invalid_request '{"name": "INVALID_REQUEST", "message": "Request is not well-formed, syntactically incorrect, or violates schema.", "debug_id": "{{ random_id() }}{{ substring(random_id(), 0, 5) }}", "details": [{"field": "/intent", "value": "", "location": "body", "issue": "MISSING_REQUIRED_PARAMETER", "description": "A required field / parameter is missing."}], "links": [{"href": "https://developer.paypal.com/docs/api/orders/v2/#error-MISSING_REQUIRED_PARAMETER", "rel": "information_link", "encType": "application/json"}]}'
+  - name: intent_invalid
+    status: 400
+    sentence: "Refused: intent {{ body.intent }}"
+    body: '{"name": "INVALID_REQUEST", "message": "Request is not well-formed, syntactically incorrect, or violates schema.", "debug_id": "{{ random_id() }}{{ substring(random_id(), 0, 5) }}", "details": [{"field": "/intent", "value": "{{ body.intent }}", "location": "body", "issue": "INVALID_PARAMETER_VALUE", "description": "The value of a field is invalid."}], "links": [{"href": "https://developer.paypal.com/docs/api/orders/v2/#error-INVALID_PARAMETER_VALUE", "rel": "information_link", "encType": "application/json"}]}'
+  - name: amount_missing
+    status: 400
+    sentence: "Refused: purchase unit amount missing"
+    body: '{"name": "INVALID_REQUEST", "message": "Request is not well-formed, syntactically incorrect, or violates schema.", "debug_id": "{{ random_id() }}{{ substring(random_id(), 0, 5) }}", "details": [{"field": "/purchase_units/@reference_id==''default''/amount", "location": "body", "issue": "MISSING_REQUIRED_PARAMETER", "description": "A required field / parameter is missing."}], "links": [{"href": "https://developer.paypal.com/docs/api/orders/v2/#error-MISSING_REQUIRED_PARAMETER", "rel": "information_link", "encType": "application/json"}]}'
+  - name: order_not_found
+    status: 404
+    sentence: "No order {{ id }}"
+    body: '{"name": "RESOURCE_NOT_FOUND", "details": [{"field": "order_id", "value": "{{ id }}", "location": "path", "issue": "INVALID_RESOURCE_ID", "description": "Specified resource ID does not exist. Please check the resource ID and try again."}], "message": "The specified resource does not exist.", "debug_id": "{{ random_id() }}{{ substring(random_id(), 0, 5) }}", "links": [{"href": "https://developer.paypal.com/docs/api/orders/v2/#error-INVALID_RESOURCE_ID", "rel": "information_link", "method": "GET"}]}'
+  - name: order_not_approved
+    status: 422
+    sentence: "Refused: order {{ id }} not approved by the buyer"
+    body: &unprocessable '{"name": "UNPROCESSABLE_ENTITY", "details": [{"issue": "ORDER_NOT_APPROVED", "description": "Payer has not yet approved the Order for payment. Please redirect the payer to the ''rel'':''approve'' url returned as part of the HATEOAS links within the Create Order call or provide a valid payment_source in the request."}], "message": "The requested action could not be performed, semantically incorrect, or failed business validation.", "debug_id": "{{ random_id() }}{{ substring(random_id(), 0, 5) }}", "links": [{"href": "https://developer.paypal.com/docs/api/orders/v2/#error-ORDER_NOT_APPROVED", "rel": "information_link", "method": "GET"}]}'
+  - name: order_already_completed
+    status: 422
+    sentence: "Refused: order {{ id }} already {{ captured ? 'captured' : 'authorized' }}"
+    body: '{"name": "UNPROCESSABLE_ENTITY", "details": [{"issue": "{{ captured ? ''ORDER_ALREADY_CAPTURED'' : ''ORDER_ALREADY_AUTHORIZED'' }}", "description": "{{ captured ? ''Order already captured. If intent=CAPTURE only one capture per order is allowed.'' : ''Order already authorized. If intent=AUTHORIZE only one authorization per order is allowed.'' }}"}], "message": "The requested action could not be performed, semantically incorrect, or failed business validation.", "debug_id": "{{ random_id() }}{{ substring(random_id(), 0, 5) }}", "links": [{"href": "https://developer.paypal.com/docs/api/orders/v2/#error-ORDER_ALREADY_CAPTURED", "rel": "information_link", "method": "GET"}]}'
+  - name: action_does_not_match_intent
+    status: 422
+    sentence: "Refused: order {{ id }} has intent {{ o.intent }}"
+    body: '{"name": "UNPROCESSABLE_ENTITY", "details": [{"issue": "ACTION_DOES_NOT_MATCH_INTENT", "description": "Order was created with an intent to ''{{ o.intent }}''. Please use ''/{{ lower(o.intent) == ''capture'' ? ''capture'' : ''authorize'' }}'' instead."}], "message": "The requested action could not be performed, semantically incorrect, or failed business validation.", "debug_id": "{{ random_id() }}{{ substring(random_id(), 0, 5) }}", "links": [{"href": "https://developer.paypal.com/docs/api/orders/v2/#error-ACTION_DOES_NOT_MATCH_INTENT", "rel": "information_link", "method": "GET"}]}'
+  - name: instrument_declined
+    status: 422
+    note: the funding instrument was declined (PayPal-Mock-Response INSTRUMENT_DECLINED, or forced)
+    sentence: "Declined: INSTRUMENT_DECLINED for order {{ id }}"
+    body: '{"name": "UNPROCESSABLE_ENTITY", "details": [{"issue": "INSTRUMENT_DECLINED", "description": "The instrument presented  was either declined by the processor or bank, or it can''t be used for this payment."}], "message": "The requested action could not be performed, semantically incorrect, or failed business validation.", "debug_id": "{{ random_id() }}{{ substring(random_id(), 0, 5) }}", "links": [{"href": "https://www.sandbox.paypal.com/checkoutnow?token={{ id }}", "rel": "redirect", "method": "GET"}, {"href": "https://developer.paypal.com/docs/api/orders/v2/#error-INSTRUMENT_DECLINED", "rel": "information_link", "method": "GET"}]}'
+  - name: transaction_refused
+    status: 422
+    sentence: "Declined: TRANSACTION_REFUSED for order {{ id }}"
+    body: '{"name": "UNPROCESSABLE_ENTITY", "details": [{"issue": "TRANSACTION_REFUSED", "description": "The request was refused."}], "message": "The requested action could not be performed, semantically incorrect, or failed business validation.", "debug_id": "{{ random_id() }}{{ substring(random_id(), 0, 5) }}", "links": [{"href": "https://developer.paypal.com/docs/api/orders/v2/#error-TRANSACTION_REFUSED", "rel": "information_link", "method": "GET"}]}'
+  - name: authorization_not_found
+    status: 404
+    sentence: "No authorization {{ path.auth }}"
+    body: '{"name": "RESOURCE_NOT_FOUND", "details": [{"field": "authorization_id", "value": "{{ path.auth }}", "location": "path", "issue": "INVALID_RESOURCE_ID", "description": "Specified resource ID does not exist. Please check the resource ID and try again."}], "message": "The specified resource does not exist.", "debug_id": "{{ random_id() }}{{ substring(random_id(), 0, 5) }}"}'
+  - name: authorization_already_captured
+    status: 422
+    sentence: "Refused: authorization {{ path.auth }} already captured"
+    body: '{"name": "UNPROCESSABLE_ENTITY", "details": [{"issue": "AUTHORIZATION_ALREADY_CAPTURED", "description": "Authorization has been previously captured and hence cannot be captured again."}], "message": "The requested action could not be performed, semantically incorrect, or failed business validation.", "debug_id": "{{ random_id() }}{{ substring(random_id(), 0, 5) }}"}'
+  - name: capture_not_found
+    status: 404
+    sentence: "No capture {{ path.capture }}"
+    body: '{"name": "RESOURCE_NOT_FOUND", "details": [{"field": "capture_id", "value": "{{ path.capture }}", "location": "path", "issue": "INVALID_RESOURCE_ID", "description": "Specified resource ID does not exist. Please check the resource ID and try again."}], "message": "The specified resource does not exist.", "debug_id": "{{ random_id() }}{{ substring(random_id(), 0, 5) }}"}'
+  - name: refund_amount_exceeded
+    status: 422
+    sentence: "Refused: refund of {{ body.amount.value }} is more than {{ pu.amount.value }}"
+    body: '{"name": "UNPROCESSABLE_ENTITY", "details": [{"issue": "REFUND_AMOUNT_EXCEEDED", "description": "The refund amount must be less than or equal to the capture amount that has not yet been refunded."}], "message": "The requested action could not be performed, semantically incorrect, or failed business validation.", "debug_id": "{{ random_id() }}{{ substring(random_id(), 0, 5) }}"}'
+  - name: verify_invalid_request
+    status: 400
+    sentence: "Refused: verification request incomplete"
+    body: '{"name": "VALIDATION_ERROR", "message": "Invalid request - see details", "debug_id": "{{ random_id() }}{{ substring(random_id(), 0, 5) }}", "details": [{"field": "transmission_sig", "location": "body", "issue": "MISSING_REQUIRED_PARAMETER", "description": "A required field / parameter is missing."}]}'
+  - name: rate_limit_reached
+    status: 429
+    note: exists only to be forced
+    sentence: "Rate limit reached (429)"
+    body: '{"name": "RATE_LIMIT_REACHED", "message": "Too many requests. Blocked due to rate limiting.", "debug_id": "{{ random_id() }}{{ substring(random_id(), 0, 5) }}", "links": [{"href": "https://developer.paypal.com/docs/api/orders/v2/#error-RATE_LIMIT_REACHED", "rel": "information_link"}]}'
+  - name: internal_server_error
+    status: 500
+    note: exists only to be forced
+    sentence: "PayPal internal error (500)"
+    body: '{"name": "INTERNAL_SERVER_ERROR", "message": "An internal server error occurred.", "debug_id": "{{ random_id() }}{{ substring(random_id(), 0, 5) }}", "links": [{"href": "https://developer.paypal.com/docs/api/orders/v2/#error-INTERNAL_SERVER_ERROR", "rel": "information_link"}]}'
+data:
+  # The REST app's credentials (Basic auth on /v1/oauth2/token).
+  clients:
+    - {client_id: AcmeSandboxClientId000000000000000000000000000000000000000000000001, client_secret: EAcmeSandboxSecret0000000000000000000000000000000000000000000000001, app_id: APP-80W284485P519543T}
+  # The merchant, where webhooks go, the webhook id the app verifies with, and the key that signs transmissions.
+  settings:
+    - {merchant_email: merchant@acme.example.com, merchant_id: ACMEMERCHANT01, webhook_url: 'http://localhost:3000/paypal/webhooks', webhook_id: 8PT597110X687430LKGECATA, signing_key: acme-paypal-transmission-key}
+  # The sandbox buyer who approves orders.
+  buyers:
+    - {email: sb-buyer-emma@personal.example.com, payer_id: QYR5Z8XDVJNXQ, given_name: Emma, surname: Carter}

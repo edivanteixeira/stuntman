@@ -1,0 +1,290 @@
+# Pagar.me Core API v5 (test keys): customers, orders with one charge each (Pix, boleto or credit card),
+# GET /orders/{id} and /charges/{id}, cancelling a charge, and the webhooks the dashboard subscribes
+# to (order.created, order.paid, order.payment_failed, order.canceled, charge.created, charge.paid,
+# charge.payment_failed, charge.refunded…). Basic auth with the secret key as the user (sk_test_…).
+#
+# Credit cards follow Pagar.me's simulator: 4000000000000010 is paid, 4000000000000028 is not
+# authorized (charge failed); any other number is paid. Pix and boleto stay pending until
+# POST /charges/{id}/confirm-payment (the dashboard's "confirm payment"), which fires charge.paid.
+# Webhooks are not signed in v5; when settings.webhook_user is set they carry that Basic credential,
+# as a webhook configured with authentication does. Apps should read the charge back to trust it.
+# Only the first payment of an order and its first five items are read.
+# Point the SDK at it: http://localhost:8028/pagarme/core/v5 (or resolve api.pagar.me).
+service:
+  name: pagarme
+  title: Pagar.me
+  origin: community
+  region: BR
+  description: Orders and charges (Pix, boleto, credit card), customers and webhooks - Core API v5
+  base_url: https://api.pagar.me/core/v5
+  real_host: api.pagar.me
+  limits:
+    latency: 200ms..600ms
+  idempotency:
+    header: Idempotency-Key
+routes:
+  # ---------------------------------------------------------------- customers
+  - route: POST /core/v5/customers
+    let: &cus_lets
+      cid: "has(path.id) ? path.id : 'cus_' + substring(replace(uuid(), '-', ''), 0, 16)"
+      crec: "state.customers[cid]"
+      csrc: "has(path.id) ? crec.body : body"
+      cview: >-
+        {"id": cid, "name": csrc.name, "email": csrc.email, "code": csrc.code, "document": csrc.document, "document_type": default(csrc.document_type, size(digits(default(csrc.document, ''))) == 14 ? 'CNPJ' : 'CPF'),
+        "type": default(csrc.type, 'individual'), "gender": csrc.gender, "delinquent": false, "address": csrc.address,
+        "created_at": iso(has(path.id) ? crec.at : __now), "updated_at": iso(has(path.id) ? crec.at : __now), "birthdate": csrc.birthdate,
+        "phones": default(csrc.phones, {}), "metadata": default(csrc.metadata, {})}
+    keep:
+      state: customers
+      key: cid
+    decide:
+      - when: &no_key "!has(headers.authorization) || !headers.authorization.startsWith('Basic c2tf')"
+        answer: unauthorized
+      - when: "!has(body.name)"
+        answer: invalid_customer
+      - when: has(body.document) && size(digits(body.document)) == 11 && !cpf_ok(body.document)
+        answer: invalid_document
+      - answer: customer
+  - route: GET /core/v5/customers/{id}
+    let: *cus_lets
+    decide:
+      - when: *no_key
+        answer: unauthorized
+      - when: "!has(crec)"
+        answer: customer_not_found
+      - answer: customer
+
+  # ---------------------------------------------------------------- orders and charges
+  # The charge's id carries the order's (ch_<x> for or_<x>), so GET /charges/{id} finds its order.
+  - route: POST /core/v5/orders
+    let: &order_lets
+      x: "has(path.id) ? substring(path.id, 3) : substring(replace(uuid(), '-', ''), 0, 16)"
+      oid: "'or_' + x"
+      chid: "'ch_' + x"
+      orec: "state.orders[oid]"
+      src: "has(path.id) ? orec.body : body"
+      t0: "has(path.id) ? orec.at : __now"
+      pay: "src.payments[0]"
+      method: "default(pay.payment_method, '')"
+      items_total: >-
+        int(default(src.items[0].amount, 0)) * int(default(src.items[0].quantity, 1)) + int(default(src.items[1].amount, 0)) * int(default(src.items[1].quantity, 1))
+        + int(default(src.items[2].amount, 0)) * int(default(src.items[2].quantity, 1)) + int(default(src.items[3].amount, 0)) * int(default(src.items[3].quantity, 1))
+        + int(default(src.items[4].amount, 0)) * int(default(src.items[4].quantity, 1))
+      amount: "int(default(pay.amount, items_total))"
+      card_no: "digits(default(pay.credit_card.card.number, ''))"
+      card_row: "lookup('cards', 'number', card_no)"
+      card_ok: "method == 'credit_card' && default(card_row.outcome, 'paid') == 'paid'"
+      confirmed: "has(state.confirmed[chid])"
+      canceled: "has(state.canceled[chid]) || __method == 'DELETE'"
+      ch_status: >-
+        canceled ? 'canceled'
+        : method == 'credit_card' ? (card_ok ? 'paid' : 'failed')
+        : confirmed || __path.endsWith('/confirm-payment') ? 'paid' : 'pending'
+      or_status: "ch_status == 'canceled' ? 'canceled' : ch_status == 'paid' ? 'paid' : ch_status == 'failed' ? 'failed' : 'pending'"
+      tran: "'tran_' + x"
+      cents: "amount"
+      amount_txt: "string(int(cents / 100)) + '.' + (cents % 100 < 10 ? '0' : '') + string(cents % 100)"
+      gui: "'0014br.gov.bcb.pix0136' + data.settings[0].pix_key"
+      payload: >-
+        '000201' + '010212' + '26' + string(size(gui)) + gui + '52040000' + '5303986'
+        + '54' + (size(amount_txt) < 10 ? '0' : '') + string(size(amount_txt)) + amount_txt
+        + '5802BR' + '59' + (size(data.settings[0].name) < 10 ? '0' : '') + string(size(data.settings[0].name)) + data.settings[0].name
+        + '60' + (size(data.settings[0].city) < 10 ? '0' : '') + string(size(data.settings[0].city)) + data.settings[0].city
+        + '6220' + '0516' + x + '6304'
+      qr: "payload + crc16(payload)"
+      bdigits: "substring(digits(x.sha256() + x.sha256() + x.sha256()), 0, 33)"
+      f1: "'1979' + substring(bdigits, 0, 6)"
+      line: "substring(f1, 0, 5) + '.' + substring(f1, 5) + ' ' + substring(bdigits, 6, 11) + '.' + substring(bdigits, 11, 17) + ' ' + substring(bdigits, 17, 22) + '.' + substring(bdigits, 22, 28) + ' ' + substring(bdigits, 28, 29) + ' ' + '9999' + substring('0000000000' + string(amount), -10)"
+      customer: "has(src.customer_id) ? state.customers[src.customer_id].body : src.customer"
+      cust_view: >-
+        {"id": default(src.customer_id, 'cus_' + substring(x.sha256(), 0, 16)), "name": customer.name, "email": customer.email, "document": customer.document,
+        "document_type": size(digits(default(customer.document, ''))) == 14 ? 'CNPJ' : 'CPF', "type": default(customer.type, 'individual'), "delinquent": false,
+        "created_at": iso(t0), "updated_at": iso(t0), "phones": default(customer.phones, {})}
+      tx_view: >-
+        method == 'pix' ? {"id": tran, "transaction_type": "pix", "gateway_id": x.sha256(), "amount": amount, "status": ch_status == 'paid' ? 'paid' : 'waiting_payment', "success": true,
+          "qr_code": qr, "qr_code_url": 'https://api.pagar.me/core/v5/transactions/' + tran + '/qrcode?payment_method=pix',
+          "expires_at": iso(t0 + int(default(pay.pix.expires_in, 3600)) * 1000), "created_at": iso(t0), "updated_at": iso(t0), "gateway_response": {}, "antifraud_response": {}, "metadata": {}}
+        : method == 'boleto' ? {"id": tran, "transaction_type": "boleto", "gateway_id": x.sha256(), "amount": amount, "status": ch_status == 'paid' ? 'paid' : 'generated', "success": true,
+          "url": 'https://api.pagar.me/core/v5/transactions/' + tran + '/pdf', "pdf": 'https://api.pagar.me/core/v5/transactions/' + tran + '/pdf', "line": line,
+          "barcode": 'https://api.pagar.me/core/v5/transactions/' + tran + '/barcode', "qr_code": 'https://api.pagar.me/core/v5/transactions/' + tran + '/qrcode',
+          "nosso_numero": substring(bdigits, 0, 11), "bank": "197", "document_number": substring(bdigits, 11, 21), "instructions": pay.boleto.instructions,
+          "due_at": default(pay.boleto.due_at, iso(t0 + 259200000)), "type": "DM", "created_at": iso(t0), "updated_at": iso(t0), "gateway_response": {}, "antifraud_response": {}, "metadata": {}}
+        : {"id": tran, "transaction_type": "credit_card", "gateway_id": x.sha256(), "amount": amount,
+          "status": ch_status == 'canceled' ? 'refunded' : card_ok ? 'captured' : 'not_authorized', "success": card_ok,
+          "installments": int(default(pay.credit_card.installments, 1)), "statement_descriptor": pay.credit_card.statement_descriptor,
+          "acquirer_name": "simulator", "acquirer_tid": substring(bdigits, 0, 12), "acquirer_nsu": substring(bdigits, 12, 18), "acquirer_auth_code": card_ok ? substring(bdigits, 18, 24) : null,
+          "acquirer_message": card_ok ? 'Transação aprovada com sucesso' : 'Transação não autorizada', "acquirer_return_code": card_ok ? '00' : '05',
+          "operation_type": "auth_and_capture",
+          "card": {"id": 'card_' + substring(card_no.sha256(), 0, 16), "first_six_digits": substring(card_no, 0, 6), "last_four_digits": substring(card_no, -4),
+            "brand": card_no.startsWith('5') ? 'Mastercard' : 'Visa', "holder_name": pay.credit_card.card.holder_name, "exp_month": int(default(pay.credit_card.card.exp_month, 12)), "exp_year": int(default(pay.credit_card.card.exp_year, 2030)),
+            "status": "active", "type": "credit", "created_at": iso(t0), "updated_at": iso(t0)},
+          "created_at": iso(t0), "updated_at": iso(t0), "gateway_response": {"code": card_ok ? '200' : '400', "errors": []}, "antifraud_response": {}, "metadata": {}}
+      charge_view: >-
+        {"id": chid, "code": default(src.code, x), "gateway_id": x.sha256(), "amount": amount, "paid_amount": ch_status == 'paid' ? amount : null, "status": ch_status, "currency": "BRL",
+        "payment_method": method, "paid_at": ch_status == 'paid' ? iso(__now) : null, "canceled_at": ch_status == 'canceled' ? iso(__now) : null,
+        "created_at": iso(t0), "updated_at": iso(__now), "customer": cust_view, "last_transaction": tx_view, "metadata": default(src.metadata, {})}
+      order_view: >-
+        {"id": oid, "code": default(src.code, x), "amount": amount, "currency": "BRL", "closed": default(src.closed, true), "items": src.items,
+        "customer": cust_view, "status": or_status, "created_at": iso(t0), "updated_at": iso(__now), "closed_at": iso(t0),
+        "charges": [charge_view], "checkouts": [], "metadata": default(src.metadata, {})}
+      problem: >-
+        !has(body.items) || size(body.items) == 0 ? ['order.items', 'The items field is required.']
+        : !has(body.customer) && !has(body.customer_id) ? ['order.customer', 'The customer field is required.']
+        : has(body.customer_id) && !has(state.customers[body.customer_id]) ? ['order.customer_id', 'Customer not found.']
+        : !has(body.payments) || size(body.payments) == 0 ? ['order.payments', 'The payments field is required.']
+        : !(method in ['pix', 'boleto', 'credit_card']) ? ['order.payments[0].payment_method', 'The payment_method field is invalid.']
+        : method == 'credit_card' && card_no == '' && !has(pay.credit_card.card_id) && !has(pay.credit_card.card_token) ? ['order.payments[0].credit_card.card.number', 'The number field is required.']
+        : null
+      hook: "{'url': data.settings[0].webhook_url, 'auth': has(data.settings[0].webhook_user) ? 'Basic ' + base64(data.settings[0].webhook_user + ':' + default(data.settings[0].webhook_password, '')) : ''}"
+    keep:
+      state: orders
+      key: oid
+    decide:
+      - when: *no_key
+        answer: unauthorized
+      - when: has(problem)
+        answer: invalid_order
+      - answer: order
+    send:
+      - url: &hook_url "{{ answer in ['order', 'charge'] ? hook.url : '' }}"
+        event: order.created
+        headers: &hook_headers
+          "{{ hook.auth != '' ? 'Authorization' : '' }}": "{{ hook.auth }}"
+        body: &hook_order '{"id": "hook_{{ random_id() }}{{ random_id() }}", "account": {"id": {{ data.settings[0].account_id | json }}, "name": {{ data.settings[0].account_name | json }}}, "type": "order.created", "created_at": {{ now() | json }}, "data": {{ order_view | json }}}'
+      - url: *hook_url
+        event: charge.created
+        headers: *hook_headers
+        body: '{"id": "hook_{{ random_id() }}{{ random_id() }}", "account": {"id": {{ data.settings[0].account_id | json }}, "name": {{ data.settings[0].account_name | json }}}, "type": "charge.created", "created_at": {{ now() | json }}, "data": {{ charge_view | json }}}'
+      - url: *hook_url
+        when: "ch_status == 'paid' || ch_status == 'failed'"
+        event: charge.outcome
+        headers: *hook_headers
+        body: '{"id": "hook_{{ random_id() }}{{ random_id() }}", "account": {"id": {{ data.settings[0].account_id | json }}, "name": {{ data.settings[0].account_name | json }}}, "type": "{{ ch_status == ''paid'' ? ''charge.paid'' : ''charge.payment_failed'' }}", "created_at": {{ now() | json }}, "data": {{ charge_view | json }}}'
+      - url: *hook_url
+        when: "ch_status == 'paid' || ch_status == 'failed'"
+        event: order.outcome
+        headers: *hook_headers
+        body: '{"id": "hook_{{ random_id() }}{{ random_id() }}", "account": {"id": {{ data.settings[0].account_id | json }}, "name": {{ data.settings[0].account_name | json }}}, "type": "{{ ch_status == ''paid'' ? ''order.paid'' : ''order.payment_failed'' }}", "created_at": {{ now() | json }}, "data": {{ order_view | json }}}'
+  - route: GET /core/v5/orders/{id}
+    let: *order_lets
+    decide:
+      - when: *no_key
+        answer: unauthorized
+      - when: "!has(orec)"
+        answer: order_not_found
+      - answer: order
+  - route: GET /core/v5/charges/{id}
+    let: *order_lets
+    decide:
+      - when: *no_key
+        answer: unauthorized
+      - when: "!has(orec)"
+        answer: charge_not_found
+      - answer: charge
+  # Pix and boleto: the payment arrives (charge.paid, order.paid).
+  - route: POST /core/v5/charges/{id}/confirm-payment
+    let: *order_lets
+    keep:
+      state: confirmed
+      key: chid
+    decide:
+      - when: *no_key
+        answer: unauthorized
+      - when: "!has(orec)"
+        answer: charge_not_found
+      - when: "confirmed || has(state.canceled[chid]) || method == 'credit_card'"
+        answer: charge_not_pending
+      - answer: charge
+    send:
+      - url: *hook_url
+        event: charge.paid
+        headers: *hook_headers
+        body: '{"id": "hook_{{ random_id() }}{{ random_id() }}", "account": {"id": {{ data.settings[0].account_id | json }}, "name": {{ data.settings[0].account_name | json }}}, "type": "charge.paid", "created_at": {{ now() | json }}, "data": {{ charge_view | json }}}'
+      - url: *hook_url
+        event: order.paid
+        headers: *hook_headers
+        body: '{"id": "hook_{{ random_id() }}{{ random_id() }}", "account": {"id": {{ data.settings[0].account_id | json }}, "name": {{ data.settings[0].account_name | json }}}, "type": "order.paid", "created_at": {{ now() | json }}, "data": {{ order_view | json }}}'
+  - route: DELETE /core/v5/charges/{id}
+    let: *order_lets
+    keep:
+      state: canceled
+      key: chid
+    decide:
+      - when: *no_key
+        answer: unauthorized
+      - when: "!has(orec)"
+        answer: charge_not_found
+      - when: "has(state.canceled[chid]) || (method == 'credit_card' && !card_ok)"
+        answer: charge_not_pending
+      - answer: charge
+    send:
+      - url: *hook_url
+        event: charge.canceled
+        headers: *hook_headers
+        body: '{"id": "hook_{{ random_id() }}{{ random_id() }}", "account": {"id": {{ data.settings[0].account_id | json }}, "name": {{ data.settings[0].account_name | json }}}, "type": "{{ method == ''credit_card'' || confirmed ? ''charge.refunded'' : ''charge.canceled'' }}", "created_at": {{ now() | json }}, "data": {{ charge_view | json }}}'
+answers:
+  - name: customer
+    sentence: "Customer {{ cid }} ({{ csrc.email }})"
+    body: '{{ cview | json }}'
+  - name: order
+    note: the order with its charge; its status follows the charge (pending, paid, failed, canceled)
+    sentence: "Order {{ oid }} of R$ {{ amount_txt }} by {{ method }}: {{ or_status }}"
+    body: '{{ order_view | json }}'
+  - name: charge
+    note: the charge and its last transaction
+    sentence: "Charge {{ chid }} ({{ method }}): {{ ch_status }}"
+    body: '{{ charge_view | json }}'
+  # ---- errors in Pagar.me's shape
+  - name: unauthorized
+    status: 401
+    note: no Basic credential, or one whose user is not a secret key (sk_…)
+    sentence: "Refused: no secret key"
+    body: '{"message": "Authorization has been denied for this request."}'
+  - name: invalid_order
+    status: 422
+    note: the order is missing items, the customer or the payment, or the card number
+    sentence: "Order refused: {{ problem[1] }}"
+    body: '{"message": "The request is invalid.", "errors": {"{{ problem[0] }}": [{{ problem[1] | json }}]}, "request": {{ body | json }}}'
+  - name: invalid_customer
+    status: 422
+    sentence: "Customer refused: name missing"
+    body: '{"message": "The request is invalid.", "errors": {"customer.name": ["The name field is required."]}, "request": {{ body | json }}}'
+  - name: invalid_document
+    status: 422
+    sentence: "Customer refused: invalid document {{ body.document }}"
+    body: '{"message": "The request is invalid.", "errors": {"customer.document": ["The document field is not a valid number."]}, "request": {{ body | json }}}'
+  - name: order_not_found
+    status: 404
+    sentence: "No order {{ path.id }}"
+    body: '{"message": "Order not found."}'
+  - name: charge_not_found
+    status: 404
+    sentence: "No charge {{ path.id }}"
+    body: '{"message": "Charge not found."}'
+  - name: customer_not_found
+    status: 404
+    sentence: "No customer {{ path.id }}"
+    body: '{"message": "Customer not found."}'
+  - name: charge_not_pending
+    status: 412
+    note: the charge is not in a state that allows this (already paid, canceled, or a failed card)
+    sentence: "Charge {{ chid }} is {{ ch_status }}: not allowed"
+    body: '{"message": "Charge can not be updated with status {{ ch_status }}."}'
+  - name: too_many_requests
+    status: 429
+    note: exists only to be forced
+    sentence: "Too many requests (429)"
+    body: '{"message": "API rate limit exceeded"}'
+  - name: internal_error
+    status: 500
+    note: exists only to be forced
+    sentence: "Pagar.me internal error (500)"
+    body: '{"message": "An error has occurred."}'
+data:
+  # Where webhooks go (webhook_user/webhook_password: the Basic credential they carry, optional).
+  settings:
+    - {webhook_url: 'http://localhost:3000/api/webhooks/pagarme', account_id: acc_AcmeTest0001, account_name: Acme Tecnologia, name: ACME TECNOLOGIA LTDA, city: SAO PAULO, pix_key: 3f2a1b0c-9d8e-4f7a-a6b5-c4d3e2f1a0b9}
+  # Pagar.me's simulator cards; any other number is paid.
+  cards:
+    - {number: '4000000000000010', outcome: paid}
+    - {number: '4000000000000028', outcome: not_authorized}

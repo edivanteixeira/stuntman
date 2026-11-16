@@ -1,0 +1,229 @@
+# Slack for the Acme workspace: the Web API (auth.test, chat.postMessage, conversations.list,
+# users.info) with Slack's {"ok": false, "error": …} answers, incoming webhooks (hooks.slack.com/services/…),
+# and Events API requests to the app, signed as Slack signs them (X-Slack-Signature: v0= HMAC-SHA256 of
+# "v0:{timestamp}:{body}", with X-Slack-Request-Timestamp) with secret://slack-signing-secret.
+# Point the SDK at it: WebClient(base_url="http://localhost:8028/slack/api/"); incoming webhooks at
+# http://localhost:8028/slack/services/T…/B…/…. Any xoxb-/xoxp- token works; a token that does not start
+# with xox answers invalid_auth.
+#
+# Events (Stuntman only): POST /slack/simulate/events with {"type": "message" | "app_mention" |
+# "reaction_added" | "url_verification", "text", "channel", "user"} sends that request to the app's
+# Request URL (data.settings events_url). url_verification carries a challenge the app must echo.
+service:
+  name: slack
+  title: Slack
+  origin: community
+  description: Web API, incoming webhooks and signed Events API requests
+  base_url: https://slack.com
+  real_host: slack.com
+  limits:
+    latency: 80ms..250ms
+  webhooks:
+    sign: slack
+    secret: secret://slack-signing-secret
+routes:
+  # The token comes as a Bearer header or a token form field, as Slack accepts both.
+  - route: POST /api/auth.test
+    let: &tok
+      token: "has(headers.authorization) ? replace(headers.authorization, 'Bearer ', '') : default(body.token, query.token)"
+    decide: &authcheck
+      - when: "!has(token) || token == ''"
+        answer: not_authed
+      - when: "!token.startsWith('xox')"
+        answer: invalid_auth
+      - answer: auth_ok
+  - route: POST /api/chat.postMessage
+    let:
+      token: "has(headers.authorization) ? replace(headers.authorization, 'Bearer ', '') : default(body.token, query.token)"
+      ch: "lookup('channels', 'id', body.channel) != null ? lookup('channels', 'id', body.channel) : lookup('channels', 'name', replace(default(body.channel, ''), '#', ''))"
+      ts: "string(int(now_ms() / 1000)) + '.' + substring(string(now_ms()), -3) + '100'"
+    keep:
+      state: messages
+      key: "ch.id + '/' + ts"
+    decide:
+      - when: "!has(token) || token == ''"
+        answer: not_authed
+      - when: "!token.startsWith('xox')"
+        answer: invalid_auth
+      - when: "!has(body.channel)"
+        answer: channel_not_found
+      - when: "!has(ch)"
+        answer: channel_not_found
+      - when: "ch.is_archived"
+        answer: is_archived
+      - when: "!ch.is_member"
+        answer: not_in_channel
+      - when: "!has(body.text) && !has(body.blocks) && !has(body.attachments)"
+        answer: no_text
+      - when: "size(default(body.text, '')) > 40000"
+        answer: msg_too_long
+      - answer: posted
+  - route: GET /api/conversations.list
+    let: *tok
+    decide:
+      - when: "!has(token) || token == ''"
+        answer: not_authed
+      - when: "!token.startsWith('xox')"
+        answer: invalid_auth
+      - answer: channel_list
+  - route: POST /api/conversations.list
+    let: *tok
+    decide:
+      - when: "!has(token) || token == ''"
+        answer: not_authed
+      - when: "!token.startsWith('xox')"
+        answer: invalid_auth
+      - answer: channel_list
+  - route: GET /api/users.info
+    let:
+      token: "has(headers.authorization) ? replace(headers.authorization, 'Bearer ', '') : query.token"
+      u: "lookup('users', 'id', query.user)"
+    decide: &userdecide
+      - when: "!has(token) || token == ''"
+        answer: not_authed
+      - when: "!token.startsWith('xox')"
+        answer: invalid_auth
+      - when: "!has(u)"
+        answer: user_not_found
+      - answer: user
+  - route: POST /api/users.info
+    let:
+      token: "has(headers.authorization) ? replace(headers.authorization, 'Bearer ', '') : body.token"
+      u: "lookup('users', 'id', body.user)"
+    decide: *userdecide
+  # ---------------------------------------------------------------- incoming webhooks
+  - route: POST /services/{team}/{bot}/{secret}
+    let:
+      hook: "lookup('incoming_webhooks', 'secret', path.secret)"
+      msg: "has(body.payload) ? parse_json(body.payload) : body"
+    decide:
+      - when: "!has(hook)"
+        answer: no_service
+      - when: "!raw.startsWith('{') && !has(body.payload)"
+        answer: invalid_payload
+      - when: "!has(msg.text) && !has(msg.blocks) && !has(msg.attachments)"
+        answer: hook_no_text
+      - answer: hook_ok
+  # ---------------------------------------------------------------- Events API (Stuntman only)
+  - route: POST /simulate/events
+    let:
+      a_type: "default(body.type, 'message')"
+      b_ts: "string(int(now_ms() / 1000)) + '.000200'"
+      c_event: >-
+        a_type == 'reaction_added' ? {"type": "reaction_added", "user": default(body.user, 'U0100EMMA'), "reaction": default(body.reaction, 'thumbsup'),
+          "item": {"type": "message", "channel": default(body.channel, 'C0100GEN'), "ts": default(body.item_ts, b_ts)}, "item_user": "U0300BOT", "event_ts": b_ts}
+        : {"type": a_type, "channel": default(body.channel, 'C0100GEN'), "user": default(body.user, 'U0100EMMA'), "text": default(body.text, a_type == 'app_mention' ? '<@U0300BOT> status?' : 'Hello from Acme'),
+          "ts": b_ts, "event_ts": b_ts, "channel_type": "channel", "team": "T0ACME0001",
+          "blocks": [{"type": "rich_text", "block_id": "b1", "elements": [{"type": "rich_text_section", "elements": [{"type": "text", "text": default(body.text, 'Hello from Acme')}]}]}]}
+      d_challenge: "random_id() + random_id() + random_id() + random_id()"
+    decide:
+      - when: "!(a_type in ['message', 'app_mention', 'reaction_added', 'url_verification'])"
+        answer: unknown_event
+      - answer: event_sent
+    send:
+      - url: "{{ answer == 'event_sent' ? data.settings[0].events_url : '' }}"
+        event: event_callback
+        headers:
+          User-Agent: Slackbot 1.0 (+https://api.slack.com/robots)
+        body: |-
+          {{ a_type == 'url_verification' ? json({"token": data.settings[0].verification_token, "challenge": d_challenge, "type": "url_verification"}) : json({"token": data.settings[0].verification_token, "team_id": "T0ACME0001", "context_team_id": "T0ACME0001", "api_app_id": "A0ACMEAPP1", "event": c_event, "type": "event_callback", "event_id": "Ev0" + upper(random_id() + random_id()), "event_time": int(now_ms() / 1000), "authorizations": [{"enterprise_id": null, "team_id": "T0ACME0001", "user_id": "U0300BOT", "is_bot": true, "is_enterprise_install": false}], "is_ext_shared_channel": false, "event_context": "4-" + base64(random_id() + random_id())}) }}
+answers:
+  - name: auth_ok
+    sentence: "auth.test: acmebot in Acme"
+    body: '{"ok": true, "url": "https://acme-corp.slack.com/", "team": "Acme", "user": "acmebot", "team_id": "T0ACME0001", "user_id": "U0300BOT", "bot_id": "B0ACMEBOT1", "is_enterprise_install": false}'
+  - name: posted
+    sentence: "Posted to #{{ ch.name }}: {{ substring(default(body.text, '(blocks)'), 0, 60) }}"
+    body: |-
+      {"ok": true, "channel": "{{ ch.id }}", "ts": "{{ ts }}", "message": {"user": "U0300BOT", "type": "message", "ts": "{{ ts }}", "bot_id": "B0ACMEBOT1", "app_id": "A0ACMEAPP1",
+       "text": {{ default(body.text, '') | json }}, "team": "T0ACME0001", "bot_profile": {"id": "B0ACMEBOT1", "app_id": "A0ACMEAPP1", "name": "acmebot", "deleted": false, "team_id": "T0ACME0001"},
+       "blocks": {{ json(has(body.blocks) ? default(parse_json(string(body.blocks)), []) : []) }}}}
+  - name: channel_list
+    sentence: "Listed {{ size(data.channels) }} channels"
+    body: '{"ok": true, "channels": {{ data.channels | json }}, "response_metadata": {"next_cursor": ""}}'
+  - name: user
+    sentence: "User {{ u.id }} ({{ u.name }})"
+    body: '{"ok": true, "user": {{ u | json }}}'
+  - name: hook_ok
+    sentence: "Incoming webhook to {{ hook.channel }}: {{ substring(default(msg.text, '(blocks)'), 0, 60) }}"
+    headers: {Content-Type: text/plain}
+    raw: true
+    body: ok
+  - name: event_sent
+    note: the event went to data.settings events_url, signed
+    sentence: "Event {{ a_type }} sent to {{ data.settings[0].events_url }}"
+    body: '{"ok": true, "type": "{{ a_type }}"{{ a_type == ''url_verification'' ? '', "challenge": "'' + d_challenge + ''"'' : '''' }}}'
+  - name: unknown_event
+    status: 400
+    sentence: "No such event type {{ body.type }}"
+    body: '{"ok": false, "error": "unknown_event_type", "allowed": ["message", "app_mention", "reaction_added", "url_verification"]}'
+  # ---- Web API errors: HTTP 200 with ok false, as Slack answers
+  - name: not_authed
+    sentence: "Refused: no token (not_authed)"
+    body: '{"ok": false, "error": "not_authed"}'
+  - name: invalid_auth
+    sentence: "Refused: invalid token (invalid_auth)"
+    body: '{"ok": false, "error": "invalid_auth"}'
+  - name: channel_not_found
+    sentence: "No channel {{ body.channel }} (channel_not_found)"
+    body: '{"ok": false, "error": "channel_not_found"}'
+  - name: is_archived
+    sentence: "#{{ ch.name }} is archived"
+    body: '{"ok": false, "error": "is_archived"}'
+  - name: not_in_channel
+    sentence: "acmebot is not in #{{ ch.name }}"
+    body: '{"ok": false, "error": "not_in_channel"}'
+  - name: no_text
+    sentence: "Refused: no text"
+    body: '{"ok": false, "error": "no_text"}'
+  - name: msg_too_long
+    sentence: "Refused: message too long"
+    body: '{"ok": false, "error": "msg_too_long"}'
+  - name: user_not_found
+    sentence: "No user {{ default(query.user, body.user) }}"
+    body: '{"ok": false, "error": "user_not_found"}'
+  - name: ratelimited
+    status: 429
+    note: exists only to be forced; Retry-After says when to try again
+    sentence: "Rate limited (Retry-After 30)"
+    headers: {Retry-After: '30'}
+    body: '{"ok": false, "error": "ratelimited"}'
+  - name: fatal_error
+    note: exists only to be forced
+    sentence: "Slack fatal_error"
+    body: '{"ok": false, "error": "fatal_error"}'
+  # ---- incoming webhook errors: plain text, as hooks.slack.com answers
+  - name: invalid_payload
+    status: 400
+    headers: {Content-Type: text/plain}
+    raw: true
+    sentence: "Incoming webhook refused: invalid_payload"
+    body: invalid_payload
+  - name: hook_no_text
+    status: 400
+    headers: {Content-Type: text/plain}
+    raw: true
+    sentence: "Incoming webhook refused: no_text"
+    body: no_text
+  - name: no_service
+    status: 404
+    note: no such incoming webhook (or it was revoked)
+    headers: {Content-Type: text/plain}
+    raw: true
+    sentence: "Incoming webhook {{ path.secret }} does not exist"
+    body: no_service
+data:
+  # Where Events API requests go, and the legacy verification token they carry.
+  settings:
+    - {events_url: 'http://localhost:3000/slack/events', verification_token: Jhj5dZrVaK7ZwHHjRyZWjbDl}
+  channels:
+    - {id: C0100GEN, name: general, is_channel: true, is_group: false, is_im: false, is_mpim: false, is_private: false, created: 1700000000, is_archived: false, is_general: true, unlinked: 0, name_normalized: general, is_shared: false, is_org_shared: false, is_member: true, num_members: 42, topic: {value: Company-wide announcements, creator: U0100EMMA, last_set: 1700000000}, purpose: {value: Everyone at Acme, creator: U0100EMMA, last_set: 1700000000}, previous_names: []}
+    - {id: C0200OPS, name: ops-alerts, is_channel: true, is_group: false, is_im: false, is_mpim: false, is_private: false, created: 1700000100, is_archived: false, is_general: false, unlinked: 0, name_normalized: ops-alerts, is_shared: false, is_org_shared: false, is_member: true, num_members: 9, topic: {value: Alerts from production, creator: U0200NOAH, last_set: 1700000100}, purpose: {value: '', creator: '', last_set: 0}, previous_names: []}
+    - {id: C0300SAL, name: sales, is_channel: true, is_group: false, is_im: false, is_mpim: false, is_private: false, created: 1700000200, is_archived: false, is_general: false, unlinked: 0, name_normalized: sales, is_shared: false, is_org_shared: false, is_member: false, num_members: 12, topic: {value: '', creator: '', last_set: 0}, purpose: {value: Deals and pipeline, creator: U0100EMMA, last_set: 1700000200}, previous_names: []}
+    - {id: C0400OLD, name: q3-launch, is_channel: true, is_group: false, is_im: false, is_mpim: false, is_private: false, created: 1690000000, is_archived: true, is_general: false, unlinked: 0, name_normalized: q3-launch, is_shared: false, is_org_shared: false, is_member: true, num_members: 0, topic: {value: '', creator: '', last_set: 0}, purpose: {value: '', creator: '', last_set: 0}, previous_names: []}
+  users:
+    - {id: U0100EMMA, team_id: T0ACME0001, name: emma.carter, deleted: false, real_name: Emma Carter, tz: America/New_York, tz_label: Eastern Standard Time, tz_offset: -18000, is_admin: true, is_owner: true, is_bot: false, is_app_user: false, updated: 1700000000, profile: {real_name: Emma Carter, display_name: emma, email: emma.carter@acme.example.com, title: Head of Operations, phone: '+12025550101', image_72: 'https://avatars.slack-edge.com/acme/emma_72.png', team: T0ACME0001}}
+    - {id: U0200NOAH, team_id: T0ACME0001, name: noah.price, deleted: false, real_name: Noah Price, tz: America/Chicago, tz_label: Central Standard Time, tz_offset: -21600, is_admin: false, is_owner: false, is_bot: false, is_app_user: false, updated: 1700000000, profile: {real_name: Noah Price, display_name: noah, email: noah.price@acme.example.com, title: SRE, phone: '+12025550102', image_72: 'https://avatars.slack-edge.com/acme/noah_72.png', team: T0ACME0001}}
+    - {id: U0300BOT, team_id: T0ACME0001, name: acmebot, deleted: false, real_name: acmebot, tz: America/Los_Angeles, tz_label: Pacific Standard Time, tz_offset: -28800, is_admin: false, is_owner: false, is_bot: true, is_app_user: false, updated: 1700000000, profile: {real_name: acmebot, display_name: '', bot_id: B0ACMEBOT1, api_app_id: A0ACMEAPP1, image_72: 'https://avatars.slack-edge.com/acme/bot_72.png', team: T0ACME0001}}
+  # Incoming webhooks: the last path segment is the hook's secret.
+  incoming_webhooks:
+    - {secret: XXXXXXXXacmeOpsHook000001, channel: '#ops-alerts', url: 'https://hooks.slack.com/services/T0ACME0001/B0ACMEHOOK/XXXXXXXXacmeOpsHook000001'}

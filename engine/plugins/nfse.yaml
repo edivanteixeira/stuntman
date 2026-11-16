@@ -1,0 +1,165 @@
+# NFS-e Nacional (Sistema Nacional NFS-e, Sefin Nacional, produção restrita): emit an NFS-e from a DPS
+# (POST /SefinNacional/nfse with dpsXmlGZipB64), read it by its chave de acesso (GET /nfse/{chave}), find
+# the chave of a DPS (GET /dps/{id}), and register the cancel event (POST /nfse/{chave}/eventos with
+# pedidoRegistroEventoXmlGZipB64, e101101). XMLs travel gzipped in base64, as the API sends them.
+# mTLS with an ICP-Brasil certificate is required, and the provider's CNPJ in the DPS must be the
+# certificate's. The DPS Id must match its fields (DPS + cLocEmi + tpInsc + inscrição + série + nDPS).
+# The chave has 50 digits with a mod-11 check digit; its nNFSe is the série plus the last 8 digits of
+# nDPS, so a chave leads back to its DPS. ISS = vServ x pAliq (2% when the DPS has none).
+# Not checked: the DPS's XML signature (send it signed; it is kept as sent), the service code
+# against the national list, and municipal parameters. The NFS-e XML returned is not signed.
+service:
+  name: nfse
+  title: NFS-e Nacional
+  origin: community
+  region: BR
+  description: NFS-e from a DPS, query by chave and cancel event (Sefin Nacional, mTLS e-CNPJ)
+  base_url: https://sefin.producaorestrita.nfse.gov.br/SefinNacional
+  real_host: sefin.producaorestrita.nfse.gov.br
+  auth:
+    client_certificate:
+      required: true
+      icp: true
+  limits:
+    latency: 300ms..1200ms
+routes:
+  - route: POST /SefinNacional/nfse
+    let: &nfse_lets
+      id_path: "has(path.chave) ? 'DPS' + substring(path.chave, 0, 7) + substring(path.chave, 8, 9) + substring(path.chave, 9, 23) + substring(path.chave, 23, 28) + '0000000' + substring(path.chave, 28, 36) : path.id"
+      xml_in: "gunzip_base64(default(body.dpsXmlGZipB64, ''))"
+      xml: "has(id_path) ? gunzip_base64(state.dps[id_path].body.dpsXmlGZipB64) : xml_in"
+      tp_amb: "split(split(xml, '<tpAmb>')[1], '</tpAmb>')[0]"
+      serie: "split(split(xml, '<serie>')[1], '</serie>')[0]"
+      n_dps: "split(split(xml, '<nDPS>')[1], '</nDPS>')[0]"
+      c_loc: "split(split(xml, '<cLocEmi>')[1], '</cLocEmi>')[0]"
+      d_compet: "split(split(xml, '<dCompet>')[1], '</dCompet>')[0]"
+      prest: "split(split(xml, '<prest>')[1], '</prest>')[0]"
+      p_doc: "prest.contains('<CNPJ>') ? split(split(prest, '<CNPJ>')[1], '</CNPJ>')[0] : split(split(prest, '<CPF>')[1], '</CPF>')[0]"
+      tp_insc: "prest.contains('<CNPJ>') ? '2' : '1'"
+      toma: "split(split(xml, '<toma>')[1], '</toma>')[0]"
+      t_nome: "split(split(toma, '<xNome>')[1], '</xNome>')[0]"
+      v_serv: "split(split(xml, '<vServ>')[1], '</vServ>')[0]"
+      x_desc: "split(split(xml, '<xDescServ>')[1], '</xDescServ>')[0]"
+      c_trib: "split(split(xml, '<cTribNac>')[1], '</cTribNac>')[0]"
+      p_aliq_in: "split(split(xml, '<pAliq>')[1], '</pAliq>')[0]"
+      id_attr: "split(split(xml, 'infDPS Id=\"')[1], '\"')[0]"
+      id: "'DPS' + c_loc + tp_insc + substring('00000000000000' + p_doc, -14) + substring('00000' + serie, -5) + substring('000000000000000' + n_dps, -15)"
+      rec: "state.dps[id]"
+      t0: "has(id_path) ? rec.at : __now"
+      k49: "c_loc + '2' + tp_insc + substring('00000000000000' + p_doc, -14) + substring('00000' + serie, -5) + substring(substring('000000000000000' + n_dps, -15), -8) + substring(digits(iso(t0)), 2, 6) + substring(digits(id.sha256() + id.sha256()), 0, 9)"
+      dv_sum: "int(substring(k49, 48, 49)) * 2 + int(substring(k49, 47, 48)) * 3 + int(substring(k49, 46, 47)) * 4 + int(substring(k49, 45, 46)) * 5 + int(substring(k49, 44, 45)) * 6 + int(substring(k49, 43, 44)) * 7 + int(substring(k49, 42, 43)) * 8 + int(substring(k49, 41, 42)) * 9 + int(substring(k49, 40, 41)) * 2 + int(substring(k49, 39, 40)) * 3 + int(substring(k49, 38, 39)) * 4 + int(substring(k49, 37, 38)) * 5 + int(substring(k49, 36, 37)) * 6 + int(substring(k49, 35, 36)) * 7 + int(substring(k49, 34, 35)) * 8 + int(substring(k49, 33, 34)) * 9 + int(substring(k49, 32, 33)) * 2 + int(substring(k49, 31, 32)) * 3 + int(substring(k49, 30, 31)) * 4 + int(substring(k49, 29, 30)) * 5 + int(substring(k49, 28, 29)) * 6 + int(substring(k49, 27, 28)) * 7 + int(substring(k49, 26, 27)) * 8 + int(substring(k49, 25, 26)) * 9 + int(substring(k49, 24, 25)) * 2 + int(substring(k49, 23, 24)) * 3 + int(substring(k49, 22, 23)) * 4 + int(substring(k49, 21, 22)) * 5 + int(substring(k49, 20, 21)) * 6 + int(substring(k49, 19, 20)) * 7 + int(substring(k49, 18, 19)) * 8 + int(substring(k49, 17, 18)) * 9 + int(substring(k49, 16, 17)) * 2 + int(substring(k49, 15, 16)) * 3 + int(substring(k49, 14, 15)) * 4 + int(substring(k49, 13, 14)) * 5 + int(substring(k49, 12, 13)) * 6 + int(substring(k49, 11, 12)) * 7 + int(substring(k49, 10, 11)) * 8 + int(substring(k49, 9, 10)) * 9 + int(substring(k49, 8, 9)) * 2 + int(substring(k49, 7, 8)) * 3 + int(substring(k49, 6, 7)) * 4 + int(substring(k49, 5, 6)) * 5 + int(substring(k49, 4, 5)) * 6 + int(substring(k49, 3, 4)) * 7 + int(substring(k49, 2, 3)) * 8 + int(substring(k49, 1, 2)) * 9 + int(substring(k49, 0, 1)) * 2"
+      dv: "11 - dv_sum % 11 >= 10 ? 0 : 11 - dv_sum % 11"
+      chave: "k49 + string(dv)"
+      n_nfse: "string(int(substring(k49, 23, 36)))"
+      aliq: "double(p_aliq_in == '' ? '2.00' : p_aliq_in)"
+      iss_c: "int(double(v_serv) * aliq + 0.5)"
+      iss: "string(int(iss_c / 100)) + '.' + (iss_c % 100 < 10 ? '0' : '') + string(iss_c % 100)"
+      dh: "iso(t0, 'America/Sao_Paulo') + '-03:00'"
+      canc: "state.cancels[chave]"
+      nfse_xml: >-
+        '<?xml version="1.0" encoding="UTF-8"?><NFSe xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.00"><infNFSe Id="NFS' + chave + '">'
+        + '<xLocEmi>' + data.settings[0].municipio + '</xLocEmi><xLocPrestacao>' + data.settings[0].municipio + '</xLocPrestacao><nNFSe>' + n_nfse + '</nNFSe>'
+        + '<cLocIncid>' + c_loc + '</cLocIncid><xLocIncid>' + data.settings[0].municipio + '</xLocIncid><xTribNac>' + x_desc + '</xTribNac>'
+        + '<verAplic>' + data.settings[0].ver_aplic + '</verAplic><ambGer>2</ambGer><tpEmis>1</tpEmis><procEmi>1</procEmi><cStat>100</cStat>'
+        + '<dhProc>' + dh + '</dhProc><nDFSe>' + substring(digits(chave.sha256()), 0, 9) + '</nDFSe>'
+        + '<emit>' + prest + '</emit><valores><vBC>' + v_serv + '</vBC><pAliqAplic>' + (p_aliq_in == '' ? '2.00' : p_aliq_in) + '</pAliqAplic><vISSQN>' + iss + '</vISSQN><vTotalRet>0.00</vTotalRet><vLiq>' + v_serv + '</vLiq></valores>'
+        + '<DPS' + split(split(xml, '<DPS')[1], '</DPS>')[0] + '</DPS></infNFSe></NFSe>'
+      problem: >-
+        xml_in == null ? ['E0001', 'Arquivo da DPS não informado ou não está compactado (GZip) e codificado em Base64.']
+        : !xml_in.contains('<infDPS') ? ['E0002', 'Arquivo da DPS não é um XML de DPS válido.']
+        : tp_amb != '2' ? ['E0004', 'Tipo de ambiente informado difere do ambiente de recebimento (produção restrita).']
+        : id_attr != id ? ['E0006', 'O identificador da DPS (Id) difere do formado pelos campos cLocEmi, tpInsc, inscrição federal, série e nDPS.']
+        : p_doc != default(client_cnpj, '') ? ['E0160', 'O CNPJ do certificado digital difere do CNPJ do prestador informado na DPS.']
+        : v_serv == '' || double(v_serv) <= 0 ? ['E0380', 'O valor do serviço prestado deve ser informado e maior que zero.']
+        : has(rec) ? ['E0014', 'Conjunto de Série e Número informados na DPS já existe para o emitente.']
+        : null
+    keep:
+      state: dps
+      key: id
+    decide:
+      - when: has(problem)
+        answer: dps_rejeitada
+      - answer: nfse_emitida
+  - route: GET /SefinNacional/nfse/{chave}
+    let: *nfse_lets
+    decide:
+      - when: "!has(state.dps[id_path]) || chave != path.chave"
+        answer: nfse_nao_encontrada
+      - answer: nfse
+  - route: GET /SefinNacional/dps/{id}
+    let: *nfse_lets
+    decide:
+      - when: "!has(state.dps[id_path])"
+        answer: dps_nao_encontrada
+      - answer: dps
+  - route: POST /SefinNacional/nfse/{chave}/eventos
+    let:
+      ev: "gunzip_base64(default(body.pedidoRegistroEventoXmlGZipB64, ''))"
+      ch: "split(split(ev, '<chNFSe>')[1], '</chNFSe>')[0]"
+      autor: "split(split(ev, '<CNPJAutor>')[1], '</CNPJAutor>')[0]"
+      n_ped: "split(split(ev, '<nPedRegEvento>')[1], '</nPedRegEvento>')[0]"
+      id_dps: "'DPS' + substring(path.chave, 0, 7) + substring(path.chave, 8, 9) + substring(path.chave, 9, 23) + substring(path.chave, 23, 28) + '0000000' + substring(path.chave, 28, 36)"
+      prest_doc: "substring(path.chave, 9, 23)"
+      dh: "iso(__now, 'America/Sao_Paulo') + '-03:00'"
+      ev_xml: >-
+        '<?xml version="1.0" encoding="UTF-8"?><evento xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.00"><infEvento Id="EVT' + path.chave + '101101' + substring('000' + default(n_ped, '1'), -3) + '">'
+        + '<verAplic>' + data.settings[0].ver_aplic + '</verAplic><ambGer>2</ambGer><nSeqEvento>1</nSeqEvento><dhProc>' + dh + '</dhProc><nDFe>' + substring(digits(path.chave.sha256()), 0, 9) + '</nDFe>'
+        + '<pedRegEvento' + split(split(ev, '<pedRegEvento')[1], '</pedRegEvento>')[0] + '</pedRegEvento></infEvento></evento>'
+      problem: >-
+        ev == null || !ev.contains('<pedRegEvento') ? ['E0001', 'Arquivo do pedido de registro de evento não informado ou inválido.']
+        : !ev.contains('<e101101>') ? ['E1235', 'Tipo de evento não suportado por este serviço (apenas cancelamento, e101101).']
+        : ch != path.chave ? ['E0840', 'A chave de acesso do pedido difere da chave informada na URL.']
+        : autor != default(client_cnpj, '') ? ['E0160', 'O CNPJ do certificado digital difere do CNPJ do autor do evento.']
+        : has(state.cancels[path.chave]) ? ['E0844', 'Já existe evento de cancelamento registrado para esta NFS-e.']
+        : null
+    keep:
+      state: cancels
+      key: path.chave
+    decide:
+      - when: "!has(state.dps[id_dps])"
+        answer: nfse_nao_encontrada
+      - when: has(problem)
+        answer: evento_rejeitado
+      - answer: evento_registrado
+answers:
+  - name: nfse_emitida
+    status: 201
+    note: the NFS-e, gzipped in base64, with its chave de acesso
+    sentence: "{{ caller }} emitted NFS-e {{ n_nfse }} (R$ {{ v_serv }} to {{ t_nome }}): chave {{ chave }}"
+    body: '{"tipoAmbiente": 2, "versaoAplicativo": {{ data.settings[0].ver_aplic | json }}, "dataHoraProcessamento": {{ dh | json }}, "idDps": {{ id | json }}, "chaveAcesso": {{ chave | json }}, "nfseXmlGZipB64": {{ gzip_base64(nfse_xml) | json }}, "alertas": null}'
+  - name: nfse
+    sentence: "NFS-e {{ chave }}{{ has(canc) ? ' (cancelled)' : '' }}"
+    body: '{"tipoAmbiente": 2, "versaoAplicativo": {{ data.settings[0].ver_aplic | json }}, "dataHoraProcessamento": {{ dh | json }}, "chaveAcesso": {{ chave | json }}, "nfseXmlGZipB64": {{ gzip_base64(nfse_xml) | json }}}'
+  - name: dps
+    sentence: "DPS {{ path.id }}: NFS-e {{ chave }}"
+    body: '{"tipoAmbiente": 2, "versaoAplicativo": {{ data.settings[0].ver_aplic | json }}, "dataHoraProcessamento": {{ dh | json }}, "idDps": {{ path.id | json }}, "chaveAcesso": {{ chave | json }}}'
+  - name: evento_registrado
+    status: 201
+    note: the cancel event is registered
+    sentence: "Cancelled NFS-e {{ path.chave }}"
+    body: '{"tipoAmbiente": 2, "versaoAplicativo": {{ data.settings[0].ver_aplic | json }}, "dataHoraProcessamento": {{ dh | json }}, "eventoXmlGZipB64": {{ gzip_base64(ev_xml) | json }}}'
+  - name: dps_rejeitada
+    status: 400
+    note: the DPS was refused (format, environment, Id, certificate CNPJ, value, duplicate)
+    sentence: "DPS refused: {{ problem[0] }} {{ problem[1] }}"
+    body: '{"tipoAmbiente": 2, "versaoAplicativo": {{ data.settings[0].ver_aplic | json }}, "dataHoraProcessamento": {{ iso(__now, ''America/Sao_Paulo'') + ''-03:00'' | json }}, "idDPS": {{ id_attr | json }}, "erros": [{"Codigo": {{ problem[0] | json }}, "Descricao": {{ problem[1] | json }}, "Complemento": null}]}'
+  - name: evento_rejeitado
+    status: 400
+    sentence: "Event on {{ path.chave }} refused: {{ problem[0] }} {{ problem[1] }}"
+    body: '{"tipoAmbiente": 2, "versaoAplicativo": {{ data.settings[0].ver_aplic | json }}, "dataHoraProcessamento": {{ dh | json }}, "erro": [{"Codigo": {{ problem[0] | json }}, "Descricao": {{ problem[1] | json }}, "Complemento": null}]}'
+  - name: nfse_nao_encontrada
+    status: 404
+    sentence: "No NFS-e {{ path.chave }}"
+    body: '{"tipoAmbiente": 2, "versaoAplicativo": {{ data.settings[0].ver_aplic | json }}, "dataHoraProcessamento": {{ iso(__now, ''America/Sao_Paulo'') + ''-03:00'' | json }}, "erros": [{"Codigo": "E2000", "Descricao": "NFS-e não encontrada para a chave de acesso informada.", "Complemento": null}]}'
+  - name: dps_nao_encontrada
+    status: 404
+    sentence: "No DPS {{ path.id }}"
+    body: '{"tipoAmbiente": 2, "versaoAplicativo": {{ data.settings[0].ver_aplic | json }}, "dataHoraProcessamento": {{ iso(__now, ''America/Sao_Paulo'') + ''-03:00'' | json }}, "erros": [{"Codigo": "E2001", "Descricao": "DPS não encontrada para o identificador informado.", "Complemento": null}]}'
+  - name: indisponivel
+    status: 503
+    note: exists only to be forced; the Sefin Nacional is down
+    sentence: "Sefin Nacional unavailable (503)"
+    body: '{"tipoAmbiente": 2, "versaoAplicativo": {{ data.settings[0].ver_aplic | json }}, "dataHoraProcessamento": {{ iso(__now, ''America/Sao_Paulo'') + ''-03:00'' | json }}, "erros": [{"Codigo": "E9999", "Descricao": "Serviço temporariamente indisponível.", "Complemento": null}]}'
+data:
+  settings:
+    - {municipio: São Paulo, ver_aplic: SefinNac_Pre_1.5.0}

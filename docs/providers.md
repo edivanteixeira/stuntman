@@ -30,7 +30,7 @@ Stuntman write it.
 | **SOAP** | SOAP 1.1 and 1.2 from a WSDL: operations by SOAPAction, bodies checked against the XSD, faults, WS-Security UsernameToken, callbacks, `?wsdl` served back |
 | **Auth it understands** | OAuth2 client credentials (a token route), Basic, session cookies (a login route), mTLS client certificates (optionally ICP-Brasil style, with a CNPJ), browser steps (authorize pages, push approvals) |
 | **Shapes** | JSON, form and XML bodies; GraphQL routes; streamed answers (SSE, NDJSON, chunks); a plugin can also be an MCP server ([Plugins](plugins.md#mcp-server)) |
-| **Webhooks** | sends after answering, signed like the provider: HMAC hex, Stripe, Svix, GitHub or CloudEvents; delays follow the [environment's clock](clock.md) |
+| **Webhooks** | sends after answering, signed like the provider: HMAC hex, Stripe, Svix, GitHub, CloudEvents, Twilio, Slack, Shopify or HubSpot; delays follow the [environment's clock](clock.md) |
 | **WireMock** | a folder of WireMock mappings becomes plugins, templates included ([WireMock mocks](mocks.md)) |
 | **It keeps** | state collections per route, data tables (people, documents…), every call with its answer and sentence |
 | **You can provoke** | any named answer or SOAP fault, latency, `reset`, `empty`, `timeout`, `401`, `403`, `500`, `503`, an HTML error page with 200; expired tokens; rate limits; a share of failures; a stream that is `cut` or `slow`; webhooks badly signed, too old, sent twice or out of order |
@@ -45,6 +45,8 @@ The catalog, by collection:
 | Logistics & fiscal | `osrm`, `google-maps`, `nominatim`, `ocr-space`, `receitaws`, `sefaz-nfe`, `comtele` |
 | Payments & notifications | `stripe`, `resend`, `onesignal` |
 | Workplace & dev tools | `microsoft-graph`, `google-drive`, `calendly`, `lemlist`, `azure-devops`, `newrelic` |
+| Brazil · payments, tax and shipping | `pix`, `mercado-pago`, `pagarme`, `asaas`, `nfse`, `nfse-abrasf`, `correios`, `melhor-envio`, `viacep`, `brasilapi` |
+| Global · payments, commerce and SaaS | `twilio`, `paypal`, `adyen`, `shopify`, `slack`, `hubspot`, `github`, `sentry`, `auth0` |
 
 `install_collection` installs a whole row. Writing your own: [Plugins](plugins.md).
 

@@ -282,11 +282,12 @@ fn num(v: &Value) -> Option<f64> {
 /// The lets in the order they can be computed: one that names another runs after it
 /// (YAML maps arrive sorted, so `b: a + 1` before `a: 2` still works). Cycles keep the sorted order.
 pub fn let_order(lets: &std::collections::BTreeMap<String, String>) -> Vec<(&String, &String)> {
-    let uses = |e: &str, k: &str| lex(e).map(|t| t.iter().any(|t| matches!(t, Tok::Id(x) if x == k))).unwrap_or(false);
+    // A name after a dot is a field (rec.at), not the let "at"; a let never waits for itself.
+    let uses = |e: &str, k: &str| lex(e).map(|t| t.iter().enumerate().any(|(i, x)| matches!(x, Tok::Id(x) if x == k) && !matches!(i.checked_sub(1).map(|j| &t[j]), Some(Tok::Op(o)) if o == "."))).unwrap_or(false);
     let mut left: Vec<(&String, &String)> = lets.iter().collect();
     let mut out = vec![];
     while !left.is_empty() {
-        let i = left.iter().position(|(_, e)| !left.iter().any(|(k, _)| uses(e, k))).unwrap_or(0);
+        let i = left.iter().position(|(me, e)| !left.iter().any(|(k, _)| k != me && uses(e, k))).unwrap_or(0);
         out.push(left.remove(i));
     }
     out
@@ -429,7 +430,46 @@ fn call(name: &str, a: &[Value], sc: &Scope) -> Result<Value, String> {
         // cert_pem(person), sign_all(person, body.hashes, 'hex' | 'base64'): see people.rs.
         "cert_pem" => json!(crate::people::cert_pem(a.first().unwrap_or(&Value::Null))?),
         "sign_all" => crate::people::sign_all(a.first().unwrap_or(&Value::Null), a.get(1).unwrap_or(&Value::Null), &a.get(2).map(text).unwrap_or("hex".into()))?,
+        // hmac('sha256' | 'sha1', key, message, 'hex' | 'base64'): a signature inside a body (Adyen's
+        // additionalData.hmacSignature). A key written 'hex:…' is the hex of the key's bytes.
+        "hmac" => {
+            use hmac::Mac;
+            let key = a.get(1).map(text).unwrap_or_default();
+            let key = match key.strip_prefix("hex:") { Some(h) => hex::decode(h).map_err(|_| "hmac: the key is not hex".to_string())?, None => key.into_bytes() };
+            let msg = a.get(2).map(text).unwrap_or_default();
+            let mac = match s0().as_str() {
+                "sha1" => { let mut m = hmac::Hmac::<sha1::Sha1>::new_from_slice(&key).unwrap(); m.update(msg.as_bytes()); m.finalize().into_bytes().to_vec() }
+                "sha256" => { let mut m = hmac::Hmac::<sha2::Sha256>::new_from_slice(&key).unwrap(); m.update(msg.as_bytes()); m.finalize().into_bytes().to_vec() }
+                x => return Err(format!("hmac: no algorithm “{x}” (sha256 | sha1)")),
+            };
+            json!(if a.get(3).map(text).as_deref() == Some("base64") { base64::Engine::encode(&base64::engine::general_purpose::STANDARD, mac) } else { hex::encode(mac) })
+        }
+        // parse_json(text): the value a JSON text holds (null when it is not JSON).
+        "parse_json" => serde_json::from_str(&s0()).unwrap_or(Value::Null),
+        // jwt(claims, 'key-name'): an RS256 JWT signed with the plugin's key of that name; jwks('key-name')
+        // publishes its public half. See people.rs.
+        "jwt" => json!(crate::people::jwt(a.first().unwrap_or(&Value::Null), &a.get(1).map(text).unwrap_or_default())?),
+        "jwks" => crate::people::jwks(&s0())?,
         "sign_raw" => json!(crate::people::sign_raw(a.first().unwrap_or(&Value::Null), &a.get(1).map(text).unwrap_or_default(), &a.get(2).map(text).unwrap_or("hex".into()))?),
+        // iso(ms, zone?): a kept timestamp as ISO 8601, UTC with Z, or local time in a zone of tz() without the offset.
+        "iso" => {
+            let ms = a.first().and_then(num).map(|x| x as i64).unwrap_or_else(|| clock(sc));
+            match a.get(1).map(text) { Some(z) => json!(iso(ms, Some(tz_offset(&z).ok_or_else(|| format!("unknown time zone {z}"))?))), None => json!(iso(ms, None)) }
+        }
+        // crc16(payload): CRC-16/CCITT-FALSE as 4 upper-case hex digits, the last field of a Pix BR Code.
+        "crc16" => json!(format!("{:04X}", s0().bytes().fold(0xFFFFu16, |c, b| (0..8).fold(c ^ ((b as u16) << 8), |c, _| if c & 0x8000 != 0 { (c << 1) ^ 0x1021 } else { c << 1 })))),
+        // gzip_base64(text) and gunzip_base64(b64): documents sent gzipped in base64 (NFS-e Nacional's
+        // dpsXmlGZipB64); gunzip_base64 is null when the input is not that.
+        "gzip_base64" => {
+            let mut e = flate2::write::GzEncoder::new(vec![], flate2::Compression::default());
+            std::io::Write::write_all(&mut e, s0().as_bytes()).map_err(|e| e.to_string())?;
+            json!(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, e.finish().map_err(|e| e.to_string())?))
+        }
+        "gunzip_base64" => {
+            let raw = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, s0().trim()).unwrap_or_default();
+            let mut out = String::new();
+            match std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&raw[..]), &mut out) { Ok(_) if !raw.is_empty() => json!(out), _ => Value::Null }
+        }
         _ => return Err(format!("no function “{name}”")),
     })
 }
@@ -695,9 +735,27 @@ mod t {
         assert_eq!(eval("{'n': 2}", &s).unwrap(), json!({"n": 2}));
         assert_eq!(eval("base64(':pat')", &s).unwrap(), json!("OnBhdA=="));
         assert_eq!(eval("cookie('a=1; sid=s1', 'sid')", &s).unwrap(), json!("s1"));
+        // RFC 4231 test case 2, and Adyen-style hex keys.
+        assert_eq!(eval("hmac('sha256', 'Jefe', 'what do ya want for nothing?')", &s).unwrap(), json!("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"));
+        assert_eq!(eval("hmac('sha256', 'hex:4a656665', 'what do ya want for nothing?', 'base64')", &s).unwrap(), json!("W9zBRr9gdU5qBCQmCJV1x1oAPwidJzmDnexYuWTsOEM="));
+        assert_eq!(eval("hmac('sha1', 'key', 'The quick brown fox jumps over the lazy dog')", &s).unwrap(), json!("de7c9b85b8b78aa6bc8a7a36f70a90701c9db4d9"));
+        assert_eq!(eval("parse_json(split('{\"a\": 1}|x', '|')[0]).a", &s).unwrap(), json!(1));
+        let lets: std::collections::BTreeMap<String, String> = [("a".into(), "rec.at + 1".into()), ("at".into(), "rec.at".into()), ("rec".into(), "{'at': 1}".into())].into();
+        assert_eq!(let_order(&lets).iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), vec!["rec", "a", "at"]);
         let lets: std::collections::BTreeMap<String, String> = [("a".into(), "b + 1".into()), ("b".into(), "2".into())].into();
         assert_eq!(let_order(&lets).iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), vec!["b", "a"]);
         assert_eq!(paths("selfie.tag != person.tg && size(body.cpf) > 3"), vec!["selfie.tag", "person.tg", "body.cpf"]);
+    }
+
+    #[test]
+    fn brazil_functions() {
+        let s = sc();
+        // The BR Code example of the Pix manual (Banco Central), CRC 1D3D.
+        let br = "00020126580014br.gov.bcb.pix0136123e4567-e12b-12d1-a456-4266554400005204000053039865802BR5913Fulano de Tal6008BRASILIA62070503***6304";
+        assert_eq!(eval(&format!("crc16('{br}')"), &s).unwrap(), json!("1D3D"));
+        assert_eq!(eval("gunzip_base64(gzip_base64('<DPS>ação</DPS>'))", &s).unwrap(), json!("<DPS>ação</DPS>"));
+        assert_eq!(eval("gunzip_base64('bm90IGd6aXA=')", &s).unwrap(), Value::Null);
+        assert_eq!(eval("iso(1763208000000) + ' ' + iso(1763208000000, 'America/Sao_Paulo')", &s).unwrap(), json!("2025-11-15T12:00:00Z 2025-11-15T09:00:00"));
     }
 
     #[test]

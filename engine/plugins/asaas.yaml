@@ -1,0 +1,288 @@
+# Asaas API v3 (sandbox): customers, payments (PIX, BOLETO, CREDIT_CARD, UNDEFINED), the Pix QR code
+# (BR Code with CRC16) and the boleto's digitable line, refunds, and the sandbox's "confirm payment".
+# Auth is the access_token header ($aact_…). Webhooks go to settings.webhook_url with the
+# asaas-access-token header set to the token chosen when the webhook was configured
+# (settings.webhook_token): that header is how Asaas authenticates them, there is no HMAC.
+# Events: PAYMENT_CREATED, PAYMENT_CONFIRMED (card), PAYMENT_RECEIVED (Pix or boleto paid),
+# PAYMENT_REFUNDED. Cards in the declined_cards table are refused; any other number is approved.
+# Point the app at http://localhost:8028/asaas/v3 (or resolve api-sandbox.asaas.com).
+service:
+  name: asaas
+  title: Asaas
+  origin: community
+  region: BR
+  description: Customers, payments by Pix, boleto and card, Pix QR codes and webhooks (sandbox)
+  base_url: https://api-sandbox.asaas.com/v3
+  real_host: api-sandbox.asaas.com
+  limits:
+    latency: 150ms..500ms
+routes:
+  # ---------------------------------------------------------------- customers
+  - route: POST /v3/customers
+    let: &cus_lets
+      cid: "has(path.id) ? path.id : 'cus_' + substring(digits(uuid() + uuid()), 0, 12)"
+      crec: "state.customers[cid]"
+      csrc: "has(path.id) ? crec.body : body"
+      doc: "digits(default(body.cpfCnpj, ''))"
+      cview: >-
+        {"object": "customer", "id": cid, "dateCreated": substring(iso(has(path.id) ? crec.at : __now, 'America/Sao_Paulo'), 0, 10), "name": csrc.name, "email": csrc.email,
+        "company": csrc.company, "phone": csrc.phone, "mobilePhone": csrc.mobilePhone, "address": csrc.address, "addressNumber": csrc.addressNumber,
+        "complement": csrc.complement, "province": csrc.province, "postalCode": csrc.postalCode, "cpfCnpj": digits(default(csrc.cpfCnpj, '')),
+        "personType": size(digits(default(csrc.cpfCnpj, ''))) == 14 ? 'JURIDICA' : 'FISICA', "deleted": false, "additionalEmails": csrc.additionalEmails,
+        "externalReference": csrc.externalReference, "notificationDisabled": default(csrc.notificationDisabled, false), "observations": csrc.observations,
+        "city": null, "cityName": null, "state": null, "country": "Brasil", "foreignCustomer": false}
+    keep:
+      state: customers
+      key: cid
+    decide:
+      - when: &no_token "!has(headers.access_token)"
+        answer: no_access_token
+      - when: &bad_token "!headers.access_token.startsWith('$aact_')"
+        answer: invalid_access_token
+      - when: "!has(body.name)"
+        answer: name_required
+      - when: "!has(body.cpfCnpj) || !(size(doc) == 14 || (size(doc) == 11 && cpf_ok(doc)))"
+        answer: invalid_cpf_cnpj
+      - answer: customer
+  - route: GET /v3/customers/{id}
+    let: *cus_lets
+    decide:
+      - when: *no_token
+        answer: no_access_token
+      - when: *bad_token
+        answer: invalid_access_token
+      - when: "!has(crec)"
+        answer: customer_not_found
+      - answer: customer
+
+  # ---------------------------------------------------------------- payments
+  - route: POST /v3/payments
+    let: &pay_lets
+      pid: "has(path.id) ? path.id : 'pay_' + substring(replace(uuid(), '-', ''), 0, 16)"
+      rec: "state.payments[pid]"
+      src: "has(path.id) ? rec.body : body"
+      t0: "has(path.id) ? rec.at : __now"
+      kind: "upper(default(src.billingType, ''))"
+      card_no: "digits(default(src.creditCard.number, ''))"
+      declined: "kind == 'CREDIT_CARD' && has(lookup('declined_cards', 'number', card_no))"
+      received: "has(state.received[pid]) || __path.endsWith('/confirm')"
+      refunded: "has(state.refunds[pid]) || __path.endsWith('/refund')"
+      status: >-
+        refunded ? 'REFUNDED' : kind == 'CREDIT_CARD' ? 'CONFIRMED' : received ? 'RECEIVED' : 'PENDING'
+      value: "double(src.value)"
+      cents: "int(value * 100 + 0.5)"
+      amount_txt: "string(int(cents / 100)) + '.' + (cents % 100 < 10 ? '0' : '') + string(cents % 100)"
+      net: "double(int((value - (kind == 'PIX' ? 0.99 : kind == 'BOLETO' ? 1.99 : value * 0.0299 + 0.49)) * 100 + 0.5)) / 100"
+      today: "substring(iso(t0, 'America/Sao_Paulo'), 0, 10)"
+      when_paid: "received ? substring(iso(has(state.received[pid]) ? state.received[pid].at : __now, 'America/Sao_Paulo'), 0, 10) : null"
+      inv: "substring(pid, 4)"
+      bdigits: "substring(digits(pid.sha256() + pid.sha256() + pid.sha256()), 0, 33)"
+      gui: "'0014br.gov.bcb.pix0136' + data.settings[0].pix_key"
+      payload: >-
+        '000201' + '010212' + '26' + string(size(gui)) + gui + '52040000' + '5303986'
+        + '54' + (size(amount_txt) < 10 ? '0' : '') + string(size(amount_txt)) + amount_txt
+        + '5802BR' + '59' + (size(data.settings[0].name) < 10 ? '0' : '') + string(size(data.settings[0].name)) + data.settings[0].name
+        + '60' + (size(data.settings[0].city) < 10 ? '0' : '') + string(size(data.settings[0].city)) + data.settings[0].city
+        + '6220' + '0516' + inv + '6304'
+      qr: "payload + crc16(payload)"
+      view: >-
+        {"object": "payment", "id": pid, "dateCreated": today, "customer": src.customer, "subscription": null, "installment": null,
+        "paymentLink": null, "value": value, "netValue": net, "originalValue": null, "interestValue": null, "description": src.description,
+        "billingType": kind, "canBePaidAfterDueDate": true, "pixTransaction": null, "status": status, "dueDate": src.dueDate,
+        "originalDueDate": src.dueDate, "paymentDate": status == 'RECEIVED' ? when_paid : null, "clientPaymentDate": status == 'RECEIVED' ? when_paid : null,
+        "confirmedDate": status == 'CONFIRMED' || status == 'RECEIVED' ? default(when_paid, today) : null,
+        "installmentNumber": null, "invoiceUrl": 'https://sandbox.asaas.com/i/' + inv, "invoiceNumber": substring(digits(pid.sha256()), 0, 8),
+        "externalReference": src.externalReference, "deleted": false, "anticipated": false, "anticipable": false,
+        "creditDate": null, "estimatedCreditDate": null, "transactionReceiptUrl": status == 'RECEIVED' || status == 'CONFIRMED' ? 'https://sandbox.asaas.com/comprovantes/' + inv : null,
+        "nossoNumero": kind == 'BOLETO' ? substring(bdigits, 0, 8) : null, "bankSlipUrl": kind == 'BOLETO' || kind == 'UNDEFINED' ? 'https://sandbox.asaas.com/b/pdf/' + inv : null,
+        "lastInvoiceViewedDate": null, "lastBankSlipViewedDate": null, "postalService": false,
+        "creditCard": kind == 'CREDIT_CARD' ? {"creditCardNumber": substring(card_no, -4), "creditCardBrand": card_no.startsWith('5') ? 'MASTERCARD' : 'VISA', "creditCardToken": card_no.sha256()} : null,
+        "discount": {"value": 0, "limitDate": null, "dueDateLimitDays": 0, "type": "FIXED"}, "fine": {"value": 0, "type": "FIXED"}, "interest": {"value": 0, "type": "PERCENTAGE"},
+        "refunds": null}
+      ev_id: "'evt_' + substring(pid.sha256(), 0, 32) + '&' + string(__now)"
+      ev_date: "replace(substring(iso(__now, 'America/Sao_Paulo'), 0, 19), 'T', ' ')"
+      exp_date: "substring(iso(t0 + 86400000 * 365, 'America/Sao_Paulo'), 0, 10) + ' 23:59:59'"
+      problem: >-
+        !has(body.customer) ? ['invalid_customer', 'O campo customer deve ser informado.']
+        : !has(state.customers[body.customer]) ? ['invalid_customer', 'Cliente inválido ou não informado.']
+        : !(kind in ['PIX', 'BOLETO', 'CREDIT_CARD', 'UNDEFINED']) ? ['invalid_billingType', 'É necessário informar uma forma de pagamento válida.']
+        : !has(body.value) || double(body.value) <= 0 ? ['invalid_value', 'O valor da cobrança deve ser informado.']
+        : !has(body.dueDate) || !string(body.dueDate).matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') ? ['invalid_dueDate', 'A data de vencimento da cobrança deve ser informada.']
+        : kind == 'CREDIT_CARD' && (card_no == '' || !has(body.creditCardHolderInfo.cpfCnpj)) ? ['invalid_creditCard', 'Informe os dados do cartão de crédito e do titular.']
+        : declined ? ['invalid_creditCard', 'Transação não autorizada. Verifique os dados do cartão de crédito e tente novamente.']
+        : null
+    keep:
+      state: payments
+      key: pid
+    decide:
+      - when: *no_token
+        answer: no_access_token
+      - when: *bad_token
+        answer: invalid_access_token
+      - when: has(problem)
+        answer: invalid_payment
+      - answer: payment
+    send:
+      - url: "{{ answer == 'payment' ? data.settings[0].webhook_url : '' }}"
+        event: PAYMENT_CREATED
+        headers: &hook_headers
+          asaas-access-token: "{{ data.settings[0].webhook_token }}"
+        body: '{"id": {{ ev_id | json }}, "event": "PAYMENT_CREATED", "dateCreated": {{ ev_date | json }}, "payment": {{ view | json }}}'
+      - url: "{{ answer == 'payment' && kind == 'CREDIT_CARD' ? data.settings[0].webhook_url : '' }}"
+        event: PAYMENT_CONFIRMED
+        headers: *hook_headers
+        body: '{"id": {{ ev_id | json }}, "event": "PAYMENT_CONFIRMED", "dateCreated": {{ ev_date | json }}, "payment": {{ view | json }}}'
+  - route: GET /v3/payments/{id}
+    let: *pay_lets
+    decide:
+      - when: *no_token
+        answer: no_access_token
+      - when: *bad_token
+        answer: invalid_access_token
+      - when: "!has(rec)"
+        answer: payment_not_found
+      - answer: payment
+  - route: GET /v3/payments/{id}/pixQrCode
+    let: *pay_lets
+    decide:
+      - when: *no_token
+        answer: no_access_token
+      - when: *bad_token
+        answer: invalid_access_token
+      - when: "!has(rec)"
+        answer: payment_not_found
+      - when: "kind == 'CREDIT_CARD' || kind == 'BOLETO'"
+        answer: pix_not_available
+      - answer: pix_qr_code
+  - route: GET /v3/payments/{id}/identificationField
+    let: *pay_lets
+    decide:
+      - when: *no_token
+        answer: no_access_token
+      - when: *bad_token
+        answer: invalid_access_token
+      - when: "!has(rec)"
+        answer: payment_not_found
+      - when: "kind == 'CREDIT_CARD' || kind == 'PIX'"
+        answer: boleto_not_available
+      - answer: identification_field
+  - route: POST /v3/payments/{id}/refund
+    let: *pay_lets
+    keep:
+      state: refunds
+      key: pid
+    decide:
+      - when: *no_token
+        answer: no_access_token
+      - when: *bad_token
+        answer: invalid_access_token
+      - when: "!has(rec)"
+        answer: payment_not_found
+      - when: "has(state.refunds[pid]) || !(kind == 'CREDIT_CARD' || has(state.received[pid]))"
+        answer: cannot_refund
+      - answer: payment
+    send:
+      - url: "{{ answer == 'payment' ? data.settings[0].webhook_url : '' }}"
+        event: PAYMENT_REFUNDED
+        headers: *hook_headers
+        body: '{"id": {{ ev_id | json }}, "event": "PAYMENT_REFUNDED", "dateCreated": {{ ev_date | json }}, "payment": {{ view | json }}}'
+  # The sandbox's "confirm payment": a Pix or boleto charge is paid (PAYMENT_RECEIVED).
+  - route: POST /v3/sandbox/payment/{id}/confirm
+    let: *pay_lets
+    keep:
+      state: received
+      key: pid
+    decide:
+      - when: *no_token
+        answer: no_access_token
+      - when: *bad_token
+        answer: invalid_access_token
+      - when: "!has(rec)"
+        answer: payment_not_found
+      - when: "has(state.received[pid]) || kind == 'CREDIT_CARD' || has(state.refunds[pid])"
+        answer: cannot_confirm
+      - answer: payment
+    send:
+      - url: "{{ answer == 'payment' ? data.settings[0].webhook_url : '' }}"
+        event: PAYMENT_RECEIVED
+        headers: *hook_headers
+        body: '{"id": {{ ev_id | json }}, "event": "PAYMENT_RECEIVED", "dateCreated": {{ ev_date | json }}, "payment": {{ view | json }}}'
+answers:
+  - name: customer
+    sentence: "Customer {{ cid }} ({{ csrc.name }})"
+    body: '{{ cview | json }}'
+  - name: payment
+    note: the payment; Pix and boleto are PENDING until paid, cards CONFIRMED
+    sentence: "Payment {{ pid }} of R$ {{ amount_txt }} by {{ kind }}: {{ status }}"
+    body: '{{ view | json }}'
+  - name: pix_qr_code
+    sentence: "Pix QR code of {{ pid }} (R$ {{ amount_txt }})"
+    body: '{"encodedImage": {{ data.settings[0].qr_png | json }}, "payload": {{ qr | json }}, "expirationDate": {{ exp_date | json }}, "description": {{ src.description | json }}}'
+  - name: identification_field
+    sentence: "Boleto line of {{ pid }}"
+    body: '{"identificationField": "{{ ''00190'' + substring(bdigits, 0, 27) + ''1'' + ''9999'' + substring(''0000000000'' + string(cents), -10) }}", "nossoNumero": "{{ substring(bdigits, 0, 8) }}", "barCode": "{{ ''0019'' + ''1'' + ''9999'' + substring(''0000000000'' + string(cents), -10) + substring(bdigits, 0, 25) }}"}'
+  # ---- errors in Asaas's shape
+  - name: no_access_token
+    status: 401
+    note: the access_token header is missing
+    sentence: "Refused: no access_token header"
+    body: '{"errors": [{"code": "access_token_not_found", "description": "O cabeçalho de autenticação ''access_token'' é obrigatório e não foi encontrado na requisição"}]}'
+  - name: invalid_access_token
+    status: 401
+    note: the access_token is not an Asaas key ($aact_…)
+    sentence: "Refused: invalid access_token"
+    body: '{"errors": [{"code": "invalid_access_token", "description": "A chave de API fornecida é inválida"}]}'
+  - name: name_required
+    status: 400
+    sentence: "Customer refused: name missing"
+    body: '{"errors": [{"code": "invalid_name", "description": "O nome do cliente deve ser informado."}]}'
+  - name: invalid_cpf_cnpj
+    status: 400
+    sentence: "Customer refused: invalid CPF/CNPJ {{ body.cpfCnpj }}"
+    body: '{"errors": [{"code": "invalid_cpfCnpj", "description": "O CPF/CNPJ informado é inválido."}]}'
+  - name: invalid_payment
+    status: 400
+    note: missing customer, billingType, value or dueDate, or a declined card
+    sentence: "Payment refused: {{ problem[1] }}"
+    body: '{"errors": [{"code": {{ problem[0] | json }}, "description": {{ problem[1] | json }}}]}'
+  - name: payment_not_found
+    status: 404
+    sentence: "No payment {{ path.id }}"
+    body: '{"errors": [{"code": "invalid_action", "description": "Cobrança não encontrada."}]}'
+  - name: customer_not_found
+    status: 404
+    sentence: "No customer {{ path.id }}"
+    body: '{"errors": [{"code": "invalid_action", "description": "Cliente não encontrado."}]}'
+  - name: pix_not_available
+    status: 400
+    sentence: "No Pix QR code for {{ pid }} ({{ kind }})"
+    body: '{"errors": [{"code": "invalid_action", "description": "Não é possível gerar QR Code Pix para esta cobrança."}]}'
+  - name: boleto_not_available
+    status: 400
+    sentence: "No boleto line for {{ pid }} ({{ kind }})"
+    body: '{"errors": [{"code": "invalid_action", "description": "Esta cobrança não possui linha digitável."}]}'
+  - name: cannot_refund
+    status: 400
+    sentence: "Refund refused: {{ pid }} is {{ status }}"
+    body: '{"errors": [{"code": "invalid_action", "description": "Não é possível estornar uma cobrança com situação {{ status }}."}]}'
+  - name: cannot_confirm
+    status: 400
+    sentence: "Confirm refused: {{ pid }} is {{ status }} ({{ kind }})"
+    body: '{"errors": [{"code": "invalid_action", "description": "Só é possível confirmar cobranças pendentes por Pix ou boleto."}]}'
+  - name: too_many_requests
+    status: 429
+    note: exists only to be forced (Asaas limits requests per minute)
+    sentence: "Too many requests (429)"
+    body: '{"errors": [{"code": "too_many_requests", "description": "Quantidade de requisições excedida. Tente novamente em alguns instantes."}]}'
+data:
+  # Where webhooks go and the token they carry in asaas-access-token; the name and key in the QR codes.
+  settings:
+    - webhook_url: http://localhost:3000/api/webhooks/asaas
+      webhook_token: whk-acme-asaas-0001
+      name: ACME TECNOLOGIA LTDA
+      city: SAO PAULO
+      pix_key: 8b7c6d5e-4f3a-4b2c-9d1e-0f9a8b7c6d5e
+      qr_png: iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==
+  # Card numbers the sandbox refuses; any other number is approved.
+  declined_cards:
+    - {number: '4000000000000002'}

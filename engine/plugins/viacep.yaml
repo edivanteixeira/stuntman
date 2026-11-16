@@ -1,0 +1,57 @@
+# ViaCEP: address by CEP (GET /ws/{cep}/json/). A CEP of 8 digits that does not exist answers 200 with
+# {"erro": "true"}, as ViaCEP does today (older answers had the boolean true); anything that is not
+# 8 digits is a 400 HTML page. Synthetic streets with coherent CEPs, cities and IBGE codes; add rows
+# to the addresses table for more.
+service:
+  name: viacep
+  title: ViaCEP
+  origin: community
+  region: BR
+  description: Address lookup by CEP
+  base_url: https://viacep.com.br
+  real_host: viacep.com.br
+  cors: true
+  limits:
+    latency: 40ms..200ms
+routes:
+  - route: GET /ws/{cep}/json/
+    let: &lets
+      a: "lookup('addresses', 'cep', path.cep)"
+    decide: &decide
+      - when: "!path.cep.matches('^[0-9]{8}$')"
+        answer: bad_request
+      - when: "!has(a)"
+        answer: not_found
+      - answer: address
+  - route: GET /ws/{cep}/json
+    let: *lets
+    decide: *decide
+answers:
+  - name: address
+    sentence: "CEP {{ a.cep }}: {{ a.logradouro }}, {{ a.bairro }}, {{ a.localidade }}/{{ a.uf }}"
+    body: '{{ a | json }}'
+  - name: not_found
+    note: a well-formed CEP that does not exist (still 200)
+    sentence: "CEP {{ path.cep }} does not exist"
+    body: '{"erro": "true"}'
+  - name: bad_request
+    status: 400
+    note: not 8 digits (a dash, letters, too short)
+    sentence: "CEP {{ path.cep }} is malformed (400)"
+    headers: {Content-Type: text/html; charset=utf-8}
+    body: '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd"><html><head><title>ViaCEP 400</title></head><body><h2>Erro 400</h2><h3>Verifique a URL</h3><h3>{Bad Request}</h3></body></html>'
+  - name: unavailable
+    status: 503
+    note: exists only to be forced
+    sentence: "ViaCEP unavailable (503)"
+    headers: {Content-Type: text/html; charset=utf-8}
+    body: '<html><body><h1>503 Service Temporarily Unavailable</h1></body></html>'
+data:
+  # Each row is ViaCEP's answer as it comes; lookup matches cep by its digits.
+  addresses:
+    - {cep: 01310-100, logradouro: Rua das Palmeiras, complemento: '', unidade: '', bairro: Jardim Exemplo, localidade: São Paulo, uf: SP, estado: São Paulo, regiao: Sudeste, ibge: '3550308', gia: '1004', ddd: '11', siafi: '7107'}
+    - {cep: 04538-000, logradouro: Avenida dos Testes, complemento: 'até 1998 - lado par', unidade: '', bairro: Vila Simulada, localidade: São Paulo, uf: SP, estado: São Paulo, regiao: Sudeste, ibge: '3550308', gia: '1004', ddd: '11', siafi: '7107'}
+    - {cep: 01317-000, logradouro: Rua Alfa, complemento: '', unidade: '', bairro: Bela Vista, localidade: São Paulo, uf: SP, estado: São Paulo, regiao: Sudeste, ibge: '3550308', gia: '1004', ddd: '11', siafi: '7107'}
+    - {cep: 04077-000, logradouro: Alameda Beta, complemento: '', unidade: '', bairro: Moema, localidade: São Paulo, uf: SP, estado: São Paulo, regiao: Sudeste, ibge: '3550308', gia: '1004', ddd: '11', siafi: '7107'}
+    - {cep: 20040-002, logradouro: Rua Gama, complemento: '', unidade: '', bairro: Centro, localidade: Rio de Janeiro, uf: RJ, estado: Rio de Janeiro, regiao: Sudeste, ibge: '3304557', gia: '', ddd: '21', siafi: '6001'}
+    - {cep: 80010-000, logradouro: Rua Delta, complemento: '', unidade: '', bairro: Centro, localidade: Curitiba, uf: PR, estado: Paraná, regiao: Sul, ibge: '4106902', gia: '', ddd: '41', siafi: '7535'}

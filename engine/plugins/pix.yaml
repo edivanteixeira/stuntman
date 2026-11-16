@@ -1,0 +1,340 @@
+# API Pix (Banco Central do Brasil, v2) as a PSP serves it: OAuth2 client credentials, immediate charges
+# (PUT/POST /cob, GET /cob/{txid}), charges with a due date (PUT/GET /cobv/{txid}), received Pix
+# (GET /pix/{e2eid}), refunds (PUT/GET /pix/{e2eid}/devolucao/{id}) and the webhook (PUT/GET/DELETE
+# /webhook/{chave}) that receives POST {webhookUrl}/pix when a charge is paid, as PSPs send it.
+# Each charge carries its BR Code ("Pix copia e cola", EMV with the CRC16), built from the txid.
+#
+# Real PSPs require mTLS (the client certificate the PSP issued) on every call, and they call the
+# webhook over mTLS too: that is the webhook's only authentication, there is no signature. Here mTLS
+# is off so plain HTTP works; set auth.client_certificate.required to ask for one on :8443.
+# Errors are RFC 7807 problems with the BCB's types (CobOperacaoInvalida, CobNaoEncontrado…).
+#
+# Paying a charge (a Stuntman sandbox route, no PSP has it): POST /sandbox/pagamentos
+# {"txid": "…", "valor": "…", "infoPagador": "…"}. The charge becomes CONCLUIDA, GET /pix/{e2eid}
+# answers it and the webhook of the charge's key is called.
+# Point the app at http://localhost:8028/pix (token: POST /pix/oauth/token, any client).
+service:
+  name: pix
+  title: API Pix (BCB)
+  origin: community
+  region: BR
+  description: Pix charges (cob, cobv), received Pix, refunds and the PSP webhook - BR Code with CRC16
+  base_url: https://pix.example.com/api/v2
+  auth:
+    oauth2_client_credentials:
+      any_client: true
+      token_ttl: 60m
+  limits:
+    latency: 80ms..300ms
+routes:
+  - route: POST /oauth/token
+    token: true
+
+  # ---------------------------------------------------------------- charges
+  # txid comes from the path (PUT), the pay body, a kept Pix (GET /pix) or is made here (POST /cob).
+  - route: PUT /cob/{txid}
+    receive:
+      auth: bearer
+    let: &cob_lets
+      txid: "default(path.txid, default(body.txid, default(state.pagamentos[path.e2eid].body.txid, replace(uuid(), '-', ''))))"
+      kind: "__path.startsWith('/cobv') ? 'cobv' : __path.startsWith('/cob') ? 'cob' : has(state.cobvs[txid]) ? 'cobv' : 'cob'"
+      creating: "(__method == 'PUT' || __method == 'POST') && __path.startsWith('/cob')"
+      rec: "kind == 'cobv' ? state.cobvs[txid] : state.cobs[txid]"
+      src: "creating ? body : rec.body"
+      at: "creating ? __now : rec.at"
+      e2e: "'E' + data.settings[0].ispb + substring(digits(iso(at)), 0, 12) + upper(substring(txid.sha256(), 0, 11))"
+      pay: "has(state.pagamentos[e2e]) ? state.pagamentos[e2e] : __path == '/sandbox/pagamentos' ? {'at': __now, 'body': body} : null"
+      expiracao: "int(default(src.calendario.expiracao, 86400))"
+      expired: "kind == 'cob' && __now > at + expiracao * 1000"
+      status: "has(pay) ? 'CONCLUIDA' : 'ATIVA'"
+      valor_pago: "string(default(pay.body.valor, src.valor.original))"
+      loc_id: "int('1' + substring(digits(txid.sha256()), 0, 6))"
+      location: "data.settings[0].location_host + '/qr/v2/' + (kind == 'cobv' ? 'cobv/' : '') + substring(txid.sha256(), 0, 32)"
+      gui: "'0014br.gov.bcb.pix25' + (size(location) < 10 ? '0' : '') + string(size(location)) + location"
+      amount: "string(default(src.valor.original, ''))"
+      payload: >-
+        '000201' + '010212' + '26' + string(size(gui)) + gui + '52040000' + '5303986'
+        + (amount == '' ? '' : '54' + (size(amount) < 10 ? '0' : '') + string(size(amount)) + amount)
+        + '5802BR' + '59' + (size(data.settings[0].nome) < 10 ? '0' : '') + string(size(data.settings[0].nome)) + data.settings[0].nome
+        + '60' + (size(data.settings[0].cidade) < 10 ? '0' : '') + string(size(data.settings[0].cidade)) + data.settings[0].cidade
+        + '62070503***' + '6304'
+      brcode: "payload + crc16(payload)"
+      pix_item: "{'endToEndId': e2e, 'txid': txid, 'valor': valor_pago, 'chave': src.chave, 'horario': iso(pay.at), 'infoPagador': pay.body.infoPagador}"
+      view: >-
+        {"calendario": kind == 'cobv' ? {"criacao": iso(at), "dataDeVencimento": src.calendario.dataDeVencimento, "validadeAposVencimento": int(default(src.calendario.validadeAposVencimento, 30))} : {"criacao": iso(at), "expiracao": expiracao},
+        "txid": txid, "revisao": int(0),
+        "loc": {"id": loc_id, "location": location, "tipoCob": kind, "criacao": iso(at)},
+        "location": location, "status": status, "devedor": src.devedor, "recebedor": kind == 'cobv' ? {"cnpj": digits(data.settings[0].cnpj), "nome": data.settings[0].nome_completo} : null,
+        "valor": src.valor, "chave": src.chave, "solicitacaoPagador": src.solicitacaoPagador,
+        "infoAdicionais": default(src.infoAdicionais, []), "pixCopiaECola": brcode,
+        "pix": has(pay) ? [pix_item] : null}
+      problem: >-
+        has(path.txid) && !path.txid.matches('^[a-zA-Z0-9]{26,35}$') ? ['txid', 'O campo txid não respeita o schema.']
+        : !has(src.chave) ? ['cob.chave', 'O campo cob.chave não respeita o schema.']
+        : !string(default(src.valor.original, '')).matches('^[0-9]{1,10}[.][0-9]{2}$') ? ['cob.valor.original', 'O campo cob.valor.original não respeita o schema.']
+        : has(src.devedor.cpf) && !cpf_ok(src.devedor.cpf) ? ['cob.devedor.cpf', 'O campo cob.devedor.cpf não é um CPF válido.']
+        : has(src.devedor.cnpj) && size(digits(src.devedor.cnpj)) != 14 ? ['cob.devedor.cnpj', 'O campo cob.devedor.cnpj não é um CNPJ válido.']
+        : kind == 'cobv' && !string(default(src.calendario.dataDeVencimento, '')).matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') ? ['cobv.calendario.dataDeVencimento', 'O campo cobv.calendario.dataDeVencimento não respeita o schema.']
+        : kind == 'cobv' && !has(src.devedor.nome) ? ['cobv.devedor', 'Cobrança com vencimento exige devedor com nome e CPF ou CNPJ.']
+        : creating && has(path.txid) && has(rec) ? ['txid', 'O txid informado já está associado a outra cobrança.']
+        : null
+    keep:
+      state: cobs
+      key: txid
+    decide:
+      - when: has(problem)
+        answer: cob_invalida
+      - answer: cob_criada
+  - route: POST /cob
+    receive:
+      auth: bearer
+    let: *cob_lets
+    keep:
+      state: cobs
+      key: txid
+    decide:
+      - when: has(problem)
+        answer: cob_invalida
+      - answer: cob_criada
+  - route: GET /cob/{txid}
+    receive:
+      auth: bearer
+    let: *cob_lets
+    decide:
+      - when: "!has(rec)"
+        answer: cob_nao_encontrada
+      - answer: cob
+  - route: PUT /cobv/{txid}
+    receive:
+      auth: bearer
+    let: *cob_lets
+    keep:
+      state: cobvs
+      key: txid
+    decide:
+      - when: has(problem)
+        answer: cob_invalida
+      - answer: cob_criada
+  - route: GET /cobv/{txid}
+    receive:
+      auth: bearer
+    let: *cob_lets
+    decide:
+      - when: "!has(rec)"
+        answer: cob_nao_encontrada
+      - answer: cob
+
+  # ---------------------------------------------------------------- paying (Stuntman only)
+  - route: POST /sandbox/pagamentos
+    receive:
+      body: [txid]
+    let: *cob_lets
+    keep:
+      state: pagamentos
+      key: e2e
+    decide:
+      - when: "!has(rec)"
+        answer: cob_nao_encontrada
+      - when: has(state.pagamentos[e2e])
+        answer: ja_paga
+      - when: expired
+        answer: cob_expirada
+      - answer: pago
+    send:
+      - url: "{{ answer == 'pago' && has(state.webhooks[src.chave]) && state.webhooks[src.chave].at > default(state.webhooks_removidos[src.chave].at, 0) ? state.webhooks[src.chave].body.webhookUrl + '/pix' : '' }}"
+        event: pix
+        body: '{"pix": [{{ pix_item | json }}]}'
+
+  # ---------------------------------------------------------------- received Pix and refunds
+  - route: GET /pix/{e2eid}
+    receive:
+      auth: bearer
+    let: *cob_lets
+    decide:
+      - when: "!has(state.pagamentos[path.e2eid])"
+        answer: pix_nao_encontrado
+      - answer: pix
+  - route: PUT /pix/{e2eid}/devolucao/{id}
+    receive:
+      auth: bearer
+    let: &dev_lets
+      pg: "state.pagamentos[path.e2eid]"
+      dev: "__method == 'PUT' ? {'at': __now, 'body': body} : state.devolucoes[path.e2eid + '/' + path.id]"
+      txid: "pg.body.txid"
+      chave: "default(state.cobs[txid].body.chave, state.cobvs[txid].body.chave)"
+      valor_pix: "double(default(pg.body.valor, default(state.cobs[txid].body.valor.original, state.cobvs[txid].body.valor.original)))"
+      rtr: "'D' + data.settings[0].ispb + substring(digits(iso(dev.at)), 0, 12) + upper(substring((path.e2eid + path.id).sha256(), 0, 11))"
+      view: >-
+        {"id": path.id, "rtrId": rtr, "valor": dev.body.valor, "natureza": default(dev.body.natureza, 'ORIGINAL'),
+        "descricao": dev.body.descricao, "horario": __method == 'PUT' ? {"solicitacao": iso(dev.at)} : {"solicitacao": iso(dev.at), "liquidacao": iso(dev.at + 2000)},
+        "status": __method == 'PUT' ? 'EM_PROCESSAMENTO' : 'DEVOLVIDO'}
+      view_done: >-
+        {"id": path.id, "rtrId": rtr, "valor": dev.body.valor, "natureza": default(dev.body.natureza, 'ORIGINAL'),
+        "horario": {"solicitacao": iso(dev.at), "liquidacao": iso(dev.at + 2000)}, "status": "DEVOLVIDO"}
+    keep:
+      state: devolucoes
+      key: "path.e2eid + '/' + path.id"
+    decide:
+      - when: "!has(pg)"
+        answer: pix_nao_encontrado
+      - when: "!path.id.matches('^[a-zA-Z0-9]{1,35}$') || !string(default(body.valor, '')).matches('^[0-9]{1,10}[.][0-9]{2}$')"
+        answer: devolucao_invalida
+      - when: double(body.valor) > valor_pix
+        answer: devolucao_acima
+      - answer: devolucao
+    send:
+      - url: "{{ answer == 'devolucao' && has(state.webhooks[chave]) ? state.webhooks[chave].body.webhookUrl + '/pix' : '' }}"
+        delay: 2s
+        event: pix.devolucao
+        body: '{"pix": [{"endToEndId": {{ path.e2eid | json }}, "txid": {{ txid | json }}, "valor": {{ string(valor_pix) | json }}, "chave": {{ chave | json }}, "horario": {{ iso(pg.at) | json }}, "devolucoes": [{{ view_done | json }}]}]}'
+  - route: GET /pix/{e2eid}/devolucao/{id}
+    receive:
+      auth: bearer
+    let: *dev_lets
+    decide:
+      - when: "!has(dev)"
+        answer: devolucao_nao_encontrada
+      - answer: devolucao_consulta
+
+  # ---------------------------------------------------------------- webhook
+  - route: PUT /webhook/{chave}
+    receive:
+      auth: bearer
+    keep:
+      state: webhooks
+      key: path.chave
+    decide:
+      - when: "!has(body.webhookUrl) || !body.webhookUrl.matches('^https?://')"
+        answer: webhook_invalido
+      - answer: webhook_configurado
+  - route: GET /webhook/{chave}
+    receive:
+      auth: bearer
+    let: &wh_lets
+      wh: "state.webhooks[path.chave]"
+      active: "has(wh) && wh.at > default(state.webhooks_removidos[path.chave].at, 0)"
+    decide:
+      - when: "!active"
+        answer: webhook_nao_encontrado
+      - answer: webhook
+  - route: DELETE /webhook/{chave}
+    receive:
+      auth: bearer
+    let: *wh_lets
+    keep:
+      state: webhooks_removidos
+      key: path.chave
+    decide:
+      - when: "!active"
+        answer: webhook_nao_encontrado
+      - answer: webhook_removido
+answers:
+  - name: cob_criada
+    status: 201
+    note: the charge, ATIVA, with its location and BR Code (pixCopiaECola)
+    sentence: "{{ kind == 'cobv' ? 'Charge with due date' : 'Charge' }} {{ txid }} of R$ {{ src.valor.original }} on key {{ src.chave }}: ATIVA"
+    body: '{{ view | json }}'
+  - name: cob
+    note: the charge as it is now (ATIVA, or CONCLUIDA with the pix that paid it)
+    sentence: "Charge {{ txid }}: {{ status }}"
+    body: '{{ view | json }}'
+  - name: pago
+    note: Stuntman sandbox - the charge was paid; the webhook of its key is called
+    sentence: "Paid charge {{ txid }} (R$ {{ valor_pago }}): {{ e2e }}"
+    body: '{"endToEndId": {{ e2e | json }}, "txid": {{ txid | json }}, "valor": {{ valor_pago | json }}, "status": "CONCLUIDA"}'
+  - name: pix
+    note: a received Pix
+    sentence: "Pix {{ path.e2eid }} of R$ {{ valor_pago }} for {{ txid }}"
+    body: '{"endToEndId": {{ e2e | json }}, "txid": {{ txid | json }}, "valor": {{ valor_pago | json }}, "chave": {{ src.chave | json }}, "horario": {{ iso(pay.at) | json }}, "infoPagador": {{ pay.body.infoPagador | json }}, "devolucoes": []}'
+  - name: devolucao
+    status: 201
+    note: a refund, EM_PROCESSAMENTO when asked, DEVOLVIDO when read back
+    sentence: "Refund {{ path.id }} of R$ {{ dev.body.valor }} on {{ path.e2eid }}: EM_PROCESSAMENTO"
+    body: '{{ view | json }}'
+  - name: devolucao_consulta
+    note: a refund read back, DEVOLVIDO
+    sentence: "Refund {{ path.id }} on {{ path.e2eid }}: DEVOLVIDO"
+    body: '{{ view | json }}'
+  - name: webhook_configurado
+    status: 204
+    note: the webhook of the key is set (no body)
+    sentence: "Webhook of key {{ path.chave }}: {{ body.webhookUrl }}"
+    body: ''
+  - name: webhook
+    sentence: "Webhook of key {{ path.chave }}: {{ wh.body.webhookUrl }}"
+    body: '{"webhookUrl": {{ wh.body.webhookUrl | json }}, "chave": {{ path.chave | json }}, "criacao": {{ iso(wh.at) | json }}}'
+  - name: webhook_removido
+    status: 204
+    sentence: "Webhook of key {{ path.chave }} removed"
+    body: ''
+  # ---- RFC 7807 problems, the BCB's types
+  - name: cob_invalida
+    status: 400
+    note: the charge breaks the schema (txid, chave, valor, devedor, due date) or reuses a txid
+    sentence: "Charge refused: {{ problem[1] }}"
+    headers: {Content-Type: application/problem+json}
+    body: '{"type": "https://pix.bcb.gov.br/api/v2/error/CobOperacaoInvalida", "title": "Cobrança inválida.", "status": 400, "detail": "A requisição que busca alterar ou criar uma cobrança não respeita o schema ou está semanticamente errada.", "violacoes": [{"razao": {{ problem[1] | json }}, "propriedade": {{ problem[0] | json }}}]}'
+  - name: cob_nao_encontrada
+    status: 404
+    sentence: "No charge {{ txid }}"
+    headers: {Content-Type: application/problem+json}
+    body: '{"type": "https://pix.bcb.gov.br/api/v2/error/CobNaoEncontrado", "title": "Cobrança não encontrada.", "status": 404, "detail": "Não foi encontrada a cobrança com o txid informado."}'
+  - name: ja_paga
+    status: 409
+    note: Stuntman sandbox - the charge was already paid
+    sentence: "Charge {{ txid }} was already paid"
+    headers: {Content-Type: application/problem+json}
+    body: '{"type": "https://pix.bcb.gov.br/api/v2/error/CobOperacaoInvalida", "title": "Cobrança inválida.", "status": 409, "detail": "A cobrança já está CONCLUIDA."}'
+  - name: cob_expirada
+    status: 422
+    note: Stuntman sandbox - the immediate charge is past calendario.expiracao (advance the clock to see it)
+    sentence: "Charge {{ txid }} expired"
+    headers: {Content-Type: application/problem+json}
+    body: '{"type": "https://pix.bcb.gov.br/api/v2/error/CobOperacaoInvalida", "title": "Cobrança inválida.", "status": 422, "detail": "A cobrança expirou e não pode mais ser paga."}'
+  - name: pix_nao_encontrado
+    status: 404
+    sentence: "No Pix {{ path.e2eid }}"
+    headers: {Content-Type: application/problem+json}
+    body: '{"type": "https://pix.bcb.gov.br/api/v2/error/PixNaoEncontrado", "title": "Pix não encontrado.", "status": 404, "detail": "Não foi encontrado um Pix com o e2eid informado."}'
+  - name: devolucao_invalida
+    status: 400
+    sentence: "Refund {{ path.id }} refused: id or valor breaks the schema"
+    headers: {Content-Type: application/problem+json}
+    body: '{"type": "https://pix.bcb.gov.br/api/v2/error/DevolucaoOperacaoInvalida", "title": "Devolução inválida.", "status": 400, "detail": "A requisição de devolução não respeita o schema ou está semanticamente errada.", "violacoes": [{"razao": "O campo devolucao.valor não respeita o schema.", "propriedade": "devolucao.valor"}]}'
+  - name: devolucao_acima
+    status: 400
+    note: the refund is more than the Pix
+    sentence: "Refund {{ path.id }} refused: R$ {{ body.valor }} is more than the Pix (R$ {{ valor_pix }})"
+    headers: {Content-Type: application/problem+json}
+    body: '{"type": "https://pix.bcb.gov.br/api/v2/error/DevolucaoOperacaoInvalida", "title": "Devolução inválida.", "status": 400, "detail": "O valor da devolução é superior ao valor do Pix.", "violacoes": [{"razao": "O valor solicitado excede o valor disponível para devolução.", "propriedade": "devolucao.valor"}]}'
+  - name: devolucao_nao_encontrada
+    status: 404
+    sentence: "No refund {{ path.id }} on {{ path.e2eid }}"
+    headers: {Content-Type: application/problem+json}
+    body: '{"type": "https://pix.bcb.gov.br/api/v2/error/DevolucaoNaoEncontrada", "title": "Devolução não encontrada.", "status": 404, "detail": "Não foi encontrada a devolução com o id informado."}'
+  - name: webhook_invalido
+    status: 400
+    sentence: "Webhook of key {{ path.chave }} refused: webhookUrl missing or not a URL"
+    headers: {Content-Type: application/problem+json}
+    body: '{"type": "https://pix.bcb.gov.br/api/v2/error/WebhookOperacaoInvalida", "title": "Webhook inválido.", "status": 400, "detail": "A requisição que busca alterar ou criar um webhook não respeita o schema ou está semanticamente errada.", "violacoes": [{"razao": "O campo webhookUrl não respeita o schema.", "propriedade": "webhookUrl"}]}'
+  - name: webhook_nao_encontrado
+    status: 404
+    sentence: "No webhook for key {{ path.chave }}"
+    headers: {Content-Type: application/problem+json}
+    body: '{"type": "https://pix.bcb.gov.br/api/v2/error/WebhookNaoEncontrado", "title": "Webhook não encontrado.", "status": 404, "detail": "Não foi encontrado um webhook para a chave informada."}'
+  - name: servico_indisponivel
+    status: 503
+    note: exists only to be forced; the PSP or the SPI is down
+    sentence: "Pix service unavailable (503)"
+    headers: {Content-Type: application/problem+json}
+    body: '{"type": "https://pix.bcb.gov.br/api/v2/error/ServicoIndisponivel", "title": "Serviço Indisponível", "status": 503, "detail": "Serviço não está disponível no momento. Serviço solicitado pode estar em manutenção ou fora da janela de funcionamento."}'
+  - name: muitas_requisicoes
+    status: 429
+    note: exists only to be forced
+    sentence: "Too many requests (429)"
+    headers: {Content-Type: application/problem+json}
+    body: '{"type": "https://pix.bcb.gov.br/api/v2/error/AcessoNegado", "title": "Requisições em excesso", "status": 429, "detail": "A quantidade de requisições excedeu o limite permitido."}'
+data:
+  # The receiver the BR Codes name (nome up to 25 characters, cidade up to 15) and the PSP's ISPB.
+  settings:
+    - {nome: ACME TECNOLOGIA LTDA, nome_completo: ACME TECNOLOGIA LTDA, cnpj: 11.222.333/0001-81, cidade: SAO PAULO, ispb: '99999008', location_host: pix.example.com}

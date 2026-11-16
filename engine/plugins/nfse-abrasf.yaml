@@ -1,0 +1,142 @@
+# NFS-e ABRASF 2.04, the SOAP web service most municipalities run (homologação): GerarNfse,
+# ConsultarNfsePorRps and CancelarNfse. As the ABRASF WSDL defines them, each request carries
+# nfseCabecMsg and nfseDadosMsg, and each answer outputXML: the ABRASF XML as escaped text
+# (GerarNfseEnvio in, GerarNfseResposta out). mTLS with an ICP-Brasil e-CNPJ; the Prestador's CNPJ must
+# be the certificate's. The NFS-e number comes from the RPS (série and número), so a consultation by RPS
+# finds it again. ISS = ValorServicos x Aliquota. Error codes follow the ABRASF list (E10 RPS already
+# sent, E4 RPS not found, E79 already cancelled…). Not checked: the XML signature inside the message
+# (it travels as text) and municipal rules. The endpoint path varies by municipality.
+service:
+  name: nfse-abrasf
+  title: NFS-e ABRASF 2.04 (municipal)
+  origin: community
+  region: BR
+  description: Municipal NFS-e over SOAP (GerarNfse, ConsultarNfsePorRps, CancelarNfse), mTLS e-CNPJ
+  base_url: https://nfse-homologacao.example.gov.br
+  real_host: nfse-homologacao.example.gov.br
+  auth:
+    client_certificate:
+      required: true
+      icp: true
+  limits:
+    latency: 300ms..1500ms
+soap:
+  version: both
+  endpoint: /NfseWSService
+  validate: false
+  namespace: http://nfse.abrasf.org.br
+operations:
+  - operation: GerarNfse
+    action: http://nfse.abrasf.org.br/GerarNfse
+    let: &rps_lets
+      d: "default(body.nfseDadosMsg, '')"
+      ident: "split(split(d, '&lt;IdentificacaoRps&gt;')[1], '&lt;/IdentificacaoRps&gt;')[0]"
+      rps_n: "split(split(ident, '&lt;Numero&gt;')[1], '&lt;/Numero&gt;')[0]"
+      rps_serie: "split(split(ident, '&lt;Serie&gt;')[1], '&lt;/Serie&gt;')[0]"
+      rps_tipo: "split(split(ident, '&lt;Tipo&gt;')[1], '&lt;/Tipo&gt;')[0]"
+      prest: "split(split(d, '&lt;Prestador&gt;')[1], '&lt;/Prestador&gt;')[0]"
+      cnpj: "split(split(prest, '&lt;Cnpj&gt;')[1], '&lt;/Cnpj&gt;')[0]"
+      im: "split(split(prest, '&lt;InscricaoMunicipal&gt;')[1], '&lt;/InscricaoMunicipal&gt;')[0]"
+      numero: "'1' + substring('00' + substring(digits(rps_serie.sha256()), 0, 2), -2) + substring('00000000' + rps_n, -8)"
+      key: "cnpj + '-' + numero"
+      rec: "state.nfses[key]"
+      src: "d.contains('&lt;GerarNfseEnvio') ? d : default(rec.body.nfseDadosMsg, '')"
+      decl: "split(split(src, '&lt;InfDeclaracaoPrestacaoServico')[1], '&lt;/InfDeclaracaoPrestacaoServico&gt;')[0]"
+      valor: "split(split(src, '&lt;ValorServicos&gt;')[1], '&lt;/ValorServicos&gt;')[0]"
+      aliq_in: "split(split(src, '&lt;Aliquota&gt;')[1], '&lt;/Aliquota&gt;')[0]"
+      aliq: "aliq_in == '' ? '2.00' : aliq_in"
+      iss_c: "int(double(valor) * double(aliq) + 0.5)"
+      iss: "string(int(iss_c / 100)) + '.' + (iss_c % 100 < 10 ? '0' : '') + string(iss_c % 100)"
+      cod_mun: "split(split(src, '&lt;CodigoMunicipio&gt;')[1], '&lt;/CodigoMunicipio&gt;')[0]"
+      t0: "has(rec) ? rec.at : __now"
+      verif: "upper(substring(key.sha256(), 0, 8))"
+      canc: "state.cancels[key]"
+      comp: >-
+        '&lt;CompNfse&gt;&lt;Nfse versao="2.04"&gt;&lt;InfNfse Id="nfse' + numero + '"&gt;&lt;Numero&gt;' + numero + '&lt;/Numero&gt;&lt;CodigoVerificacao&gt;' + verif + '&lt;/CodigoVerificacao&gt;'
+        + '&lt;DataEmissao&gt;' + iso(t0, 'America/Sao_Paulo') + '&lt;/DataEmissao&gt;&lt;ValoresNfse&gt;&lt;BaseCalculo&gt;' + valor + '&lt;/BaseCalculo&gt;&lt;Aliquota&gt;' + aliq + '&lt;/Aliquota&gt;'
+        + '&lt;ValorIss&gt;' + iss + '&lt;/ValorIss&gt;&lt;ValorLiquidoNfse&gt;' + valor + '&lt;/ValorLiquidoNfse&gt;&lt;/ValoresNfse&gt;'
+        + '&lt;PrestadorServico&gt;&lt;RazaoSocial&gt;' + default(lookup('prestadores', 'cnpj', cnpj).razao_social, 'PRESTADOR ' + cnpj) + '&lt;/RazaoSocial&gt;&lt;/PrestadorServico&gt;'
+        + '&lt;OrgaoGerador&gt;&lt;CodigoMunicipio&gt;' + default(cod_mun, data.settings[0].codigo_municipio) + '&lt;/CodigoMunicipio&gt;&lt;Uf&gt;' + data.settings[0].uf + '&lt;/Uf&gt;&lt;/OrgaoGerador&gt;'
+        + '&lt;DeclaracaoPrestacaoServico&gt;&lt;InfDeclaracaoPrestacaoServico' + decl + '&lt;/InfDeclaracaoPrestacaoServico&gt;&lt;/DeclaracaoPrestacaoServico&gt;&lt;/InfNfse&gt;&lt;/Nfse&gt;'
+        + (has(canc) ? '&lt;NfseCancelamento&gt;&lt;Confirmacao Id="canc' + numero + '"&gt;&lt;DataHora&gt;' + iso(canc.at, 'America/Sao_Paulo') + '&lt;/DataHora&gt;&lt;/Confirmacao&gt;&lt;/NfseCancelamento&gt;' : '')
+        + '&lt;/CompNfse&gt;'
+      problem: >-
+        !d.contains('&lt;GerarNfseEnvio') ? ['E160', 'Arquivo em desacordo com o XML Schema.', 'Envie um GerarNfseEnvio no nfseDadosMsg.']
+        : rps_n == '' ? ['E11', 'Número do RPS não informado.', 'Informe o número do RPS.']
+        : cnpj != default(client_cnpj, '') ? ['E157', 'CNPJ do prestador difere do CNPJ do certificado digital.', 'Use o certificado do prestador.']
+        : valor == '' || double(valor) <= 0 ? ['E34', 'Valor dos serviços não informado ou inválido.', 'Informe o valor dos serviços.']
+        : has(rec) ? ['E10', 'RPS já informado.', 'Para essa Inscrição Municipal/CNPJ já existe um RPS informado com o mesmo número, série e tipo.']
+        : null
+    keep:
+      state: nfses
+      key: key
+    decide:
+      - when: has(problem)
+        answer: gerar_erro
+      - answer: gerar_ok
+  - operation: ConsultarNfsePorRps
+    action: http://nfse.abrasf.org.br/ConsultarNfsePorRps
+    let: *rps_lets
+    decide:
+      - when: "!has(rec)"
+        answer: consultar_nao_encontrado
+      - answer: consultar_ok
+  - operation: CancelarNfse
+    action: http://nfse.abrasf.org.br/CancelarNfse
+    let:
+      d: "default(body.nfseDadosMsg, '')"
+      idn: "split(split(d, '&lt;IdentificacaoNfse&gt;')[1], '&lt;/IdentificacaoNfse&gt;')[0]"
+      numero: "split(split(idn, '&lt;Numero&gt;')[1], '&lt;/Numero&gt;')[0]"
+      cnpj: "split(split(idn, '&lt;Cnpj&gt;')[1], '&lt;/Cnpj&gt;')[0]"
+      key: "cnpj + '-' + numero"
+      pedido: "split(split(d, '&lt;Pedido&gt;')[1], '&lt;/Pedido&gt;')[0]"
+    keep:
+      state: cancels
+      key: key
+    decide:
+      - when: cnpj != default(client_cnpj, '')
+        answer: cancelar_cnpj
+      - when: "!has(state.nfses[key])"
+        answer: cancelar_nao_encontrada
+      - when: has(state.cancels[key])
+        answer: cancelar_ja_cancelada
+      - answer: cancelar_ok
+answers:
+  - name: gerar_ok
+    note: the NFS-e (CompNfse) inside outputXML
+    sentence: "{{ caller }} generated NFS-e {{ numero }} from RPS {{ rps_n }}/{{ rps_serie }} (R$ {{ valor }}, ISS {{ iss }})"
+    body: '<GerarNfseResponse xmlns="http://nfse.abrasf.org.br"><outputXML>&lt;?xml version="1.0" encoding="UTF-8"?&gt;&lt;GerarNfseResposta xmlns="http://www.abrasf.org.br/nfse.xsd"&gt;&lt;ListaNfse&gt;{{ comp }}&lt;/ListaNfse&gt;&lt;/GerarNfseResposta&gt;</outputXML></GerarNfseResponse>'
+  - name: gerar_erro
+    note: ListaMensagemRetorno with the ABRASF code (E10, E11, E34, E157, E160)
+    sentence: "RPS {{ rps_n }}/{{ rps_serie }} refused: {{ problem[0] }} {{ problem[1] }}"
+    body: '<GerarNfseResponse xmlns="http://nfse.abrasf.org.br"><outputXML>&lt;?xml version="1.0" encoding="UTF-8"?&gt;&lt;GerarNfseResposta xmlns="http://www.abrasf.org.br/nfse.xsd"&gt;&lt;ListaMensagemRetorno&gt;&lt;MensagemRetorno&gt;&lt;Codigo&gt;{{ problem[0] }}&lt;/Codigo&gt;&lt;Mensagem&gt;{{ problem[1] }}&lt;/Mensagem&gt;&lt;Correcao&gt;{{ problem[2] }}&lt;/Correcao&gt;&lt;/MensagemRetorno&gt;&lt;/ListaMensagemRetorno&gt;&lt;/GerarNfseResposta&gt;</outputXML></GerarNfseResponse>'
+  - name: consultar_ok
+    sentence: "RPS {{ rps_n }}/{{ rps_serie }}: NFS-e {{ numero }}{{ has(canc) ? ' (cancelled)' : '' }}"
+    body: '<ConsultarNfsePorRpsResponse xmlns="http://nfse.abrasf.org.br"><outputXML>&lt;?xml version="1.0" encoding="UTF-8"?&gt;&lt;ConsultarNfseRpsResposta xmlns="http://www.abrasf.org.br/nfse.xsd"&gt;{{ comp }}&lt;/ConsultarNfseRpsResposta&gt;</outputXML></ConsultarNfsePorRpsResponse>'
+  - name: consultar_nao_encontrado
+    sentence: "RPS {{ rps_n }}/{{ rps_serie }} not found (E4)"
+    body: '<ConsultarNfsePorRpsResponse xmlns="http://nfse.abrasf.org.br"><outputXML>&lt;?xml version="1.0" encoding="UTF-8"?&gt;&lt;ConsultarNfseRpsResposta xmlns="http://www.abrasf.org.br/nfse.xsd"&gt;&lt;ListaMensagemRetorno&gt;&lt;MensagemRetorno&gt;&lt;Codigo&gt;E4&lt;/Codigo&gt;&lt;Mensagem&gt;Esse RPS não foi enviado para a nossa base de dados.&lt;/Mensagem&gt;&lt;Correcao&gt;Envie o RPS para emissão da NFS-e.&lt;/Correcao&gt;&lt;/MensagemRetorno&gt;&lt;/ListaMensagemRetorno&gt;&lt;/ConsultarNfseRpsResposta&gt;</outputXML></ConsultarNfsePorRpsResponse>'
+  - name: cancelar_ok
+    sentence: "{{ caller }} cancelled NFS-e {{ numero }}"
+    body: '<CancelarNfseResponse xmlns="http://nfse.abrasf.org.br"><outputXML>&lt;?xml version="1.0" encoding="UTF-8"?&gt;&lt;CancelarNfseResposta xmlns="http://www.abrasf.org.br/nfse.xsd"&gt;&lt;RetCancelamento&gt;&lt;NfseCancelamento&gt;&lt;Confirmacao Id="canc{{ numero }}"&gt;&lt;Pedido&gt;{{ pedido }}&lt;/Pedido&gt;&lt;DataHora&gt;{{ iso(__now, ''America/Sao_Paulo'') }}&lt;/DataHora&gt;&lt;/Confirmacao&gt;&lt;/NfseCancelamento&gt;&lt;/RetCancelamento&gt;&lt;/CancelarNfseResposta&gt;</outputXML></CancelarNfseResponse>'
+  - name: cancelar_nao_encontrada
+    sentence: "Cancel refused: no NFS-e {{ numero }} (E78)"
+    body: '<CancelarNfseResponse xmlns="http://nfse.abrasf.org.br"><outputXML>&lt;?xml version="1.0" encoding="UTF-8"?&gt;&lt;CancelarNfseResposta xmlns="http://www.abrasf.org.br/nfse.xsd"&gt;&lt;ListaMensagemRetorno&gt;&lt;MensagemRetorno&gt;&lt;Codigo&gt;E78&lt;/Codigo&gt;&lt;Mensagem&gt;NFS-e inexistente.&lt;/Mensagem&gt;&lt;Correcao&gt;Informe o número de uma NFS-e emitida pelo prestador.&lt;/Correcao&gt;&lt;/MensagemRetorno&gt;&lt;/ListaMensagemRetorno&gt;&lt;/CancelarNfseResposta&gt;</outputXML></CancelarNfseResponse>'
+  - name: cancelar_ja_cancelada
+    sentence: "Cancel refused: NFS-e {{ numero }} already cancelled (E79)"
+    body: '<CancelarNfseResponse xmlns="http://nfse.abrasf.org.br"><outputXML>&lt;?xml version="1.0" encoding="UTF-8"?&gt;&lt;CancelarNfseResposta xmlns="http://www.abrasf.org.br/nfse.xsd"&gt;&lt;ListaMensagemRetorno&gt;&lt;MensagemRetorno&gt;&lt;Codigo&gt;E79&lt;/Codigo&gt;&lt;Mensagem&gt;Essa NFS-e já está cancelada.&lt;/Mensagem&gt;&lt;Correcao&gt;Confira o número da NFS-e.&lt;/Correcao&gt;&lt;/MensagemRetorno&gt;&lt;/ListaMensagemRetorno&gt;&lt;/CancelarNfseResposta&gt;</outputXML></CancelarNfseResponse>'
+  - name: cancelar_cnpj
+    sentence: "Cancel refused: CNPJ {{ cnpj }} is not the certificate's (E157)"
+    body: '<CancelarNfseResponse xmlns="http://nfse.abrasf.org.br"><outputXML>&lt;?xml version="1.0" encoding="UTF-8"?&gt;&lt;CancelarNfseResposta xmlns="http://www.abrasf.org.br/nfse.xsd"&gt;&lt;ListaMensagemRetorno&gt;&lt;MensagemRetorno&gt;&lt;Codigo&gt;E157&lt;/Codigo&gt;&lt;Mensagem&gt;CNPJ do prestador difere do CNPJ do certificado digital.&lt;/Mensagem&gt;&lt;Correcao&gt;Use o certificado do prestador.&lt;/Correcao&gt;&lt;/MensagemRetorno&gt;&lt;/ListaMensagemRetorno&gt;&lt;/CancelarNfseResposta&gt;</outputXML></CancelarNfseResponse>'
+  - name: indisponivel
+    status: 500
+    note: exists only to be forced; the municipal server fault
+    fault:
+      code: Receiver
+      reason: Server was unable to process request.
+data:
+  settings:
+    - {codigo_municipio: '3550308', uf: SP}
+  prestadores:
+    - {cnpj: '11222333000181', razao_social: ACME TECNOLOGIA LTDA}
+    - {cnpj: '44555666000181', razao_social: GLOBEX COMERCIO DE ALIMENTOS LTDA}

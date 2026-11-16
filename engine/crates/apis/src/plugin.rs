@@ -159,7 +159,8 @@ pub struct Service {
 
 /// Signing of the webhooks a service sends: hex (HMAC-SHA256 of the body, hex) | hex_ts (of
 /// "{timestamp}.{body}", with X-Webhook-Timestamp) | stripe (t=…,v1=…) | svix (svix-id,
-/// svix-timestamp, svix-signature v1,base64) | github (sha256=hex) | cloudevents (ce-* headers).
+/// svix-timestamp, svix-signature v1,base64) | github (sha256=hex) | cloudevents (ce-* headers) |
+/// twilio (X-Twilio-Signature) | slack (X-Slack-Signature v0) | shopify (X-Shopify-Hmac-Sha256) | hubspot (v3).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 pub struct Webhooks {
     #[serde(default = "hex_sign")]
@@ -183,7 +184,7 @@ fn hex_sign() -> String {
 fn s300() -> u32 {
     300
 }
-pub const SIGNS: [&str; 6] = ["hex", "hex_ts", "stripe", "svix", "github", "cloudevents"];
+pub const SIGNS: [&str; 10] = ["hex", "hex_ts", "stripe", "svix", "github", "cloudevents", "twilio", "slack", "shopify", "hubspot"];
 pub const SIGN_PROVOKE: [&str; 5] = ["wrong_signature", "old_timestamp", "no_signature", "twice", "out_of_order"];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -316,7 +317,7 @@ pub struct Send {
     /// A SOAP callback: the body is the payload, sent inside an envelope with this SOAPAction.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub operation: String,
-    /// Overrides service.webhooks.sign for this send (hex | hex_ts | stripe | svix | github | cloudevents).
+    /// Overrides service.webhooks.sign for this send (one of SIGNS).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sign: String,
     /// The event type (CloudEvents ce-type; shown on the call).

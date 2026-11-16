@@ -24,7 +24,7 @@ Over HTTP: `GET /api/clock` and `POST /api/clock/advance` with `{"by": "1d"}` or
 |---|---|
 | **Scheduled webhooks** | a plugin's `send` with a `delay` is kept until the clock reaches its time, then sent. Moving the clock past it sends it at once; `clock` lists the ones waiting |
 | **Templates** | `now()` and `now_ms()` in plugin expressions, and `now` in [WireMock templates](mocks.md#response-templates), read the clock |
-| **Webhook signatures** | the timestamps in `hex_ts`, `stripe`, `svix` and `cloudevents` signatures |
+| **Webhook signatures** | the timestamps in `hex_ts`, `stripe`, `svix`, `cloudevents`, `slack` and `hubspot` signatures |
 
 ```yaml
 routes:

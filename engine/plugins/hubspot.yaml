@@ -1,0 +1,209 @@
+# HubSpot CRM v3 for the Acme portal: contacts, companies and deals (create, read, update, search),
+# default associations (v4), private-app Bearer tokens (pat-…), HubSpot's error bodies and rate-limit
+# headers, and webhooks v3 as HubSpot sends them (an array of events; X-HubSpot-Signature-v3: base64
+# HMAC-SHA256 of method + URL + body + X-HubSpot-Request-Timestamp) signed with the app's client secret in
+# secret://hubspot-client-secret. Point the SDK at it: HubSpot(access_token=…, host=
+# "http://localhost:8028/hubspot") (or resolve api.hubapi.com to Stuntman).
+#
+# A contact's id follows from its email, so a second contact with the same email answers 409 as HubSpot
+# does. Search answers EQ filters on email (contacts) and hs_object_id (any object); other filters find
+# nothing. Reading an object's associations answers the first one made to that object type.
+service:
+  name: hubspot
+  title: HubSpot
+  origin: community
+  description: CRM contacts, companies and deals with signed webhooks v3
+  base_url: https://api.hubapi.com
+  real_host: api.hubapi.com
+  limits:
+    latency: 100ms..350ms
+  webhooks:
+    sign: hubspot
+    secret: secret://hubspot-client-secret
+routes:
+  - route: POST /crm/v3/objects/{type}
+    let: &lets
+      authok: "default(headers.authorization, '').startsWith('Bearer pat-') || default(headers.authorization, '').startsWith('Bearer CO')"
+      known: "path.type in ['contacts', 'companies', 'deals']"
+      tid: "path.type == 'contacts' ? '0-1' : path.type == 'companies' ? '0-2' : '0-3'"
+      email: "lower(default(default(body.properties, {}).email, ''))"
+      new_id: "path.type == 'contacts' && email != '' ? '1' + substring(digits(sha256('contact:' + email)), 0, 10) : string(int(path.type == 'companies' ? 20000000001 : 30000000001) + size(default(state.objects, {})))"
+      id: "default(path.id, new_id)"
+      k: "path.type + '/' + id"
+      obj: "state.objects[k]"
+      patch: "__method == 'PATCH' ? default(body.properties, {}) : has(state.updates[k]) && state.updates[k].at >= obj.at ? default(state.updates[k].body.properties, {}) : {}"
+      base_props: "has(obj) ? default(obj.body.properties, {}) : default(body.properties, {})"
+      props: "size(patch) == 0 ? base_props : size(base_props) == 0 ? patch : parse_json(substring(json(base_props), 0, -1) + ', ' + substring(json(patch), 1))"
+      created: "has(obj) ? obj.at : now_ms()"
+      std: "path.type == 'contacts' ? {'createdate': now(), 'lastmodifieddate': now(), 'hs_object_id': id} : path.type == 'companies' ? {'createdate': now(), 'hs_lastmodifieddate': now(), 'hs_object_id': id} : {'createdate': now(), 'hs_lastmodifieddate': now(), 'hs_object_id': id, 'pipeline': 'default', 'dealstage': 'appointmentscheduled'}"
+      view: >-
+        {"id": id, "properties": size(props) == 0 ? std : parse_json(substring(json(std), 0, -1) + ', ' + substring(json(props), 1)),
+        "createdAt": now(), "updatedAt": now(), "archived": false}
+      pname: "__method == 'PATCH' && size(default(body.properties, {})) > 0 ? split(substring(json(body.properties), 2), '\"')[0] : ''"
+      singular: "path.type == 'contacts' ? 'contact' : path.type == 'companies' ? 'company' : 'deal'"
+      hook: "data.settings[0]"
+    keep:
+      state: objects
+      key: k
+    decide:
+      - when: "!authok"
+        answer: invalid_authentication
+      - when: "!known"
+        answer: unknown_object_type
+      - when: "path.type == 'contacts' && email != '' && !email.matches('^[^@ ]+@[^@ ]+[.][^@ ]+$')"
+        answer: invalid_email
+      - when: "path.type == 'contacts' && email != '' && has(obj)"
+        answer: contact_exists
+      - answer: created
+    send:
+      - url: "{{ answer == 'created' ? hook.webhook_url : '' }}"
+        event: creation
+        headers: {User-Agent: HubSpot Connect 2.0 (http://dev.hubspot.com/)}
+        body: '[{{ json({"eventId": int(now_ms() % 1000000000), "subscriptionId": int(hook.subscription_id), "portalId": int(hook.portal_id), "appId": int(hook.app_id), "occurredAt": int(now_ms()), "subscriptionType": singular + ''.creation'', "attemptNumber": int(0), "objectId": int(id), "changeFlag": "CREATED", "changeSource": "CRM", "sourceId": "userId:84211001"}) }}]'
+  - route: GET /crm/v3/objects/{type}/{id}
+    let: *lets
+    decide: &found
+      - when: "!authok"
+        answer: invalid_authentication
+      - when: "!known"
+        answer: unknown_object_type
+      - when: "!has(obj)"
+        answer: object_not_found
+      - answer: object
+  - route: PATCH /crm/v3/objects/{type}/{id}
+    let: *lets
+    keep:
+      state: updates
+      key: k
+    decide:
+      - when: "!authok"
+        answer: invalid_authentication
+      - when: "!known"
+        answer: unknown_object_type
+      - when: "!has(obj)"
+        answer: object_not_found
+      - answer: object
+    send:
+      # One propertyChange event per request, for the first property changed.
+      - url: "{{ answer == 'object' && size(default(body.properties, {})) > 0 ? hook.webhook_url : '' }}"
+        event: propertyChange
+        headers: {User-Agent: HubSpot Connect 2.0 (http://dev.hubspot.com/)}
+        body: |-
+          [{{ json({"eventId": int(now_ms() % 1000000000) + 1, "subscriptionId": int(hook.subscription_id), "portalId": int(hook.portal_id), "appId": int(hook.app_id), "occurredAt": int(now_ms()),
+            "subscriptionType": singular + '.propertyChange', "attemptNumber": int(0), "objectId": int(id), "propertyName": pname, "propertyValue": string(body.properties[pname]),
+            "changeSource": "CRM", "sourceId": "userId:84211001"}) }}]
+  - route: POST /crm/v3/objects/{type}/search
+    let:
+      authok: "default(headers.authorization, '').startsWith('Bearer pat-') || default(headers.authorization, '').startsWith('Bearer CO')"
+      known: "path.type in ['contacts', 'companies', 'deals']"
+      f: "default(default(default(body.filterGroups, [{}])[0], {}).filters, [{}])[0]"
+      sid: "f.operator != 'EQ' ? '' : f.propertyName == 'hs_object_id' ? string(f.value) : f.propertyName == 'email' && path.type == 'contacts' ? '1' + substring(digits(sha256('contact:' + lower(string(f.value)))), 0, 10) : ''"
+      hit: "state.objects[path.type + '/' + sid]"
+      hit_patch: "has(state.updates[path.type + '/' + sid]) && state.updates[path.type + '/' + sid].at >= hit.at ? default(state.updates[path.type + '/' + sid].body.properties, {}) : {}"
+      hit_props: "size(hit_patch) == 0 ? default(hit.body.properties, {}) : parse_json(substring(json(default(hit.body.properties, {'hs_object_id': sid})), 0, -1) + ', ' + substring(json(hit_patch), 1))"
+    decide:
+      - when: "!authok"
+        answer: invalid_authentication
+      - when: "!known"
+        answer: unknown_object_type
+      - answer: search_results
+  # ---------------------------------------------------------------- associations (v4, default type)
+  - route: PUT /crm/v4/objects/{type}/{id}/associations/default/{to}/{to_id}
+    let:
+      authok: "default(headers.authorization, '').startsWith('Bearer pat-') || default(headers.authorization, '').startsWith('Bearer CO')"
+      tids: "{'contacts': '0-1', 'companies': '0-2', 'deals': '0-3'}"
+      types: "{'contacts>companies': 279, 'companies>contacts': 280, 'deals>contacts': 3, 'contacts>deals': 4, 'deals>companies': 341, 'companies>deals': 342}"
+      type_id: "types[path.type + '>' + path.to]"
+    keep:
+      state: associations
+      key: "path.type + '/' + path.id + '>' + path.to + '/' + path.to_id"
+    decide:
+      - when: "!authok"
+        answer: invalid_authentication
+      - when: "!has(state.objects[path.type + '/' + path.id]) || !has(state.objects[path.to + '/' + path.to_id])"
+        answer: association_object_missing
+      - when: "!has(type_id)"
+        answer: unknown_object_type
+      - answer: associated
+  - route: GET /crm/v4/objects/{type}/{id}/associations/{to}
+    let:
+      authok: "default(headers.authorization, '').startsWith('Bearer pat-') || default(headers.authorization, '').startsWith('Bearer CO')"
+      # The first association kept for this object and type: the kept keys are "type/id>to/to_id".
+      found: "split(json(default(state.associations, {})), '\"' + path.type + '/' + path.id + '>' + path.to + '/')"
+      to_id: "size(found) > 1 ? split(found[1], '\"')[0] : ''"
+      types: "{'contacts>companies': 279, 'companies>contacts': 280, 'deals>contacts': 3, 'contacts>deals': 4, 'deals>companies': 341, 'companies>deals': 342}"
+    decide:
+      - when: "!authok"
+        answer: invalid_authentication
+      - answer: associations
+answers:
+  - name: created
+    status: 201
+    headers: &rl
+      X-HubSpot-RateLimit-Daily: "250000"
+      X-HubSpot-RateLimit-Daily-Remaining: "249873"
+      X-HubSpot-RateLimit-Interval-Milliseconds: "10000"
+      X-HubSpot-RateLimit-Max: "190"
+      X-HubSpot-RateLimit-Remaining: "188"
+      X-HubSpot-RateLimit-Secondly: "19"
+      X-HubSpot-RateLimit-Secondly-Remaining: "18"
+    sentence: "Created {{ singular }} {{ id }}{{ email != '' ? ' (' + email + ')' : '' }}"
+    body: '{{ json(view) }}'
+  - name: object
+    headers: *rl
+    sentence: "{{ __method == 'PATCH' ? 'Updated' : 'Read' }} {{ singular }} {{ id }}"
+    body: '{{ json(view) }}'
+  - name: search_results
+    headers: *rl
+    sentence: "Search {{ path.type }} {{ default(f.propertyName, '') }} {{ default(f.operator, '') }} {{ default(f.value, '') }}: {{ has(hit) ? 1 : 0 }}"
+    body: '{"total": {{ has(hit) ? 1 : 0 }}, "results": [{{ has(hit) ? json({"id": sid, "properties": hit_props, "createdAt": now(), "updatedAt": now(), "archived": false}) : '''' }}]}'
+  - name: associated
+    headers: *rl
+    sentence: "Associated {{ path.type }} {{ path.id }} with {{ path.to }} {{ path.to_id }}"
+    body: '{"status": "COMPLETE", "results": [{"from": {"id": "{{ path.id }}"}, "to": {"id": "{{ path.to_id }}"}, "associationSpec": {"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": {{ type_id }}}}], "startedAt": "{{ now() }}", "completedAt": "{{ now() }}"}'
+  - name: associations
+    headers: *rl
+    sentence: "Associations of {{ path.type }} {{ path.id }} to {{ path.to }}: {{ to_id == '' ? 'none' : to_id }}"
+    body: '{"results": [{{ to_id != '''' ? json({"toObjectId": int(to_id), "associationTypes": [{"category": "HUBSPOT_DEFINED", "typeId": types[path.type + ''>'' + path.to], "label": null}]}) : '''' }}]}'
+  # ---- errors, in HubSpot's shape
+  - name: invalid_authentication
+    status: 401
+    note: no Bearer token, or not a private-app (pat-…) or OAuth (CO…) token
+    sentence: "Refused: no valid token"
+    body: '{"status": "error", "message": "Authentication credentials not found. This API supports OAuth 2.0 authentication and you can find more details at https://developers.hubspot.com/docs/methods/auth/oauth-overview", "correlationId": "{{ uuid() }}", "category": "INVALID_AUTHENTICATION"}'
+  - name: unknown_object_type
+    status: 400
+    sentence: "Unknown object type {{ path.type }}"
+    body: '{"status": "error", "message": "Unable to infer object type from: {{ path.type }}", "correlationId": "{{ uuid() }}", "category": "VALIDATION_ERROR"}'
+  - name: invalid_email
+    status: 400
+    sentence: "Refused: invalid email {{ email }}"
+    body: '{"status": "error", "message": "Property values were not valid: [{\"isValid\":false,\"message\":\"Email address {{ email }} is invalid\",\"error\":\"INVALID_EMAIL\",\"name\":\"email\",\"localizedErrorMessage\":\"Email address {{ email }} is invalid\"}]", "correlationId": "{{ uuid() }}", "category": "VALIDATION_ERROR"}'
+  - name: contact_exists
+    status: 409
+    sentence: "Refused: contact {{ email }} exists ({{ id }})"
+    body: '{"status": "error", "message": "Contact already exists. Existing ID: {{ id }}", "correlationId": "{{ uuid() }}", "category": "CONFLICT"}'
+  - name: object_not_found
+    status: 404
+    sentence: "No {{ singular }} {{ path.id }}"
+    body: '{"status": "error", "message": "Object not found.  objectId are usually numeric.", "correlationId": "{{ uuid() }}", "context": {"id": ["{{ path.id }}"]}, "category": "OBJECT_NOT_FOUND"}'
+  - name: association_object_missing
+    status: 400
+    sentence: "Refused: {{ path.type }} {{ path.id }} or {{ path.to }} {{ path.to_id }} does not exist"
+    body: '{"status": "error", "message": "One or more objects in the association do not exist", "correlationId": "{{ uuid() }}", "category": "VALIDATION_ERROR"}'
+  - name: rate_limited
+    status: 429
+    note: exists only to be forced; the per-second limit of a private app
+    headers: {X-HubSpot-RateLimit-Secondly: "19", X-HubSpot-RateLimit-Secondly-Remaining: "0"}
+    sentence: "Rate limited (secondly limit)"
+    body: '{"status": "error", "message": "You have reached your secondly limit.", "errorType": "RATE_LIMIT", "correlationId": "{{ uuid() }}", "policyName": "SECONDLY", "requestId": "{{ uuid() }}"}'
+  - name: daily_limit
+    status: 429
+    note: exists only to be forced
+    headers: {X-HubSpot-RateLimit-Daily: "250000", X-HubSpot-RateLimit-Daily-Remaining: "0"}
+    sentence: "Rate limited (daily limit)"
+    body: '{"status": "error", "message": "You have reached your daily limit.", "errorType": "RATE_LIMIT", "correlationId": "{{ uuid() }}", "policyName": "DAILY", "requestId": "{{ uuid() }}"}'
+data:
+  # Where the webhooks go, and the app's ids they carry.
+  settings:
+    - {webhook_url: 'http://localhost:3000/hubspot/webhooks', portal_id: 62515001, app_id: 1170001, subscription_id: 2340001}

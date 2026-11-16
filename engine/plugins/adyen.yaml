@@ -1,0 +1,274 @@
+# Adyen Checkout API (test) for the merchant account AcmeECOM: /paymentMethods, /payments,
+# /payments/details (3D Secure redirect), /sessions and the modifications (captures, refunds, cancels,
+# reversals), any version segment (v71, v72…), X-API-Key auth, Idempotency-Key replays, Adyen's error
+# bodies, and standard webhooks as Adyen sends them: the HMAC signature in
+# additionalData.hmacSignature (base64 HMAC-SHA256, with the hex HMAC key in data.settings, of
+# pspReference:originalReference:merchantAccountCode:merchantReference:value:currency:eventCode:success).
+# Point the SDK at it: <api>.baseUrl = "http://localhost:8028/adyen/v71" (or resolve checkout-test.adyen.com
+# to Stuntman); webhooks go to data.settings webhook_url, with its Basic auth.
+#
+# Cards: encryptedCardNumber "test_<number>" (Adyen's test encryption) or a raw number. 4212345678910006
+# asks for a 3D Secure challenge (RedirectShopper); its action url is answered here too and returns to
+# returnUrl with a redirectResult for /payments/details. A holderName from data.refusals is refused with
+# that reason, as Adyen's test environment does. Unknown cards are authorised.
+service:
+  name: adyen
+  title: Adyen
+  origin: community
+  description: Checkout payments, 3D Secure, modifications and HMAC-signed webhooks
+  base_url: https://checkout-test.adyen.com
+  real_host: checkout-test.adyen.com
+  limits:
+    latency: 150ms..500ms
+  idempotency:
+    header: Idempotency-Key
+routes:
+  - route: POST ~/(?P<v>v[0-9]+)/paymentMethods
+    let: &auth
+      authok: "has(headers['x-api-key']) && size(headers['x-api-key']) > 8"
+      merchant_ok: "body.merchantAccount == data.settings[0].merchant_account"
+    decide:
+      - when: "!authok"
+        answer: unauthorized
+      - when: "!has(body.merchantAccount)"
+        answer: merchant_missing
+      - when: "!merchant_ok"
+        answer: invalid_merchant
+      - answer: payment_methods
+  - route: POST ~/(?P<v>v[0-9]+)/sessions
+    let:
+      authok: "has(headers['x-api-key']) && size(headers['x-api-key']) > 8"
+      merchant_ok: "body.merchantAccount == data.settings[0].merchant_account"
+      sid: "'CS' + upper(random_id() + random_id())"
+    decide:
+      - when: "!authok"
+        answer: unauthorized
+      - when: "!merchant_ok"
+        answer: invalid_merchant
+      - when: "!has(body.amount) || !has(body.amount.value)"
+        answer: amount_missing
+      - when: "!has(body.reference)"
+        answer: reference_missing
+      - when: "!has(body.returnUrl)"
+        answer: return_url_missing
+      - answer: session
+  # ---------------------------------------------------------------- payments
+  - route: POST ~/(?P<v>v[0-9]+)/payments
+    let:
+      authok: "has(headers['x-api-key']) && size(headers['x-api-key']) > 8"
+      merchant_ok: "body.merchantAccount == data.settings[0].merchant_account"
+      psp: "upper(random_id() + random_id())"
+      pm: "default(body.paymentMethod, {})"
+      card: "replace(default(pm.encryptedCardNumber, default(pm.number, '')), 'test_', '')"
+      brand: "card.startsWith('4') ? 'visa' : card.startsWith('5') || card.startsWith('2') ? 'mc' : card.startsWith('3') ? 'amex' : default(pm.type, 'scheme')"
+      refusal: "lookup('refusals', 'holder_name', default(pm.holderName, ''))"
+      challenge: "card == '4212345678910006'"
+      result: "has(refusal) ? 'Refused' : challenge ? 'RedirectShopper' : 'Authorised'"
+      hook: "data.settings[0]"
+      success: "result == 'Authorised' ? 'true' : 'false'"
+      ref: "default(body.reference, '')"
+      sig: "hmac('sha256', 'hex:' + hook.hmac_key, psp + '::' + hook.merchant_account + ':' + ref + ':' + string(default(default(body.amount, {}).value, '')) + ':' + default(default(body.amount, {}).currency, '') + ':AUTHORISATION:' + success, 'base64')"
+    keep:
+      state: payments
+      key: psp
+    decide:
+      - when: "!authok"
+        answer: unauthorized
+      - when: "!has(body.merchantAccount)"
+        answer: merchant_missing
+      - when: "!merchant_ok"
+        answer: invalid_merchant
+      - when: "!has(body.amount) || !has(body.amount.value)"
+        answer: amount_missing
+      - when: "!has(body.reference)"
+        answer: reference_missing
+      - when: "!has(body.paymentMethod)"
+        answer: payment_method_missing
+      - when: "result == 'Refused'"
+        answer: refused
+      - when: "result == 'RedirectShopper'"
+        answer: redirect_shopper
+      - answer: authorised
+    send:
+      - url: "{{ answer in ['authorised', 'refused'] ? hook.webhook_url : '' }}"
+        event: AUTHORISATION
+        headers: &hookheaders
+          Authorization: "Basic {{ base64(hook.webhook_user + ':' + hook.webhook_password) }}"
+          User-Agent: Adyen HttpClient 1.0
+        body: >-
+          {{ json({"live": "false", "notificationItems": [{"NotificationRequestItem": {"additionalData": {"hmacSignature": sig, "authCode": result == 'Authorised' ? '033899' : '', "cardSummary": substring(card, -4), "expiryDate": "03/2030"},
+          "amount": {"currency": body.amount.currency, "value": int(body.amount.value)}, "eventCode": "AUTHORISATION", "eventDate": now(), "merchantAccountCode": hook.merchant_account,
+          "merchantReference": ref, "operations": result == 'Authorised' ? ['CANCEL', 'CAPTURE', 'REFUND'] : [], "paymentMethod": brand, "pspReference": psp,
+          "reason": result == 'Authorised' ? '033899:' + substring(card, -4) + ':03/2030' : refusal.reason, "success": success} }]}) }}
+  - route: POST ~/(?P<v>v[0-9]+)/payments/details
+    let:
+      authok: "has(headers['x-api-key']) && size(headers['x-api-key']) > 8"
+      rr: "default(default(body.details, {}).redirectResult, '')"
+      psp: "rr.contains('!') ? split(rr, '!')[1] : ''"
+      p: "state.payments[psp]"
+      card: "replace(default(p.body.paymentMethod.encryptedCardNumber, default(p.body.paymentMethod.number, '')), 'test_', '')"
+      hook: "data.settings[0]"
+      ref: "default(p.body.reference, '')"
+      sig: "hmac('sha256', 'hex:' + hook.hmac_key, psp + '::' + hook.merchant_account + ':' + ref + ':' + string(default(default(p.body.amount, {}).value, '')) + ':' + default(default(p.body.amount, {}).currency, '') + ':AUTHORISATION:true', 'base64')"
+    keep:
+      state: authorised_after_3ds
+      key: psp
+    decide:
+      - when: "!authok"
+        answer: unauthorized
+      - when: "!has(p)"
+        answer: invalid_details
+      - answer: details_authorised
+    send:
+      - url: "{{ answer == 'details_authorised' ? hook.webhook_url : '' }}"
+        event: AUTHORISATION
+        headers: *hookheaders
+        body: >-
+          {{ json({"live": "false", "notificationItems": [{"NotificationRequestItem": {"additionalData": {"hmacSignature": sig, "authCode": "033899", "cardSummary": substring(card, -4)},
+          "amount": {"currency": p.body.amount.currency, "value": int(p.body.amount.value)}, "eventCode": "AUTHORISATION", "eventDate": now(), "merchantAccountCode": hook.merchant_account,
+          "merchantReference": ref, "operations": ['CANCEL', 'CAPTURE', 'REFUND'], "paymentMethod": "visa", "pspReference": psp, "reason": '033899:' + substring(card, -4) + ':03/2030', "success": "true"} }]}) }}
+  # The 3D Secure challenge page: the shopper passes it and returns to the payment's returnUrl.
+  - route: GET /checkoutshopper/threeDS/redirect
+    let:
+      p: "state.payments[default(query.MD, '')]"
+    decide:
+      - when: "!has(p)"
+        answer: challenge_unknown
+      - answer: challenge_passed
+  # ---------------------------------------------------------------- modifications
+  - route: POST ~/(?P<v>v[0-9]+)/payments/(?P<psp>[A-Z0-9]{16})/(?P<op>captures|refunds|cancels|reversals)
+    let:
+      authok: "has(headers['x-api-key']) && size(headers['x-api-key']) > 8"
+      merchant_ok: "body.merchantAccount == data.settings[0].merchant_account"
+      p: "state.payments[path.psp]"
+      mod: "upper(random_id() + random_id())"
+      code: "path.op == 'captures' ? 'CAPTURE' : path.op == 'refunds' ? 'REFUND' : path.op == 'cancels' ? 'CANCELLATION' : 'CANCEL_OR_REFUND'"
+      amount: "default(body.amount, p.body.amount)"
+      ok: "!(path.op == 'refunds' && has(p) && int(default(amount, {}).value) > int(p.body.amount.value))"
+      hook: "data.settings[0]"
+      ref: "default(body.reference, '')"
+      sig: "hmac('sha256', 'hex:' + hook.hmac_key, mod + ':' + path.psp + ':' + hook.merchant_account + ':' + ref + ':' + string(default(default(amount, {}).value, '')) + ':' + default(default(amount, {}).currency, '') + ':' + code + ':' + (ok ? 'true' : 'false'), 'base64')"
+    keep:
+      state: modifications
+      key: mod
+    decide:
+      - when: "!authok"
+        answer: unauthorized
+      - when: "!merchant_ok"
+        answer: invalid_merchant
+      - when: "!has(p)"
+        answer: original_psp_unknown
+      - when: "path.op in ['captures', 'refunds'] && !has(body.amount)"
+        answer: amount_missing
+      - answer: modification_received
+    send:
+      - url: "{{ answer == 'modification_received' ? hook.webhook_url : '' }}"
+        event: modification
+        headers: *hookheaders
+        body: >-
+          {{ json({"live": "false", "notificationItems": [{"NotificationRequestItem": {"additionalData": {"hmacSignature": sig},
+          "amount": {"currency": amount.currency, "value": int(amount.value)}, "eventCode": code, "eventDate": now(), "merchantAccountCode": hook.merchant_account,
+          "merchantReference": ref, "originalReference": path.psp, "paymentMethod": "visa", "pspReference": mod, "reason": ok ? '' : 'Insufficient balance on payment', "success": ok ? 'true' : 'false'} }]}) }}
+answers:
+  - name: payment_methods
+    sentence: "Payment methods for {{ default(body.countryCode, 'any country') }}"
+    body: |-
+      {"paymentMethods": [{"brands": ["visa", "mc", "amex", "maestro"], "name": "Cards", "type": "scheme"},
+        {{ body.countryCode == 'NL' ? '{"name": "iDEAL", "type": "ideal"},' : '' }}{{ body.countryCode == 'BR' ? '{"name": "Pix", "type": "pix"},' : '' }}
+        {"configuration": {"merchantId": "1000", "merchantName": "AcmeECOM"}, "name": "Apple Pay", "type": "applepay"},
+        {"configuration": {"intent": "capture"}, "name": "PayPal", "type": "paypal"}]}
+  - name: session
+    status: 201
+    sentence: "Checkout session {{ sid }} for {{ body.reference }}"
+    body: '{{ json({"amount": body.amount, "countryCode": default(body.countryCode, null), "expiresAt": now(), "id": sid, "merchantAccount": body.merchantAccount, "mode": "embedded", "reference": body.reference, "returnUrl": body.returnUrl, "shopperLocale": default(body.shopperLocale, ''en-US''), "sessionData": ''Ab02b4c0!BQABAgA'' + base64(sid + body.reference)}) }}'
+  - name: authorised
+    note: the card was authorised; AUTHORISATION (success true) follows
+    sentence: "Payment {{ psp }} for {{ ref }}: Authorised ({{ body.amount.value }} {{ body.amount.currency }})"
+    body: '{{ json({"additionalData": {"cardSummary": substring(card, -4), "authCode": "033899"}, "pspReference": psp, "resultCode": "Authorised", "amount": {"currency": body.amount.currency, "value": int(body.amount.value)}, "merchantReference": ref, "paymentMethod": {"brand": brand, "type": default(pm.type, ''scheme'')} }) }}'
+  - name: refused
+    note: a holderName from data.refusals; AUTHORISATION (success false) follows
+    sentence: "Payment {{ psp }} for {{ ref }}: Refused ({{ refusal.reason }})"
+    body: '{{ json({"additionalData": {"cardSummary": substring(card, -4)}, "pspReference": psp, "refusalReason": refusal.reason, "resultCode": "Refused", "refusalReasonCode": refusal.code, "amount": {"currency": body.amount.currency, "value": int(body.amount.value)}, "merchantReference": ref, "paymentMethod": {"brand": brand, "type": "scheme"} }) }}'
+  - name: redirect_shopper
+    note: 3D Secure challenge; the shopper follows action.url and comes back with a redirectResult
+    sentence: "Payment {{ psp }} for {{ ref }}: RedirectShopper (3D Secure)"
+    body: '{{ json({"resultCode": "RedirectShopper", "action": {"paymentMethodType": "scheme", "url": "https://checkoutshopper-test.adyen.com/checkoutshopper/threeDS/redirect?MD=" + psp, "method": "GET", "type": "redirect"}, "pspReference": psp, "merchantReference": ref}) }}'
+  - name: challenge_passed
+    status: 302
+    sentence: "3D Secure challenge passed for {{ query.MD }}"
+    headers: {Location: "{{ p.body.returnUrl }}{{ p.body.returnUrl.contains('?') ? '&' : '?' }}redirectResult=Ab02b4c0!{{ query.MD }}", Content-Type: text/plain}
+    raw: true
+    body: ''
+  - name: challenge_unknown
+    status: 404
+    sentence: "No 3D Secure challenge for {{ query.MD }}"
+    headers: {Content-Type: text/plain}
+    raw: true
+    body: 'Not Found'
+  - name: details_authorised
+    sentence: "Payment {{ psp }}: Authorised after 3D Secure"
+    body: '{{ json({"additionalData": {"cardSummary": substring(card, -4)}, "pspReference": psp, "resultCode": "Authorised", "amount": {"currency": p.body.amount.currency, "value": int(p.body.amount.value)}, "merchantReference": ref, "paymentMethod": {"brand": "visa", "type": "scheme"} }) }}'
+  - name: modification_received
+    status: 201
+    note: received; the webhook says whether it succeeded (a refund above the payment fails)
+    sentence: "{{ code }} {{ mod }} of {{ path.psp }}: received"
+    body: '{{ json(path.op == ''cancels'' ? {"merchantAccount": body.merchantAccount, "paymentPspReference": path.psp, "pspReference": mod, "reference": default(body.reference, null), "status": "received"} : {"merchantAccount": body.merchantAccount, "paymentPspReference": path.psp, "pspReference": mod, "reference": default(body.reference, null), "status": "received", "amount": amount}) }}'
+  # ---- errors, in Adyen's shape (status, errorCode, message, errorType)
+  - name: unauthorized
+    status: 401
+    note: no X-API-Key (any key of 9 characters or more passes)
+    sentence: "Refused: no API key"
+    body: '{"status": 401, "errorCode": "000", "message": "HTTP Status Response - Unauthorized", "errorType": "security"}'
+  - name: merchant_missing
+    status: 422
+    sentence: "Refused: merchantAccount missing"
+    body: '{"status": 422, "errorCode": "905_1", "message": "Required field ''merchantAccount'' is not provided.", "errorType": "validation"}'
+  - name: invalid_merchant
+    status: 403
+    sentence: "Refused: merchant account {{ body.merchantAccount }}"
+    body: '{"status": 403, "errorCode": "901", "message": "Invalid Merchant Account", "errorType": "security"}'
+  - name: amount_missing
+    status: 422
+    sentence: "Refused: amount missing"
+    body: '{"status": 422, "errorCode": "100", "message": "Required field ''amount'' is not provided.", "errorType": "validation"}'
+  - name: reference_missing
+    status: 422
+    sentence: "Refused: reference missing"
+    body: '{"status": 422, "errorCode": "130", "message": "Required field ''reference'' is not provided.", "errorType": "validation"}'
+  - name: return_url_missing
+    status: 422
+    sentence: "Refused: returnUrl missing"
+    body: '{"status": 422, "errorCode": "14_0", "message": "Required field ''returnUrl'' is not provided.", "errorType": "validation"}'
+  - name: payment_method_missing
+    status: 422
+    sentence: "Refused: paymentMethod missing"
+    body: '{"status": 422, "errorCode": "14_030", "message": "Required field ''paymentMethod'' is not provided.", "errorType": "validation"}'
+  - name: invalid_details
+    status: 422
+    sentence: "Refused: redirectResult unknown"
+    body: '{"status": 422, "errorCode": "14_018", "message": "Invalid payment details", "errorType": "validation"}'
+  - name: original_psp_unknown
+    status: 422
+    sentence: "Refused: no payment {{ path.psp }}"
+    body: '{"status": 422, "errorCode": "167", "message": "Original pspReference required for this operation", "errorType": "validation"}'
+  - name: too_many_requests
+    status: 429
+    note: exists only to be forced
+    sentence: "Too many requests (429)"
+    body: '{"status": 429, "errorCode": "429", "message": "Too many requests", "errorType": "rateLimit"}'
+  - name: internal_error
+    status: 500
+    note: exists only to be forced
+    sentence: "Adyen internal error (500)"
+    body: '{"status": 500, "errorCode": "905", "message": "Payment details are not supported", "errorType": "configuration"}'
+data:
+  # The merchant account, where webhooks go (with their Basic auth), and the webhook HMAC key (hex).
+  settings:
+    - {merchant_account: AcmeECOM, webhook_url: 'http://localhost:3000/adyen/webhooks', webhook_user: acme-adyen-hooks, webhook_password: hooks-pass-2026, hmac_key: 44782DEF547AAA06C910C43932B1EB0C71FC68D9D0C057550C48EC2ACF6BA056}
+  # holderName → the refusal Adyen's test environment answers for it.
+  refusals:
+    - {holder_name: DECLINED, reason: Refused, code: '2'}
+    - {holder_name: NOT_ENOUGH_BALANCE, reason: Not enough balance, code: '12'}
+    - {holder_name: CVC_DECLINED, reason: CVC Declined, code: '24'}
+    - {holder_name: EXPIRED_CARD, reason: Expired Card, code: '6'}
+    - {holder_name: FRAUD, reason: FRAUD, code: '20'}

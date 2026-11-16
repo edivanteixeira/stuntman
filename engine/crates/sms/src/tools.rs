@@ -164,7 +164,7 @@ pub fn all() -> Vec<Tool> {
         // ---------------------------------------------------------------- SM3 service
         Tool::new("get_sms_service", "The service block (sms/service.yaml): API shape, access, senders, callbacks, opt-out keywords, limits, declared templates; plus the base URL for the app.", |ctx, _a| async move {
             let s = config::service(&ctx)?;
-            let base = format!("http://{}{}/zenvia", ctx.host, ctx.prefix());
+            let base = format!("{}/zenvia", ctx.app_url(stuntman_core::main_port()));
             Ok(json!({"service": s, "yaml": config::text(&ctx, "service.yaml"), "baseUrl": base, "apiUrl": format!("{base}/v2/channels/{{0}}/messages"),
                 "callbackDefault": ctx.state.callback_default(), "optOuts": store::optouts(&ctx).await?, "forced": stuntman_core::force::get(&ctx, "sms").await?}))
         }).route("GET", "/sms/service"),

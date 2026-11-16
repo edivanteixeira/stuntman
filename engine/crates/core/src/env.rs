@@ -22,6 +22,14 @@ pub struct EnvFile {
     pub base_domain: String,
     /// Real provider host names Stuntman answers for (with the test CA), e.g. gateway.apiserpro.gov.br.
     pub real_hosts: Vec<String>,
+    /// The address browsers use for this environment's main port, e.g. https://stuntman-a.example.com
+    /// or https://stuntman.example.com/e/a. Identity's issuer and discovery use it whatever address
+    /// a call came by, so a token made through the browser is valid for the app too.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub public_url: String,
+    /// Real e-mail domains identity accepts for people of this environment (synthetic only by default).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub allowed_email_domains: Vec<String>,
     pub callbacks: Callbacks,
     /// kept | expires | pr_closed
     pub lifetime: String,
@@ -70,6 +78,12 @@ impl EnvState {
     }
     pub fn callback_default(&self) -> String {
         self.file.read().unwrap().callbacks.default.clone()
+    }
+    /// A base domain someone chose (a DNS zone, a .localhost name), not the automatic
+    /// <name>.stuntman.local that needs /etc/hosts lines: apps reach this one by name.
+    pub fn own_domain(&self) -> Option<String> {
+        let b = self.file.read().unwrap().base_domain.clone();
+        (!b.is_empty() && !b.ends_with(SUFFIX)).then_some(b)
     }
 }
 
@@ -131,6 +145,12 @@ impl Envs {
             let f = c.state.file.read().unwrap();
             let base = f.base_domain.to_lowercase();
             if h == base || h.ends_with(&format!(".{base}")) || f.real_hosts.iter().any(|x| x.eq_ignore_ascii_case(&h)) {
+                return Some(c.clone());
+            }
+        }
+        // <name>.localhost and anything under it: resolves to loopback with no hosts entry.
+        if let Some(n) = h.strip_suffix(".localhost").map(|r| r.rsplit('.').next().unwrap_or(r)) {
+            if let Some(c) = r.map.get(n) {
                 return Some(c.clone());
             }
         }

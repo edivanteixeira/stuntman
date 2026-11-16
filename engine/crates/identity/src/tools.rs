@@ -90,7 +90,7 @@ pub fn all() -> Vec<Tool> {
             let b = token::base(&ctx, &p);
             Ok(json!({"created": created, "authority": token::issuer(&ctx, &p), "provider": p.name,
                 "saml": p.saml.as_ref().map(|_| json!({"metadata": format!("{b}/saml/metadata"), "sso": format!("{b}/saml/sso"), "entityId": crate::saml::entity_id(&ctx, &p)})),
-                "ldap": p.ldap.as_ref().map(|_| json!({"url": format!("ldap://localhost:{}", std::env::var("STUNTMAN_LDAP_PORT").unwrap_or("3389".into())), "baseDn": p.base_dn(), "bindDn": format!("uid=<user>,ou=people,{}", p.base_dn())})),
+                "ldap": p.ldap.as_ref().map(|_| json!({"url": format!("ldap://{}:{}", ctx.app_host().0, std::env::var("STUNTMAN_LDAP_PORT").unwrap_or("3389".into())), "baseDn": p.base_dn(), "bindDn": format!("uid=<user>,ou=people,{}", p.base_dn())})),
                 "passwordGrant": p.password_grant}))
         }).req("name", "provider id, e.g. entra").param("tenant", "contoso-stg").param("flavour", "entra-v2 | google | okta | oidc").param("other_tenants", "[fabrikam-stg]")
           .param("saml", "bool: SAML 2.0 IdP").param("saml_sign_response", "bool").param("saml_sign_assertion", "bool (default true)").param("saml_name_id", "email | oid | upn")
@@ -162,7 +162,7 @@ pub fn all() -> Vec<Tool> {
             let existing = p.user(&id).cloned();
             let mut u = existing.clone().unwrap_or(User { id: id.to_lowercase().replace(' ', "."), tenant: p.tenant.clone(), enabled: true, ..Default::default() });
             if let Some(x) = a.str("name") { u.name = x; }
-            if let Some(x) = a.str("email") { if existing.as_ref().map(|e| e.email != x).unwrap_or(true) { config::email_ok(&x)?; } u.email = x; }
+            if let Some(x) = a.str("email") { if existing.as_ref().map(|e| e.email != x).unwrap_or(true) { config::email_ok(&x, &ctx.state.file.read().unwrap().allowed_email_domains)?; } u.email = x; }
             if u.name.is_empty() { u.name = id.clone(); }
             if u.email.is_empty() { return Err(ApiError::bad("email: a synthetic address, e.g. emma.carter@contoso.example.com")); }
             if let Some(x) = a.str("tenant") { u.tenant = x; }
@@ -296,7 +296,7 @@ pub fn all() -> Vec<Tool> {
                 "lifetimes": p.lifetimes, "provoke": p.provoke, "file": config::file_name(&p.name), "yaml": config::text(&ctx, &p.name),
                 "flavours": config::FLAVOURS.iter().map(|(k, l)| json!({"id": k, "label": l})).collect::<Vec<_>>(),
                 "saml": p.saml.as_ref().map(|sm| json!({"metadata": format!("{b}/saml/metadata"), "sso": format!("{b}/saml/sso"), "entityId": crate::saml::entity_id(&ctx, &p), "signAssertion": sm.sign_assertion, "signResponse": sm.sign_response, "nameId": sm.name_id})),
-                "ldap": p.ldap.as_ref().map(|l| json!({"url": format!("ldap://localhost:{}", std::env::var("STUNTMAN_LDAP_PORT").unwrap_or("3389".into())), "baseDn": p.base_dn(), "provoke": l.provoke})),
+                "ldap": p.ldap.as_ref().map(|l| json!({"url": format!("ldap://{}:{}", ctx.app_host().0, std::env::var("STUNTMAN_LDAP_PORT").unwrap_or("3389".into())), "baseDn": p.base_dn(), "provoke": l.provoke})),
                 "passwordGrant": p.password_grant, "tokenEndpoint": format!("{b}/oauth2/v2.0/token"),
                 "botframework": {"openid": format!("{}/v1/.well-known/openidconfiguration", crate::botframework::base(&ctx)), "connector": format!("{}/connector/", crate::botframework::base(&ctx))}}))
         }).param("provider", "provider").route("GET", "/identity/{provider}/tenant"),

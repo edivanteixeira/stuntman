@@ -252,11 +252,15 @@ pub fn text(ctx: &Ctx, name: &str) -> String {
 }
 
 /// A synthetic-looking email domain only: real public domains are refused for new users.
-pub fn email_ok(e: &str) -> Result<(), ApiError> {
+pub fn email_ok(e: &str, allowed: &[String]) -> Result<(), ApiError> {
     let d = e.rsplit_once('@').map(|x| x.1.to_lowercase()).ok_or_else(|| ApiError::bad("Email: name@domain"))?;
+    // Real domains the environment lists (allowed_email_domains): its app only signs in people it knows.
+    if allowed.iter().any(|a| { let a = a.trim().trim_start_matches('@').to_lowercase(); !a.is_empty() && (d == a || d.ends_with(&format!(".{a}"))) }) {
+        return Ok(());
+    }
     let synthetic = ["example.com", "example.org", "example.net", ".example.com", ".example", ".test", ".localhost", "ejemplo.com", ".invalid"];
     if synthetic.iter().any(|s| if s.starts_with('.') { d.ends_with(s) } else { d == *s || d.ends_with(&format!(".{s}")) }) { Ok(()) }
-    else { Err(ApiError::bad("Synthetic people only: use a domain under example.com (e.g. contoso.example.com)")) }
+    else { Err(ApiError::bad("Synthetic people only: use a domain under example.com (e.g. contoso.example.com), or list the real domain in the environment's allowed_email_domains")) }
 }
 
 /// A stable GUID from a seed (oid, tenant id), so files stay readable and ids never change.
@@ -271,8 +275,11 @@ pub fn guid(seed: &str) -> String {
 mod t {
     #[test]
     fn emails_and_guids() {
-        assert!(super::email_ok("emma.carter@contoso.example.com").is_ok());
-        assert!(super::email_ok("someone@gmail.com").is_err());
+        assert!(super::email_ok("emma.carter@contoso.example.com", &[]).is_ok());
+        assert!(super::email_ok("someone@gmail.com", &[]).is_err());
+        assert!(super::email_ok("someone@acme.test.org", &["acme.test.org".into()]).is_ok());
+        assert!(super::email_ok("someone@mail.acme.test.org", &["acme.test.org".into()]).is_ok());
+        assert!(super::email_ok("someone@notacme.test.org", &["acme.test.org".into()]).is_err());
         assert_eq!(super::guid("a"), super::guid("a"));
         assert_eq!(super::guid("a").len(), 36);
     }

@@ -20,9 +20,15 @@ use crate::{config, ingest};
 trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
 
-/// Listeners by "<env>/<service>", so a port change or "intake off" takes effect at once.
-fn listeners() -> &'static Mutex<HashMap<String, (u16, JoinHandle<()>)>> {
-    static L: OnceLock<Mutex<HashMap<String, (u16, JoinHandle<()>)>>> = OnceLock::new();
+/// One listener per port. Several environments (or services) may want the same port: then a
+/// session finds its environment by the SMTP login (or the STARTTLS server name).
+struct PortL {
+    handle: JoinHandle<()>,
+    members: Arc<Mutex<Vec<(Ctx, String)>>>,
+}
+
+fn ports() -> &'static Mutex<HashMap<u16, PortL>> {
+    static L: OnceLock<Mutex<HashMap<u16, PortL>>> = OnceLock::new();
     L.get_or_init(Default::default)
 }
 
@@ -32,54 +38,197 @@ pub fn bind_errors() -> &'static Mutex<HashMap<String, String>> {
     E.get_or_init(Default::default)
 }
 
-/// Starts, moves or stops listeners to match the service files.
 pub fn key(ctx: &Ctx, service: &str) -> String {
     format!("{}/{service}", ctx.env)
 }
 
+/// The environments listening on a port, by name.
+pub fn sharers(port: u16) -> Vec<String> {
+    let l = ports().lock().unwrap();
+    let mut v: Vec<String> = l.get(&port).map(|p| p.members.lock().unwrap().iter().map(|(c, _)| c.env.to_string()).collect()).unwrap_or_default();
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// Starts, joins, leaves or stops listeners to match this environment's service files.
 pub async fn reconcile(ctx: &Ctx) {
     let svcs = if ctx.state.gone() { vec![] } else { config::list(ctx).unwrap_or_default() };
-    let want: HashMap<String, u16> = svcs.iter().filter(|s| s.intake.smtp.access.on).map(|s| (key(ctx, &s.name), s.intake.smtp.port)).collect();
-    let mine = format!("{}/", ctx.env);
-    let mut l = listeners().lock().unwrap();
-    l.retain(|name, (port, h)| {
-        let keep = !name.starts_with(&mine) || want.get(name) == Some(port);
+    let want: HashMap<String, u16> = svcs.iter().filter(|s| s.intake.smtp.access.on).map(|s| (s.name.clone(), s.intake.smtp.port)).collect();
+    let mut l = ports().lock().unwrap();
+    // Leave the ports this environment no longer wants; a port nobody wants closes.
+    l.retain(|port, pl| {
+        let mut m = pl.members.lock().unwrap();
+        m.retain(|(c, svc)| c.env != ctx.env || want.get(svc) == Some(port));
+        let keep = !m.is_empty();
         if !keep {
-            h.abort();
+            pl.handle.abort();
         }
         keep
     });
-    for (name, port) in want {
-        if l.contains_key(&name) {
+    for (svc, port) in want {
+        let k = key(ctx, &svc);
+        if let Some(pl) = l.get(&port) {
+            let mut m = pl.members.lock().unwrap();
+            if !m.iter().any(|(c, s)| c.env == ctx.env && *s == svc) {
+                m.push((ctx.clone(), svc));
+            }
+            bind_errors().lock().unwrap().remove(&k);
             continue;
         }
         let std = match std::net::TcpListener::bind(("0.0.0.0", port)) {
             Ok(s) => s,
             Err(e) => {
-                // Held by another service of this Stuntman: say which, not just "address in use".
-                let why = match l.iter().find(|(_, (p, _))| *p == port) {
-                    Some((other, _)) => format!("port {port} is taken by {} in this Stuntman; pick another port", other.replace('/', " / ")),
-                    None => format!("port {port}: {e}"),
-                };
-                bind_errors().lock().unwrap().insert(name.clone(), why);
+                bind_errors().lock().unwrap().insert(k, format!("port {port}: {e}"));
                 continue;
             }
         };
-        bind_errors().lock().unwrap().remove(&name);
+        bind_errors().lock().unwrap().remove(&k);
         std.set_nonblocking(true).unwrap();
         let listener = TcpListener::from_std(std).unwrap();
-        let (ctx2, n2) = (ctx.clone(), name.split_once('/').map(|x| x.1).unwrap_or(&name).to_string());
-        let h = tokio::spawn(async move {
+        let members = Arc::new(Mutex::new(vec![(ctx.clone(), svc)]));
+        let m2 = members.clone();
+        let handle = tokio::spawn(async move {
             loop {
                 let Ok((sock, _)) = listener.accept().await else { continue };
-                let (c, n) = (ctx2.clone(), n2.clone());
+                let cands = m2.lock().unwrap().clone();
                 tokio::spawn(async move {
-                    let _ = session(c, n, sock).await;
+                    let _ = match cands.len() {
+                        0 => Ok(()),
+                        1 => {
+                            let (c, n) = cands.into_iter().next().unwrap();
+                            session(c, n, BufReader::new(Box::new(sock) as Box<dyn Io>), None).await
+                        }
+                        _ => shared(cands, sock).await,
+                    };
                 });
             }
         });
-        l.insert(name, (port, h));
+        l.insert(port, PortL { handle, members });
     }
+}
+
+/// What a session on a shared port already did before its environment was known.
+struct Started {
+    tls_on: bool,
+    authed: String,
+}
+
+/// A port several environments share: greet, offer what any of them offers, and pick the
+/// environment from the AUTH user (<env> or <env>/<service>) or the STARTTLS server name.
+async fn shared(cands: Vec<(Ctx, String)>, sock: TcpStream) -> std::io::Result<()> {
+    let names: Vec<String> = { let mut v: Vec<String> = cands.iter().map(|(c, _)| c.env.to_string()).collect(); v.sort(); v.dedup(); v };
+    let host = cands[0].0.host.to_string();
+    let svcs: Vec<Option<config::Service>> = cands.iter().map(|(c, n)| config::get(c, n).ok()).collect();
+    let starttls = svcs.iter().flatten().any(|s| s.intake.smtp.starttls);
+    let size = svcs.iter().flatten().map(|s| s.limits.size_bytes()).max().unwrap_or(10 << 20);
+    let mut rd = BufReader::new(Box::new(sock) as Box<dyn Io>);
+    rd.get_mut().write_all(format!("220 {host} ESMTP Stuntman (shared by {}: log in with the environment's name)\r\n", names.join(", ")).as_bytes()).await?;
+    let mut tls_on = false;
+    let mut sni: Option<String> = None;
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if rd.read_line(&mut line).await? == 0 {
+            return Ok(());
+        }
+        let cmd = line.trim_end().to_string();
+        let up = cmd.to_uppercase();
+        if up.starts_with("EHLO") || up.starts_with("HELO") {
+            let helo = cmd.get(5..).unwrap_or("").trim().to_string();
+            let w = rd.get_mut();
+            if up.starts_with("HELO") {
+                w.write_all(format!("250 {host}\r\n").as_bytes()).await?;
+            } else {
+                let mut caps = vec![format!("{host} hello {helo}"), format!("SIZE {size}"), "8BITMIME".into(), "PIPELINING".into()];
+                if starttls && !tls_on { caps.push("STARTTLS".into()); }
+                caps.push("AUTH PLAIN LOGIN".into());
+                for (i, c) in caps.iter().enumerate() {
+                    w.write_all(format!("250{}{c}\r\n", if i + 1 == caps.len() { ' ' } else { '-' }).as_bytes()).await?;
+                }
+            }
+        } else if up == "STARTTLS" && starttls && !tls_on {
+            rd.get_mut().write_all(b"220 2.0.0 Ready to start TLS\r\n").await?;
+            rd.get_mut().flush().await?;
+            let stream = tls().accept(rd.into_inner()).await?;
+            sni = stream.get_ref().1.server_name().map(|s| s.to_lowercase());
+            rd = BufReader::new(Box::new(stream) as Box<dyn Io>);
+            tls_on = true;
+        } else if up.starts_with("AUTH") {
+            let Some((user, pass)) = read_auth(&cmd, &mut rd, &mut line).await? else { continue };
+            // <env>, <env>/<service>; else the STARTTLS name's environment.
+            let (env, svc) = user.split_once('/').map(|(e, s)| (e.to_lowercase(), Some(s.to_string()))).unwrap_or((user.to_lowercase(), None));
+            let by_sni = sni.as_deref().and_then(|h| cands[0].0.envs.by_host(Some(h))).map(|c| c.env.to_string());
+            let pick = cands.iter().position(|(c, s)| *c.env == *env && svc.as_ref().map(|x| x == s).unwrap_or(true))
+                .or_else(|| by_sni.as_ref().and_then(|e| cands.iter().position(|(c, _)| *c.env == **e)));
+            let w = rd.get_mut();
+            let Some(i) = pick else {
+                w.write_all(format!("535 5.7.8 No environment “{user}” on this port; log in as one of: {}\r\n", names.join(", ")).as_bytes()).await?;
+                continue;
+            };
+            let (ctx, name) = cands[i].clone();
+            let ok = svcs[i].as_ref().map(|s| s.intake.smtp.access.mode != "validate" || key_ok(&s.intake.smtp.access, &pass)).unwrap_or(false);
+            if !ok {
+                w.write_all(b"535 5.7.8 Authentication failed\r\n").await?;
+                continue;
+            }
+            w.write_all(b"235 2.7.0 Authentication successful\r\n").await?;
+            w.flush().await?;
+            return session(ctx, name, rd, Some(Started { tls_on, authed: user })).await;
+        } else if up == "NOOP" || up == "RSET" {
+            rd.get_mut().write_all(b"250 2.0.0 OK\r\n").await?;
+        } else if up == "QUIT" {
+            rd.get_mut().write_all(b"221 2.0.0 Bye\r\n").await?;
+            return Ok(());
+        } else if up.starts_with("MAIL") || up.starts_with("RCPT") || up == "DATA" {
+            rd.get_mut().write_all(format!("530 5.7.0 Log in first: this port serves {}; the SMTP user names the environment\r\n", names.join(", ")).as_bytes()).await?;
+        } else {
+            rd.get_mut().write_all(b"500 5.5.2 Command not recognized\r\n").await?;
+        }
+        rd.get_mut().flush().await?;
+    }
+}
+
+/// AUTH PLAIN or LOGIN, the user and password; None after answering a bad mechanism.
+async fn read_auth(cmd: &str, rd: &mut BufReader<Box<dyn Io>>, line: &mut String) -> std::io::Result<Option<(String, String)>> {
+    let parts: Vec<&str> = cmd.split_whitespace().collect();
+    let mech = parts.get(1).map(|s| s.to_uppercase()).unwrap_or_default();
+    Ok(Some(match mech.as_str() {
+        "PLAIN" => {
+            let b = match parts.get(2) {
+                Some(b) => b.to_string(),
+                None => {
+                    rd.get_mut().write_all(b"334 \r\n").await?;
+                    line.clear();
+                    rd.read_line(line).await?;
+                    line.trim().to_string()
+                }
+            };
+            let d = B64.decode(b.trim()).unwrap_or_default();
+            let f: Vec<&[u8]> = d.split(|c| *c == 0).collect();
+            (String::from_utf8_lossy(f.get(1).copied().unwrap_or(b"")).to_string(), String::from_utf8_lossy(f.get(2).copied().unwrap_or(b"")).to_string())
+        }
+        "LOGIN" => {
+            // .NET SmtpClient (and smtplib) send the user on the AUTH line itself.
+            let u = match parts.get(2) {
+                Some(b) => String::from_utf8_lossy(&B64.decode(b.trim()).unwrap_or_default()).to_string(),
+                None => {
+                    rd.get_mut().write_all(b"334 VXNlcm5hbWU6\r\n").await?;
+                    line.clear();
+                    rd.read_line(line).await?;
+                    String::from_utf8_lossy(&B64.decode(line.trim()).unwrap_or_default()).to_string()
+                }
+            };
+            rd.get_mut().write_all(b"334 UGFzc3dvcmQ6\r\n").await?;
+            line.clear();
+            rd.read_line(line).await?;
+            (u, String::from_utf8_lossy(&B64.decode(line.trim()).unwrap_or_default()).to_string())
+        }
+        _ => {
+            rd.get_mut().write_all(b"504 5.5.4 Use AUTH PLAIN or LOGIN\r\n").await?;
+            return Ok(None);
+        }
+    }))
 }
 
 pub(crate) fn tls() -> Arc<tokio_rustls::TlsAcceptor> {
@@ -104,18 +253,16 @@ pub fn key_ok(access: &config::Access, secret: &str) -> bool {
     access.keys.iter().any(|k| k.sha256 == h)
 }
 
-async fn session(ctx: Ctx, service: String, sock: TcpStream) -> std::io::Result<()> {
+async fn session(ctx: Ctx, service: String, mut rd: BufReader<Box<dyn Io>>, started: Option<Started>) -> std::io::Result<()> {
     if ctx.state.paused() {
-        let mut sock = sock;
-        return sock.write_all(b"421 4.3.2 This environment is paused in Stuntman
-").await;
+        return rd.get_mut().write_all(b"421 4.3.2 This environment is paused in Stuntman\r\n").await;
     }
     let Ok(svc) = config::get(&ctx, &service) else { return Ok(()) };
     let smtp = svc.intake.smtp.clone();
     let host = ctx.host.to_string();
-    let mut io: Box<dyn Io> = Box::new(sock);
     // Provoked: the provider is down.
     if smtp.access.mode == "refuse" {
+        let io = rd.get_mut();
         match smtp.access.how.as_deref().unwrap_or("timeout") {
             "refused" => return Ok(()),
             "timeout" => {
@@ -134,12 +281,13 @@ async fn session(ctx: Ctx, service: String, sock: TcpStream) -> std::io::Result<
         }
     }
     let break_tls = smtp.access.mode == "refuse" && smtp.access.how.as_deref() == Some("tls");
-    io.write_all(format!("220 {host} ESMTP Stuntman (stand-in for {service})\r\n").as_bytes()).await?;
-    let mut tls_on = false;
-    let mut authed: Option<String> = None;
+    let mut tls_on = started.as_ref().map(|s| s.tls_on).unwrap_or(false);
+    let mut authed: Option<String> = started.as_ref().map(|s| s.authed.clone());
+    if started.is_none() {
+        rd.get_mut().write_all(format!("220 {host} ESMTP Stuntman (stand-in for {service})\r\n").as_bytes()).await?;
+    }
     let mut from: Option<String> = None;
     let mut rcpts: Vec<String> = vec![];
-    let mut rd = BufReader::new(io);
     let mut line = String::new();
     loop {
         line.clear();
@@ -184,44 +332,7 @@ async fn session(ctx: Ctx, service: String, sock: TcpStream) -> std::io::Result<
             from = None;
             rcpts.clear();
         } else if up.starts_with("AUTH") {
-            let parts: Vec<&str> = cmd.split_whitespace().collect();
-            let mech = parts.get(1).map(|s| s.to_uppercase()).unwrap_or_default();
-            let (user, pass) = match mech.as_str() {
-                "PLAIN" => {
-                    let b = match parts.get(2) {
-                        Some(b) => b.to_string(),
-                        None => {
-                            w.write_all(b"334 \r\n").await?;
-                            line.clear();
-                            rd.read_line(&mut line).await?;
-                            line.trim().to_string()
-                        }
-                    };
-                    let d = B64.decode(b.trim()).unwrap_or_default();
-                    let f: Vec<&[u8]> = d.split(|c| *c == 0).collect();
-                    (String::from_utf8_lossy(f.get(1).copied().unwrap_or(b"")).to_string(), String::from_utf8_lossy(f.get(2).copied().unwrap_or(b"")).to_string())
-                }
-                "LOGIN" => {
-                    // .NET SmtpClient (and smtplib) send the user on the AUTH line itself.
-                    let u = match parts.get(2) {
-                        Some(b) => String::from_utf8_lossy(&B64.decode(b.trim()).unwrap_or_default()).to_string(),
-                        None => {
-                            rd.get_mut().write_all(b"334 VXNlcm5hbWU6\r\n").await?;
-                            line.clear();
-                            rd.read_line(&mut line).await?;
-                            String::from_utf8_lossy(&B64.decode(line.trim()).unwrap_or_default()).to_string()
-                        }
-                    };
-                    rd.get_mut().write_all(b"334 UGFzc3dvcmQ6\r\n").await?;
-                    line.clear();
-                    rd.read_line(&mut line).await?;
-                    (u, String::from_utf8_lossy(&B64.decode(line.trim()).unwrap_or_default()).to_string())
-                }
-                _ => {
-                    w.write_all(b"504 5.5.4 Use AUTH PLAIN or LOGIN\r\n").await?;
-                    continue;
-                }
-            };
+            let Some((user, pass)) = read_auth(&cmd, &mut rd, &mut line).await? else { continue };
             let w = rd.get_mut();
             if smtp.access.mode == "validate" && !key_ok(&smtp.access, &pass) {
                 w.write_all(b"535 5.7.8 Authentication failed\r\n").await?;

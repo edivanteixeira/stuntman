@@ -19,7 +19,7 @@ fn line(e: &Value) -> String {
     }
     let calls = api::n(c, "callsLastHour");
     let traffic = if calls > 0 {
-        format!("{} calls in the last hour", api::thousands(calls))
+        format!("{} call{} in the last hour", api::thousands(calls), if calls == 1 { "" } else { "s" })
     } else if c["lastCallAt"].is_null() {
         "no calls yet".into()
     } else {
@@ -30,7 +30,8 @@ fn line(e: &Value) -> String {
         format!("{} services · {traffic}", api::n(c, "services"))
     } else {
         let by = s(e, "createdBy").replace("api:", "").replace("mcp:", "");
-        format!("cloned from {}{} · {traffic}", label(&from), if by.is_empty() || by == "you" { String::new() } else { format!(" by {by}") })
+        let from = match from.strip_prefix("templates/") { Some(t) => format!("from template {t}"), None => format!("cloned from {}", label(&from)) };
+        format!("{from}{} · {traffic}", if by.is_empty() || by == "you" { String::new() } else { format!(" by {by}") })
     }
 }
 
@@ -53,12 +54,16 @@ pub fn List() -> impl IntoView {
     });
     let reset = RwSignal::new(false);
     let n_new = nav.clone();
+    // A shared Stuntman's root: each environment opens under /e/<name>/.
+    let root = api::shared_root();
+    let host = web_sys::window().and_then(|w| w.location().host().ok()).unwrap_or_default();
     view! {
         <div class="page">
             <div class="head">
                 <div class="top">
                     <h1>"Environments"</h1>
-                    <span class="sub">{move || format!("{} on this Stuntman · each with its own services, state and URLs", list.get().len())}</span>
+                    <span class="sub">{move || if root { format!("{host} · {} environments · each one opens under /e/<name>/", list.get().len()) }
+                        else { format!("{} on this Stuntman · each with its own services, state and URLs", list.get().len()) }}</span>
                     <span class="grow"></span>
                     <button class="btn primary" on:click=move |_| n_new("/environments/new", Default::default())>"New environment"</button>
                 </div>
@@ -72,16 +77,17 @@ pub fn List() -> impl IntoView {
                         let paused = e["paused"] == true;
                         let soon = expiring_soon(&e) || s(&e, "lifetime") == "expires";
                         view! {
-                            <div class="envcard" class:on=on on:click=move |_| sel.set(name.clone())>
+                            <div class="envcard" class:on=move || !root && on() on:click=move |_| if root { api::switch_env(&name, "/timeline") } else { sel.set(name.clone()) }>
                                 <div class="row">
                                     <span class="dot" class:paused=paused></span>
                                     <span class="nm">{label(&s(&e, "name"))}</span>
                                     <span class="state" class:attn=paused class:ok=!paused>{if paused { "paused" } else { "running" }}</span>
                                     <span class="grow"></span>
                                     <span class="small" class:attn=soon class:cap=!soon>{lifetime(&e)}</span>
+                                    {root.then(|| view! { <span class="link" style="margin-left:40px">"Open ›"</span> })}
                                 </div>
                                 <div class="l2 t2">{line(&e)}</div>
-                                <div class="mono small cap">{s(&e, "baseDomain")}</div>
+                                <div class="mono small cap">{if root { format!("/e/{}/", s(&e, "name")) } else { s(&e, "baseDomain") }}</div>
                             </div>
                         }
                     }).collect_view()}
@@ -95,9 +101,10 @@ pub fn List() -> impl IntoView {
                             </div>
                         }
                     })}
-                    <div class="small cap" style="margin-top:16px">"Environments are folders under environments/; each one can be paused, cloned or set to expire."</div>
+                    <div class="small cap" style="margin-top:16px">{if root { "The root of a shared Stuntman lists its environments. Everything of one environment (screens, API, MCP, sign-in pages) lives under /e/<name>/; reloading any page opens the same page." }
+                        else { "Environments are folders under environments/; each one can be paused, cloned or set to expire." }}</div>
                 </div>
-                <div class="side envside">
+                <div class="side envside" style:display=if root { "none" } else { "" }>
                     {move || {
                         let e = current.get();
                         if e.is_null() { return view! { <div class="cap">"Loading…"</div> }.into_any(); }
@@ -126,6 +133,7 @@ pub fn List() -> impl IntoView {
                                 <tr><td>"MCP"</td><td class="mono">{s(&a, "mcp")}</td></tr>
                                 <tr><td>"Control API"</td><td class="mono">{s(&a, "api")}</td></tr>
                                 <tr><td>"Without hosts entries"</td><td class="mono">{s(&a, "local")}</td></tr>
+                                {(!s(&e, "publicUrl").is_empty() || env.get_untracked()["shared"] == true).then(|| view! { <tr><td>"Browsers"</td><td class="mono">{s(&a, "public")}</td></tr> })}
                             </table>
                             <div class="caps" style="margin:22px 0 10px">"In it"</div>
                             <table class="kv2">

@@ -407,8 +407,11 @@ fn service_view(ctx: &Ctx, s: &config::Service) -> ToolResult {
         "service": s,
         "yaml": yaml,
         "file": format!("email/services/{}.yaml", s.name),
-        "sendgridUrl": format!("http://{}{}/sendgrid/v3/mail/send", ctx.host, ctx.prefix()),
-        "smtpAddress": format!("{}:{}", ctx.host.split(':').next().unwrap_or("localhost"), s.intake.smtp.port),
+        "sendgridUrl": format!("{}/sendgrid/v3/mail/send", ctx.app_url(stuntman_core::main_port())),
+        "smtpAddress": format!("{}:{}", ctx.app_host().0, s.intake.smtp.port),
+        // On a port several environments share, the SMTP user names the environment.
+        "smtpUser": crate::smtp::sharers(s.intake.smtp.port).len().gt(&1).then(|| ctx.env.to_string()),
+        "smtpSharedWith": crate::smtp::sharers(s.intake.smtp.port),
         "smtpError": smtp::bind_errors().lock().unwrap().get(&smtp::key(ctx, &s.name)).cloned(),
         "publicKey": ctx.signer.public_key_b64(),
         "eventTypes": config::EVENT_TYPES,

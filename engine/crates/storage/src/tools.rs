@@ -362,10 +362,16 @@ fn links_tools() -> Vec<Tool> {
                 ("presigned", auth::make_presigned(m, &host, &raw, &key, &secret, now, secs))
             };
             let url = format!("{base}?{q}");
+            let (acct2, cont2, path2) = (acct.clone(), cont.clone(), path.clone());
             let sig = auth::query(&q).into_iter().find(|(k, _)| k == "sig" || k == "X-Amz-Signature").map(|x| x.1).unwrap_or_default();
             let s = links::Seen { kind, sig, account: acct, container: cont, path, allows: allows.join(","), start: Some(now - 60_000), expiry: now + secs * 1000, ips, protocol: if kind == "sas" { "https,http".into() } else { String::new() }, signed_with: key, url: url.clone() };
             let id = links::insert(&ctx, &s, &who(&a)).await?;
-            Ok(link_view(&links::get(&ctx, &id).await?))
+            let mut v = link_view(&links::get(&ctx, &id).await?);
+            // The same link through the main port, for a browser that only reaches the public address.
+            if acc.kind == config::AZURE {
+                v["publicUrl"] = serde_json::json!(format!("{}/blob/{acct2}/{cont2}/{path2}?{q}", ctx.public_base()));
+            }
+            Ok(v)
         })
         .req("account", "account").req("container", "container").req("path", "path").param("allows", "read, write, delete, list (default read)").param("valid_for", "e.g. 1h (default)").param("ips", "an IP or a range a-b")
         .route("POST", "/storage/{account}/{container}/links/{*path}"),

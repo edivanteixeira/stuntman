@@ -6,8 +6,55 @@ use serde_json::Value;
 use wasm_bindgen::{closure::Closure, JsCast};
 
 thread_local! {
-    /// "/e/<name>" when the screen works on an environment chosen in the switcher, else "".
-    static PREFIX: std::cell::RefCell<String> = std::cell::RefCell::new(stored_env().map(|n| format!("/e/{n}")).unwrap_or_default());
+    /// "/e/<name>" when the screen works on an environment: the one in the page's address
+    /// (a shared Stuntman), else the one chosen in the switcher, else "".
+    static PREFIX: std::cell::RefCell<String> = std::cell::RefCell::new({
+        let b = path_base();
+        if b.is_empty() { stored_env().map(|n| format!("/e/{n}")).unwrap_or_default() } else { b }
+    });
+    /// The server has one public address (STUNTMAN_PUBLIC_URL): its root lists the environments.
+    static SHARED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// "/e/<name>" when the page was opened under that path, else "".
+pub fn path_base() -> String {
+    let p = web_sys::window().and_then(|w| w.location().pathname().ok()).unwrap_or_default();
+    match p.strip_prefix("/e/") {
+        Some(r) => { let n = r.split('/').next().unwrap_or(""); if n.is_empty() { String::new() } else { format!("/e/{n}") } }
+        None => String::new(),
+    }
+}
+
+pub fn set_shared(v: bool) {
+    SHARED.with(|s| s.set(v));
+}
+
+/// A shared Stuntman's root: no environment chosen, the list of them instead.
+pub fn shared_root() -> bool {
+    SHARED.with(|s| s.get()) && path_base().is_empty()
+}
+
+/// Under /e/<name>/ the router has that base: a plain <a href="/x"> would leave it and load the
+/// root. One capturing listener puts the base in front before the router (or the browser, for a
+/// new tab or a copied link) reads the address.
+pub fn keep_links_under_base() {
+    let base = path_base();
+    if base.is_empty() {
+        return;
+    }
+    let f = Closure::<dyn FnMut(web_sys::Event)>::new(move |e: web_sys::Event| {
+        let Some(a) = e.target().and_then(|t| t.dyn_into::<web_sys::Element>().ok()).and_then(|el| el.closest("a[href]").ok().flatten()) else { return };
+        let Some(h) = a.get_attribute("href") else { return };
+        if h.starts_with('/') && !h.starts_with("//") && !h.starts_with("/e/") {
+            let _ = a.set_attribute("href", &format!("{base}{h}"));
+        }
+    });
+    if let Some(d) = web_sys::window().and_then(|w| w.document()) {
+        for ev in ["click", "auxclick", "contextmenu", "mousedown", "focusin"] {
+            let _ = d.add_event_listener_with_callback_and_bool(ev, f.as_ref().unchecked_ref(), true);
+        }
+    }
+    f.forget();
 }
 
 const ENV_KEY: &str = "stuntman.env";
@@ -21,13 +68,16 @@ pub fn stored_env() -> Option<String> {
     storage()?.get_item(ENV_KEY).ok()?.filter(|s| !s.is_empty())
 }
 
-/// Opens another environment: every screen, the live stream and the rail start over on it.
+/// Opens another environment: every screen, the live stream and the rail start over on it. On a
+/// shared Stuntman (or a page under /e/<name>/) the environment is in the address: /e/<name><path>.
 pub fn switch_env(name: &str, path: &str) {
+    let in_path = SHARED.with(|s| s.get()) || !path_base().is_empty();
     if let Some(s) = storage() {
-        let _ = if name.is_empty() { s.remove_item(ENV_KEY) } else { s.set_item(ENV_KEY, name) };
+        let _ = if name.is_empty() || in_path { s.remove_item(ENV_KEY) } else { s.set_item(ENV_KEY, name) };
     }
+    let to = if in_path { if name.is_empty() { "/".to_string() } else { format!("/e/{name}{path}") } } else { path.to_string() };
     if let Some(w) = web_sys::window() {
-        let _ = w.location().assign(path);
+        let _ = w.location().assign(&to);
     }
 }
 

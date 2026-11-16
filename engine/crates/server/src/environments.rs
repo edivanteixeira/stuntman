@@ -175,6 +175,9 @@ pub async fn view(ctx: &Ctx) -> Value {
     let state_bytes = ctx.db.size() + stuntman_telemetry::db(ctx).size();
     let base = f.base_domain.clone();
     let local = format!("http://{}{}", s.host, ctx.prefix());
+    let public = ctx.public_base();
+    let public_set = !f.public_url.is_empty() || stuntman_core::shared_public_url().is_some();
+    let (app_host, app_prefix) = ctx.app_host();
     let (otlp, _) = stuntman_telemetry::ports();
     let state = if f.paused { "paused" } else { "running" };
     json!({
@@ -182,14 +185,18 @@ pub async fn view(ctx: &Ctx) -> Value {
         "default": s.envs.default_name() == *ctx.env,
         "lifetime": f.lifetime, "expiresAt": f.expires_at, "createdAt": f.created_at, "createdBy": f.created_by, "clonedFrom": f.cloned_from,
         "baseDomain": base, "realHosts": f.real_hosts, "callbacks": {"default": f.callbacks.default},
+        "publicUrl": f.public_url, "allowedEmailDomains": f.allowed_email_domains,
         "addresses": {
             "services": format!("*.{base}"),
             "callbacks": f.callbacks.default,
-            "mcp": format!("http://{base}:{}/mcp", s.port),
-            "api": format!("http://{base}:{}/api", s.port),
+            // With a public address (its own or the server's) people and agents use that one.
+            "mcp": if public_set { format!("{public}/mcp") } else { format!("http://{base}:{}/mcp", s.port) },
+            "api": if public_set { format!("{public}/api") } else { format!("http://{base}:{}/api", s.port) },
             "otlp": format!("http://{base}:{otlp}"),
             "local": local,
             "localMcp": format!("{local}/mcp"),
+            "public": public, "publicMcp": format!("{public}/mcp"),
+            "apps": if app_prefix.is_empty() { format!("<service>.{app_host}") } else { format!("http://{app_host}:{}{app_prefix}", s.port) },
         },
         "counts": {"services": services.len() + 2, "inboxes": email_inboxes + hook_inboxes, "callsLastHour": calls, "lastCallAt": last, "scenarios": 0},
         "services": services.iter().map(|v| json!({"name": v["service"]["name"], "kind": "email", "callback": v["service"]["events"]["to"]})).collect::<Vec<_>>(),
@@ -263,6 +270,88 @@ fn smtp_ports_in_use() -> Vec<u16> {
     v
 }
 
+pub fn templates_dir() -> PathBuf {
+    srv().root.join("templates")
+}
+
+/// ${name}-style values in a text: lowercase letters, digits and underscores.
+fn vars_in(text: &str) -> Vec<String> {
+    let mut out = vec![];
+    let mut rest = text;
+    while let Some(i) = rest.find("${") {
+        rest = &rest[i + 2..];
+        if let Some(j) = rest.find('}') {
+            let k = &rest[..j];
+            if !k.is_empty() && k.len() <= 40 && k.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') && !out.iter().any(|x| x == k) {
+                out.push(k.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Text files of a folder (no databases), with their path relative to it.
+fn text_files(root: &Path) -> Vec<(PathBuf, String)> {
+    let mut out = vec![];
+    fn walk(p: &Path, out: &mut Vec<(PathBuf, String)>) {
+        for e in std::fs::read_dir(p).into_iter().flatten().flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if !path.to_string_lossy().contains(".sqlite") && e.metadata().map(|m| m.len() < 4 << 20).unwrap_or(false) {
+                if let Ok(t) = std::fs::read_to_string(&path) {
+                    out.push((path, t));
+                }
+            }
+        }
+    }
+    walk(root, &mut out);
+    out
+}
+
+/// The ${…} values a folder uses: name → files.
+fn folder_vars(root: &Path) -> Vec<(String, Vec<String>)> {
+    let mut m: Vec<(String, Vec<String>)> = vec![];
+    for (path, t) in text_files(root) {
+        let rel = path.strip_prefix(root).unwrap_or(&path).display().to_string();
+        for v in vars_in(&t) {
+            match m.iter_mut().find(|(k, _)| *k == v) {
+                Some((_, f)) => f.push(rel.clone()),
+                None => m.push((v, vec![rel.clone()])),
+            }
+        }
+    }
+    m.sort_by(|a, b| a.0.cmp(&b.0));
+    m
+}
+
+/// Replaces each ${key} with its value in every text file of the folder.
+fn fill_vars(root: &Path, vars: &serde_json::Map<String, Value>) -> std::io::Result<()> {
+    for (path, t) in text_files(root) {
+        let mut n = t.clone();
+        for (k, v) in vars {
+            n = n.replace(&format!("${{{k}}}"), &v.as_str().map(String::from).unwrap_or_else(|| v.to_string()));
+        }
+        if n != t {
+            std::fs::write(&path, n)?;
+        }
+    }
+    Ok(())
+}
+
+fn url_ok(u: &str) -> Result<String, ApiError> {
+    let u = u.trim().trim_end_matches('/').to_string();
+    if u.is_empty() || ((u.starts_with("http://") || u.starts_with("https://")) && !u.contains(' ')) {
+        Ok(u)
+    } else {
+        Err(ApiError::bad("public_url: an address starting with https:// or http://, like https://stuntman.example.com/e/pr-5462"))
+    }
+}
+
+fn domains(a: &Args) -> Vec<String> {
+    a.list("allowed_email_domains").into_iter().map(|d| d.trim().trim_start_matches('@').to_lowercase()).filter(|d| !d.is_empty()).collect()
+}
+
 /// YAML files that don't parse, with their line (creating from a folder).
 fn problems(root: &Path) -> Vec<Value> {
     let mut out = vec![];
@@ -301,6 +390,12 @@ async fn create(a: Args) -> Result<Value, ApiError> {
     if let Some(bad) = copy.iter().find(|c| !COPY.contains(&c.as_str())) {
         return Err(ApiError::bad(format!("copy: {bad}? Use {}", COPY.join(", "))));
     }
+    if let Some(u) = a.str("public_url") {
+        url_ok(&u)?;
+    }
+    if let Some(b) = a.str("base_domain") {
+        base_domain_ok(&b, &name)?;
+    }
     let to = dir(&name);
     let mut f = EnvFile::new(&name);
     f.lifetime = lifetime;
@@ -309,7 +404,24 @@ async fn create(a: Args) -> Result<Value, ApiError> {
     let mut found = vec![];
     let mut moved = vec![];
     let source = srv().envs.get(&from);
+    // Not an environment: a template on this Stuntman (templates/<from>), else a folder.
+    let tpl = templates_dir().join(&from);
+    let template = (source.is_none() && from != "empty" && env::valid_name(&from) && tpl.is_dir()).then(|| from.clone());
+    let from = if template.is_some() { tpl.display().to_string() } else { from };
     let from_folder = source.is_none() && from != "empty";
+    // ${…} values: ${name} is always the new environment's name; the others come in vars.
+    let mut vars = a.get("vars").and_then(|v| v.as_object().cloned()).unwrap_or_default();
+    vars.insert("name".into(), json!(name));
+    if from_folder {
+        let p = PathBuf::from(&from);
+        if p.is_dir() {
+            let missing: Vec<Value> = folder_vars(&p).into_iter().filter(|(k, _)| !vars.contains_key(k)).map(|(k, f)| json!({"var": k, "files": f})).collect();
+            if !missing.is_empty() {
+                let names: Vec<String> = missing.iter().map(|m| format!("${{{}}}", m["var"].as_str().unwrap_or(""))).collect();
+                return Err(ApiError::bad(format!("{} has no value: add it to vars", names.join(", "))).with(json!({"missing": missing})));
+            }
+        }
+    }
     if let Some(src) = &source {
         f.cloned_from = src.env.to_string();
         let sf = src.state.file.read().unwrap().clone();
@@ -380,17 +492,44 @@ async fn create(a: Args) -> Result<Value, ApiError> {
             n.contains(".sqlite") || n == "environment.yaml"
         })
         .map_err(|e| ApiError::internal(format!("copying {from}: {e}")))?;
-        if let Ok(t) = std::fs::read_to_string(p.join("environment.yaml")) {
+        if let Ok(mut t) = std::fs::read_to_string(p.join("environment.yaml")) {
+            for (k, v) in &vars {
+                t = t.replace(&format!("${{{k}}}"), &v.as_str().map(String::from).unwrap_or_else(|| v.to_string()));
+            }
             if let Ok(g) = serde_yaml::from_str::<EnvFile>(&t) {
                 f.callbacks = g.callbacks;
                 f.real_hosts = g.real_hosts;
+                f.public_url = g.public_url;
+                f.allowed_email_domains = g.allowed_email_domains;
+                if !g.base_domain.is_empty() && !g.base_domain.ends_with(env::SUFFIX) {
+                    f.base_domain = g.base_domain;
+                }
             }
         }
-        f.cloned_from = from.clone();
+        fill_vars(&to, &vars).map_err(|e| ApiError::internal(format!("filling values: {e}")))?;
+        // E-mail services name their environment, as in a copy.
+        for e in std::fs::read_dir(to.join("email/services")).into_iter().flatten().flatten() {
+            if let Ok(mut y) = std::fs::read_to_string(e.path()).map(|t| serde_yaml::from_str::<serde_yaml::Value>(&t).unwrap_or_default()) {
+                if y.get("env").is_some() {
+                    y["env"] = name.clone().into();
+                    let _ = std::fs::write(e.path(), serde_yaml::to_string(&y).unwrap_or_default());
+                }
+            }
+        }
+        f.cloned_from = template.as_ref().map(|t| format!("templates/{t}")).unwrap_or(from.clone());
         found = problems(&to);
     }
     if let Some(c) = a.get("callbacks") {
         f.callbacks.default = c.get("default").and_then(|v| v.as_str()).or(c.as_str()).unwrap_or("").to_string();
+    }
+    if let Some(b) = a.str("base_domain") {
+        f.base_domain = base_domain_ok(&b, &name)?;
+    }
+    if let Some(u) = a.str("public_url") {
+        f.public_url = url_ok(&u)?;
+    }
+    if a.get("allowed_email_domains").is_some() {
+        f.allowed_email_domains = domains(&a);
     }
     write_file(&f)?;
     let ctx = open(&name)?;
@@ -421,14 +560,13 @@ async fn set(a: Args) -> Result<Value, ApiError> {
         }
     }
     if let Some(b) = a.str("base_domain") {
-        let b = b.trim().trim_end_matches('.').to_lowercase();
-        if b.is_empty() || b.contains('/') || b.contains(' ') {
-            return Err(ApiError::bad("base_domain: a host name like pr-5462.stuntman.local"));
-        }
-        if let Some(o) = srv().envs.all().into_iter().find(|c| c.env != ctx.env && c.state.file.read().unwrap().base_domain == b) {
-            return Err(ApiError::new(409, format!("{} already uses {b}", o.env)));
-        }
-        f.base_domain = b;
+        f.base_domain = base_domain_ok(&b, &ctx.env)?;
+    }
+    if let Some(u) = a.str("public_url") {
+        f.public_url = url_ok(&u)?;
+    }
+    if a.get("allowed_email_domains").is_some() {
+        f.allowed_email_domains = domains(&a);
     }
     if let Some(c) = a.get("callbacks") {
         f.callbacks.default = c.get("default").and_then(|v| v.as_str()).or(c.as_str()).unwrap_or("").trim().to_string();
@@ -449,6 +587,17 @@ async fn set(a: Args) -> Result<Value, ApiError> {
     }
     save(&ctx, f)?;
     Ok(view(&ctx).await)
+}
+
+fn base_domain_ok(b: &str, me: &str) -> Result<String, ApiError> {
+    let b = b.trim().trim_end_matches('.').to_lowercase();
+    if b.is_empty() || b.contains('/') || b.contains(' ') || b.contains(':') {
+        return Err(ApiError::bad("base_domain: a host name like pr-5462.stuntman.local"));
+    }
+    if let Some(o) = srv().envs.all().into_iter().find(|c| *c.env != *me && c.state.file.read().unwrap().base_domain == b) {
+        return Err(ApiError::new(409, format!("{} already uses {b}", o.env)));
+    }
+    Ok(b)
 }
 
 fn pause_file(f: &mut EnvFile, p: bool) {
@@ -518,6 +667,85 @@ fn hosts(ctx: &Ctx) -> String {
     lines.join("\n") + "\n"
 }
 
+/// What the app under test sets to talk to an environment. `base` (http://stuntman.svc) gives the
+/// path-prefix form for what can take it; Azure Blob, Service Bus, Key Vault and SMTP keep host names.
+async fn connections(ctx: &Ctx, base: Option<String>) -> Value {
+    let (host, prefix) = match base.as_deref().map(|b| b.trim().trim_end_matches('/')).filter(|b| !b.is_empty()) {
+        Some(b) => (b.split("://").nth(1).unwrap_or(b).split(['/', ':']).next().unwrap_or(b).to_string(), format!("/e/{}", ctx.env)),
+        None => ctx.app_host(),
+    };
+    let at = |port: u16| format!("http://{host}:{port}{prefix}");
+    let (app_host, _) = ctx.app_host();
+    let main = stuntman_core::main_port();
+    let mut items: Vec<Value> = vec![];
+    let mut add = |service: &str, name: &str, what: &str, key: &str, value: String| {
+        items.push(json!({"service": service, "name": name, "what": what, "key": key, "value": value}));
+    };
+    for svc in stuntman_email::config::list(ctx).unwrap_or_default() {
+        let port = svc.intake.smtp.port;
+        add("E-mail", &svc.name, "SMTP host", "SMTP_HOST", app_host.clone());
+        add("E-mail", &svc.name, "SMTP port", "SMTP_PORT", port.to_string());
+        if stuntman_email::smtp::sharers(port).len() > 1 {
+            add("E-mail", &svc.name, "SMTP user (names the environment)", "SMTP_USER", ctx.env.to_string());
+        }
+        add("E-mail", &svc.name, "SendGrid API", "SENDGRID_URL", format!("{}/sendgrid", at(main)));
+    }
+    for a in stuntman_storage::config::list(ctx) {
+        add("Storage", &a.account, "Connection string", "STORAGE_CONNECTION", stuntman_storage::ops::connection(ctx, &a));
+    }
+    for n in stuntman_messaging::config::list(ctx) {
+        add("Queues", &n.namespace, "Connection string", "QUEUES_CONNECTION", stuntman_messaging::tools::connection(ctx, &n));
+    }
+    for v in stuntman_keyvault::config::list(ctx) {
+        add("Key Vault", &v.name, "Vault URL", "KEYVAULT_URL", format!("https://{}:{}", stuntman_keyvault::config::host(ctx, &v.name), stuntman_keyvault::port()));
+    }
+    for p in stuntman_identity::config::list(ctx) {
+        add("Identity", &p.tenant, "Authority", "IDENTITY_AUTHORITY", format!("{}/v2.0", stuntman_identity::token::base(ctx, &p)));
+    }
+    if !stuntman_apis::plugin::all(ctx).is_empty() {
+        add("HTTP APIs", "base", "Base URL (then /<service>)", "APIS_URL", at(stuntman_apis::port()));
+    }
+    for i in call(ctx, "list_webhook_inboxes", json!({})).await["inboxes"].as_array().cloned().unwrap_or_default() {
+        let n = i["inbox"]["name"].as_str().unwrap_or("").to_string();
+        add("Webhooks", &n, "Inbox URL", "WEBHOOK_URL", format!("{}/in/{n}", at(stuntman_webhook::port())));
+    }
+    add("Telemetry", "OTLP", "OTLP endpoint (http/protobuf)", "OTEL_EXPORTER_OTLP_ENDPOINT", at(stuntman_telemetry::ports().0));
+    let public = ctx.public_base();
+    add("Stuntman", "MCP", "MCP endpoint", "STUNTMAN_MCP", format!("{public}/mcp"));
+    add("Stuntman", "API", "Control API", "STUNTMAN_API", format!("{public}/api"));
+    add("Stuntman", "Test CA", "Test CA (PEM)", "STUNTMAN_TEST_CA", format!("{public}/api/test-ca.pem"));
+    // One .env line each; a second item of the same kind gets its name in the key.
+    let mut seen = std::collections::HashMap::<String, usize>::new();
+    let mut lines = vec![format!("# Stuntman · environment {}", ctx.env)];
+    for it in &items {
+        let k = it["key"].as_str().unwrap_or("").to_string();
+        let n = seen.entry(k.clone()).or_insert(0);
+        *n += 1;
+        let key = if *n == 1 { k } else { format!("{k}_{}", it["name"].as_str().unwrap_or("").to_uppercase().replace(['-', '.', ' ', '/'], "_")) };
+        lines.push(format!("{key}={}", it["value"].as_str().unwrap_or("")));
+    }
+    json!({"environment": &*ctx.env, "base": base, "items": items, "env": lines.join("\n") + "\n"})
+}
+
+fn templates() -> Vec<Value> {
+    let mut out = vec![];
+    for e in std::fs::read_dir(templates_dir()).into_iter().flatten().flatten() {
+        let p = e.path();
+        if !p.is_dir() {
+            continue;
+        }
+        let vars: Vec<Value> = folder_vars(&p).into_iter().map(|(k, f)| json!({"var": k, "files": f, "auto": k == "name"})).collect();
+        let services = std::fs::read_dir(p.join("email/services")).into_iter().flatten().count()
+            + std::fs::read_dir(p.join("apis")).into_iter().flatten().count()
+            + std::fs::read_dir(p.join("identity")).into_iter().flatten().count();
+        let base = std::fs::read_to_string(p.join("environment.yaml")).ok().and_then(|t| serde_yaml::from_str::<serde_yaml::Value>(&t).ok())
+            .and_then(|y| y["base_domain"].as_str().map(String::from)).unwrap_or_default();
+        out.push(json!({"name": e.file_name().to_string_lossy(), "path": format!("templates/{}", e.file_name().to_string_lossy()), "vars": vars, "files": text_files(&p).len(), "services": services, "baseDomain": base}));
+    }
+    out.sort_by_key(|v| v["name"].as_str().unwrap_or("").to_string());
+    out
+}
+
 pub fn tools() -> Vec<Tool> {
     vec![
         Tool::new("list_environments", "Environments on this Stuntman: name, state, lifetime, services, addresses.", |_ctx, _a| async move {
@@ -541,7 +769,11 @@ pub fn tools() -> Vec<Tool> {
             |_ctx, a| create(a),
         )
         .req("name", "lowercase, numbers and dashes; becomes <name>.stuntman.local")
-        .param("from", "an environment name, \"empty\" (default) or a folder environments/<name> from a repository")
+        .param("from", "an environment name, a template (templates/<name> on this Stuntman), \"empty\" (default) or a folder")
+        .param("vars", "{\"domain\": \"preview.acme.example\"}: the ${…} values of a template or folder; ${name} is the new name")
+        .param("base_domain", "apps reach every service by name under it, e.g. pr-5462.stuntman.svc.local")
+        .param("public_url", "where browsers open it, e.g. https://stuntman.example.com/e/pr-5462 (sign-in pages and links use it)")
+        .param("allowed_email_domains", "list of real e-mail domains identity accepts for people (synthetic only by default)")
         .param("copy", "list: services, state, scenarios, inboxes, secrets")
         .param("expires", "never (default), 1h, 24h, 7d or pr_closed")
         .param("callbacks", "{\"default\": \"https://…\"}: where services send webhooks")
@@ -553,6 +785,9 @@ pub fn tools() -> Vec<Tool> {
             .param("paused", "true: every service answers 503, state kept")
             .param("base_domain", "e.g. stg-a.stuntman.local")
             .param("real_hosts", "list of real provider host names answered with the Stuntman Test CA")
+            .param("public_url", "where browsers open it (https://…); empty clears it")
+            .param("allowed_email_domains", "list of real e-mail domains identity accepts for people")
+            .param("expires", "same as lifetime: 1h, 24h, 72h, 7d, never")
             .param("version", "the version you read; a change made elsewhere since then answers 409")
             .route("PUT", "/environments/{name}"),
         Tool::new("pause_environment", "Pause (every service answers 503, nothing is stored, state kept) or resume.", |_ctx, a| async move {
@@ -599,6 +834,17 @@ pub fn tools() -> Vec<Tool> {
         Tool::new("delete_environment", "Delete an environment: services, state and history. Irreversible.", |_ctx, a| async move { delete(&a.need("name")?).await })
             .req("name", "environment name")
             .route("DELETE", "/environments/{name}"),
+        Tool::new("list_environment_templates", "Templates on this Stuntman (folders in templates/) and the ${…} values each one uses.", |_ctx, _a| async move {
+            Ok(json!({"templates": templates(), "folder": templates_dir().display().to_string()}))
+        })
+        .route("GET", "/environments/templates"),
+        Tool::new("get_connections", "What the app under test sets to reach this environment: connection strings and URLs, also as .env lines.", |_ctx, a| async move {
+            let ctx = find(&a.need("name")?)?;
+            Ok(connections(&ctx, a.str("base")).await)
+        })
+        .req("name", "environment name")
+        .param("base", "path-prefix form on this address, e.g. http://stuntman.stuntman.svc (default: the base domain)")
+        .route("GET", "/environments/{name}/connections"),
         Tool::new("get_environment_hosts", "Lines for /etc/hosts (or a DNS zone) so the environment's host names reach this Stuntman.", |_ctx, a| async move {
             let ctx = find(&a.need("name")?)?;
             Ok(json!({"hosts": hosts(&ctx)}))

@@ -5,9 +5,9 @@ Every action in Stuntman is one tool. Each tool is an **MCP tool** (same name) a
 
 _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit by hand._
 
-**391 tools** in 17 areas.
+**393 tools** in 17 areas.
 
-- [Environments and timeline](#environments-and-timeline) · 13 tools
+- [Environments and timeline](#environments-and-timeline) · 15 tools
 - [Email and mailboxes](#email-and-mailboxes) · 39 tools
 - [SMS](#sms) · 17 tools
 - [WhatsApp](#whatsapp) · 28 tools
@@ -31,12 +31,14 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 |---|---|---|---|---|
 | `list_environments` | `GET /api/environments` | — | — | Environments on this Stuntman: name, state, lifetime, services, addresses. |
 | `get_environment` | `GET /api/environments/{name}` | name | — | One environment: addresses, callbacks, real hosts, lifetime, paused, environment.yaml. |
-| `create_environment` | `POST /api/environments` | name | from, copy, expires, callbacks | Make an environment: from another one (a copy), "empty", or a folder; returns its addresses. copy picks what a copy takes: services, state, scenarios, inboxes, secrets (default: all but state). |
-| `set_environment` | `PUT /api/environments/{name}` | name | callbacks, lifetime, paused, base_domain, real_hosts, version | Change callbacks, lifetime, paused, base_domain or real_hosts (same keys as environment.yaml). |
+| `create_environment` | `POST /api/environments` | name | from, vars, base_domain, public_url, allowed_email_domains, copy, expires, callbacks | Make an environment: from another one (a copy), "empty", or a folder; returns its addresses. copy picks what a copy takes: services, state, scenarios, inboxes, secrets (default: all but state). |
+| `set_environment` | `PUT /api/environments/{name}` | name | callbacks, lifetime, paused, base_domain, real_hosts, public_url, allowed_email_domains, expires, version | Change callbacks, lifetime, paused, base_domain or real_hosts (same keys as environment.yaml). |
 | `pause_environment` | `POST /api/environments/{name}/pause` | name | paused | Pause (every service answers 503, nothing is stored, state kept) or resume. |
 | `extend_environment` | `POST /api/environments/{name}/extend` | name | by | Push an expiring environment's expiry (default 24 h from its current expiry or now). |
 | `reset_environment` | `POST /api/environments/{name}/reset` | name | — | Every service back to its seeds: traffic, deliveries, telemetry and temporary inboxes go; files and kept inboxes stay. |
 | `delete_environment` | `DELETE /api/environments/{name}` | name | — | Delete an environment: services, state and history. Irreversible. |
+| `list_environment_templates` | `GET /api/environments/templates` | — | — | Templates on this Stuntman (folders in templates/) and the ${…} values each one uses. |
+| `get_connections` | `GET /api/environments/{name}/connections` | name | base | What the app under test sets to reach this environment: connection strings and URLs, also as .env lines. |
 | `get_environment_hosts` | `GET /api/environments/{name}/hosts` | name | — | Lines for /etc/hosts (or a DNS zone) so the environment's host names reach this Stuntman. |
 | `timeline` | `GET /api/timeline` | — | range, to, from, sel_from, sel_to, service, who, show, q, limit, buckets | Everything that reached this environment's services in a window: rows (newest first), counts per service and per actor, activity lanes, and offline gaps. |
 | `get_timeline_row` | `GET /api/timeline/{id}` | id | — | One Timeline row and the rest of its journey (rows with the same trace id). |

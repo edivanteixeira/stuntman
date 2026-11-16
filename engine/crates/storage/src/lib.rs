@@ -63,6 +63,9 @@ impl Module for Storage {
 
     fn extra_routes(&self) -> Router<Ctx> {
         Router::new()
+            // Azure Blob reads on the main port (a public address's single host): a SAS link the
+            // app made for a browser works at <public url>/blob/<account>/<container>/<blob>?<sas>.
+            .route("/blob/{*rest}", get(public_blob).head(public_blob))
             .route("/api/storage/{account}/{container}/content/{*path}", get(content))
             .route("/api/services/{name}/accounts/{account}/yaml", get(|State(ctx): State<Ctx>, Path((_, a)): Path<(String, String)>| async move {
                 ([(header::CONTENT_TYPE, "application/yaml")], config::text(&ctx, &a).0).into_response()
@@ -122,4 +125,10 @@ async fn content(State(ctx): State<Ctx>, Path((account, container, path)): Path<
     let b = store::get(&ctx, &account, &container, &path, true).await?.ok_or_else(|| ApiError::not_found("No such object"))?;
     let name = path.rsplit('/').next().unwrap_or("file").replace('"', "");
     Ok(([(header::CONTENT_TYPE, b.ctype.clone()), (header::CONTENT_DISPOSITION, format!("inline; filename=\"{name}\""))], b.data))
+}
+
+async fn public_blob(State(ctx): State<Ctx>, Path(rest): Path<String>, mut req: axum::extract::Request) -> axum::response::Response {
+    let q = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+    *req.uri_mut() = format!("/e/{}/{rest}{q}", ctx.env).parse().unwrap_or_default();
+    azure::handle(State(ctx.envs.clone()), req).await
 }

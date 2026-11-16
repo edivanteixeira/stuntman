@@ -191,6 +191,20 @@ pub fn Service() -> impl IntoView {
                                         <div class="row small"><span class="mono t2">{format!("{}  ·  {}", s(&vw, "smtpAddress"), if sv["intake"]["smtp"]["starttls"] == true { "STARTTLS" } else { "no STARTTLS" })}</span>
                                             <button class="link plain" on:click={ let u = s(&vw, "smtpAddress"); move |_| ui::copy(&u, "Address") }>"Copy"</button></div>
                                         {(!s(&vw, "smtpError").is_empty()).then(|| view! { <div class="err">{format!("Not listening: {}", s(&vw, "smtpError"))}</div> })}
+                                        {(!s(&vw, "smtpUser").is_empty()).then(|| {
+                                            // Several environments share this port: the SMTP login names the environment.
+                                            let others = vw["smtpSharedWith"].as_array().cloned().unwrap_or_default().iter().filter_map(|x| x.as_str().map(String::from)).collect::<Vec<_>>();
+                                            let user = s(&vw, "smtpUser");
+                                            let (host, port) = s(&vw, "smtpAddress").rsplit_once(':').map(|(h, p)| (h.to_string(), p.to_string())).unwrap_or_default();
+                                            let lines = format!("Smtp__Host={host}\nSmtp__Port={port}\nSmtp__User={user}\nSmtp__Password=any");
+                                            view! {
+                                                <div class="small" style="margin-top:6px"><span class="chip">{format!("shared by {} environments", others.len())}</span>
+                                                    <span class="t2" style="margin-left:8px">{format!("{}: log in with the SMTP user {user}", others.join(", "))}</span></div>
+                                                <div class="small cap" style="margin-top:4px">"The password is anything, or one of this service's keys when keys are checked. Without a login the server answers 530 and says what to send."</div>
+                                                <pre class="mono small" style="margin:8px 0 0;padding:8px 10px;background:var(--subtle);border-radius:6px">{lines.clone()}</pre>
+                                                <button class="link plain small" on:click=move |_| ui::copy(&lines, "App settings")>"Copy"</button>
+                                            }
+                                        })}
                                         <div class="row small" style="margin-top:6px">
                                             <label class="check"><input type="checkbox" prop:checked=sv["intake"]["smtp"]["starttls"] == true on:change=move |e| smtp_opt(json!({"starttls": event_target_checked(&e)}))/>"Offer STARTTLS"</label>
                                             <span class="sep"></span><span class="t2">"Recipients"</span>

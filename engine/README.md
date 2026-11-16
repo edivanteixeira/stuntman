@@ -25,8 +25,8 @@ Stand-in for external providers. Services so far: **e-mail** (E1–E4), **webhoo
 - Environments: one process serves all of them. A request finds its environment by host name
   (`*.<env>.stuntman.local`, see `GET /api/environments/{name}/hosts`), by the `/e/<name>/` prefix on any HTTP port
   (`http://localhost:8025/e/pr-5462/mcp`, `…:8027/e/pr-5462/in/<inbox>`, `…:4318/e/pr-5462/v1/traces`), by the
-  `x-stuntman-env` gRPC metadata, or falls to the default one. SMTP ports belong to one environment: a copy moves
-  its SMTP services to free ports. A pipeline: `POST /api/environments {"name":"pr-5462","from":"stg-a","expires":"24h"}`.
+  `x-stuntman-env` gRPC metadata, or falls to the default one. Several environments can share an SMTP port: the
+  SMTP login (user `<env>`) names the environment; a copy still moves its SMTP services to free ports. A pipeline: `POST /api/environments {"name":"pr-5462","from":"stg-a","expires":"24h"}`.
 
 ## Running in Docker (a shared test environment)
 

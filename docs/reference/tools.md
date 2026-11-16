@@ -5,9 +5,9 @@ Every action in Stuntman is one tool. Each tool is an **MCP tool** (same name) a
 
 _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit by hand._
 
-**393 tools** in 17 areas.
+**399 tools** in 17 areas.
 
-- [Environments and timeline](#environments-and-timeline) · 15 tools
+- [Environments, timeline and access](#environments-timeline-and-access) · 21 tools
 - [Email and mailboxes](#email-and-mailboxes) · 39 tools
 - [SMS](#sms) · 17 tools
 - [WhatsApp](#whatsapp) · 28 tools
@@ -25,7 +25,7 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 - [Webhook inboxes](#webhook-inboxes) · 9 tools
 - [Telemetry (OpenTelemetry)](#telemetry-opentelemetry) · 25 tools
 
-## Environments and timeline
+## Environments, timeline and access
 
 | Tool | HTTP | Required | Optional | What it does |
 |---|---|---|---|---|
@@ -44,6 +44,12 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `get_timeline_row` | `GET /api/timeline/{id}` | id | — | One Timeline row and the rest of its journey (rows with the same trace id). |
 | `wait_for_timeline` | `POST /api/timeline/wait` | — | service, who, show, q, since, timeout | Waits until a row that matches appears (after `since`, default now) and returns it; 408 after the timeout. |
 | `usage` | `GET /api/usage` | — | — | Which services this environment's apps use: per service kind (email, whatsapp, sms, storage, queues, streams, pubsub, kinesis, files, keyvault, identity, apis, ai, events, webhooks, telemetry) the calls today and in the last 7 days, the last call, and live (a call in the last 5 minutes). Your own tool calls do not count. |
+| `whoami` | `GET /api/whoami` | — | — | Who this call is: a person (screen or agent), the admin key or an environment's token; where their MCP sessions start. |
+| `set_current_environment` | `PUT /api/users/{email}/current-environment` | email, environment | — | Where a person's new MCP sessions start (Use in MCP). People set their own; the admin key sets anyone's. |
+| `get_environment_token` | `GET /api/environments/{name}/token` | name | — | The environment's token for automation (only its /e/<name>/api and /e/<name>/mcp). People and the admin key only. |
+| `rotate_environment_token` | `POST /api/environments/{name}/token` | name | — | A new token for the environment's /e/<name>/api and /mcp; the old one stops at once. Shown once. |
+| `list_mcp_access` | `GET /api/mcp-access` | — | — | People's agents signed in to the central MCP: person, client, last used, expiry, where they start. |
+| `revoke_mcp_access` | `DELETE /api/mcp-access/{grant}` | — | grant, email | Ends an agent's access and refresh tokens at once: by grant id, or every grant of a person (email). |
 
 ## Email and mailboxes
 

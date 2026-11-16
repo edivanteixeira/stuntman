@@ -7,7 +7,7 @@ STR = r'"((?:[^"\\]|\\.)*)"'
 TOOL = re.compile(r'Tool::new\(\s*' + STR + r'\s*,\s*' + STR)
 CALL = re.compile(r'\.(req|param|route)\(\s*' + STR + r'\s*,\s*' + STR + r'\s*\)')
 AREAS = [  # (crate, title, file globs)
-    ("server", "Environments and timeline", ["crates/server/src/environments.rs", "crates/server/src/timeline.rs", "crates/server/src/main.rs"]),
+    ("server", "Environments, timeline and access", ["crates/server/src/environments.rs", "crates/server/src/timeline.rs", "crates/server/src/main.rs", "crates/server/src/auth.rs"]),
     ("email", "Email and mailboxes", ["crates/email/src/tools.rs", "crates/email/src/mailbox.rs"]),
     ("sms", "SMS", ["crates/sms/src/tools.rs"]),
     ("whatsapp", "WhatsApp", ["crates/whatsapp/src/tools.rs"]),

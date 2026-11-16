@@ -31,6 +31,24 @@ pub fn Settings() -> impl IntoView {
     let typed = RwSignal::new(String::new());
     let gone = RwSignal::new(false);
     let adding = RwSignal::new(false);
+    let me = expect_context::<crate::shell::Me>();
+    let token = RwSignal::new(String::new());
+    Effect::new(move |_| {
+        let n = name();
+        if me.person().is_some() {
+            leptos::task::spawn_local(async move { if let Ok(v) = api::get(&format!("/environments/{n}/token")).await { token.set(s(&v, "token")) } });
+        }
+    });
+    let rotate = move |_| { let n = name(); leptos::task::spawn_local(async move {
+        match api::send("POST", &format!("/environments/{n}/token"), json!({})).await { Ok(v) => { token.set(s(&v, "token")); ui::toast("New token: the old one stopped") } Err(e) => ui::toast_err(e) }
+    }) };
+    let use_in_mcp = move |_| { let n = name(); leptos::task::spawn_local(async move {
+        let Some(email) = me.person() else { return };
+        match api::send("PUT", &format!("/users/{}/current-environment", api::enc(&email)), json!({"environment": n})).await {
+            Ok(_) => { me.0.update(|v| v["currentEnvironment"] = json!(n)); ui::toast(format!("Your new MCP sessions start in {n}")) }
+            Err(e) => ui::toast_err(e),
+        }
+    }) };
     let new_domain = RwSignal::new(String::new());
 
     let dirty = Memo::new(move |_| {
@@ -150,6 +168,29 @@ pub fn Settings() -> impl IntoView {
                                 <div class="callout attn-l"><div class="t attn">{format!("{} is paused", label(&n))}</div>
                                     <div class="t2">"503 everywhere; a strip says so on every screen of it."</div>
                                     <button class="link" on:click=move |_| { let n = n_resume.clone(); leptos::task::spawn_local(async move { act("POST", format!("/environments/{n}/pause"), json!({"paused": false}), "Resumed").await }) }>"Resume"</button></div> })}
+                            {me.person().is_some().then(|| {
+                                let mcp = s(&me.0.get_untracked(), "mcp");
+                                let snippet = move || format!("{{ \"mcpServers\": {{ \"stuntman-{n}\": {{\n  \"type\": \"http\",\n  \"url\": \"{u}/mcp\",\n  \"headers\": {{\n    \"Authorization\": \"Bearer ${{STUNTMAN_TOKEN}}\" }} }} }} }}",
+                                    n = name(), u = s(&saved.get()["addresses"], "public"));
+                                view! {
+                                <div class="block">
+                                    <div class="caps" style="margin-bottom:14px">"Agents and automation"</div>
+                                    <div class="row" style="margin-bottom:8px"><span style="width:164px">"People's MCP"</span><span class="mono" style="width:340px">{mcp}</span>
+                                        <span class="small cap">"one for everyone"</span></div>
+                                    <div class="row" style="margin:0 0 14px 172px;gap:12px">
+                                        {move || if s(&me.0.get(), "currentEnvironment") == name() { view! { <span class="chip">"In your MCP"</span> }.into_any() }
+                                            else { view! { <button class="btn small" on:click=use_in_mcp>"Use in MCP"</button> }.into_any() }}
+                                        <span class="small t2">{move || format!("your new sessions start in {}", if me.0.get()["currentEnvironment"].is_null() { "the one you pick".to_string() } else { s(&me.0.get(), "currentEnvironment") })}</span></div>
+                                    <div class="row" style="margin-bottom:6px"><span style="width:164px">"Token for automation"</span>
+                                        <span class="input mono" style="width:340px">{move || { let t = token.get(); if t.len() > 12 { format!("{}{}{}", &t[..8], "•".repeat(16), &t[t.len() - 4..]) } else { "none yet: Rotate makes one".into() } }}</span>
+                                        <button class="link" style="font-size:13px;margin-left:14px" on:click=move |_| ui::copy(&token.get_untracked(), "Token")>"Copy"</button>
+                                        <button class="link" style="font-size:13px;margin-left:12px" on:click=rotate>"Rotate"</button></div>
+                                    <div class="small cap" style="margin:6px 0 12px 172px">{move || format!("Works only on /e/{0}/api and /e/{0}/mcp. It goes away with the environment. Rotate gives a new one and the old one stops at once. Never in a log, never in a file you commit.", name())}</div>
+                                    <div class="row" style="align-items:flex-start"><span style="width:164px">"A pipeline or an agent alone"</span>
+                                        <pre class="mono small" style="margin:0;padding:10px 12px;background:var(--subtle);border-radius:6px;width:520px">{snippet}</pre>
+                                        <button class="link" style="font-size:13px;margin-left:12px" on:click=move |_| ui::copy(&snippet(), "MCP settings")>"Copy"</button></div>
+                                </div> }
+                            })}
                             <div class="block">
                                 <div class="caps" style="margin-bottom:14px">"Addresses"</div>
                                 <div class="row" style="margin-bottom:10px"><span style="width:164px">"Base domain"</span>

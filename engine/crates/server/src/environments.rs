@@ -545,6 +545,10 @@ async fn create(a: Args) -> Result<Value, ApiError> {
     let mut v = view(&ctx).await;
     v["problems"] = json!(found);
     v["smtpPortsMoved"] = json!(moved);
+    // With sign-in on, the environment's token for automation (only its /e/<name>/api and /mcp), shown once here.
+    if crate::auth::on() {
+        v["token"] = json!(crate::auth::new_env_token(&name)?);
+    }
     v["copied"] = json!(if source.is_some() { copy } else { vec![] });
     Ok(v)
 }
@@ -634,6 +638,7 @@ pub async fn delete(name: &str) -> Result<Value, ApiError> {
     }
     let d = ctx.data_dir.to_path_buf();
     tokio::task::spawn_blocking(move || std::fs::remove_dir_all(d)).await.map_err(|e| ApiError::internal(e.to_string()))?.map_err(|e| ApiError::internal(e.to_string()))?;
+    crate::auth::forget_env(name);
     Ok(json!({"deleted": name, "environments": names()}))
 }
 

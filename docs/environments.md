@@ -109,6 +109,42 @@ Azure Blob is on its own port; a SAS link the app hands to a browser also works 
 path-prefix form where a protocol takes it; Blob, Service Bus, Key Vault and SMTP keep host names). `env` in the
 answer is the same as `.env` lines.
 
+## Sign-in, the central MCP and tokens
+
+Off unless `STUNTMAN_AUTH_ISSUER` is set. Register an app at the company's OIDC provider with the redirect URI
+`<public url>/auth/callback`, then:
+
+```sh
+STUNTMAN_PUBLIC_URL=https://stuntman.example.com
+STUNTMAN_AUTH_ISSUER=https://login.microsoftonline.com/<tenant>/v2.0
+STUNTMAN_AUTH_CLIENT_ID=<app id>
+STUNTMAN_AUTH_CLIENT_SECRET=<from a secret>
+STUNTMAN_AUTH_ALLOWED_DOMAINS=example.com          # and/or STUNTMAN_AUTH_ALLOWED_EMAILS=a@x.com,b@x.com
+STUNTMAN_ADMIN_KEY=<from a secret>
+```
+
+| Route | Who | Needs |
+|---|---|---|
+| Screens (`/`, `/e/<name>/…`) | a person in a browser | a session: the company's sign-in (code flow with PKCE), then a signed cookie for 12 hours |
+| Control API (`/api`, `/e/<name>/api`) | a pipeline, an agent, the screen | a session, the admin key, an agent's token, or the environment's token |
+| Central MCP (`/mcp`) | a person's agent | OAuth: the client registers, the person signs in and allows it (access 8 h, refresh 30 days) |
+| One environment's MCP (`/e/<name>/mcp`) | automation | that environment's token (`Authorization: Bearer stm_env_…`), or any of the above |
+| Simulated identity (`/e/<name>/login/…`), provider routes, the Test CA | the app under test and its browser | nothing, as before |
+
+The rule is by route, not by network: a call from inside the cluster to the control API needs a token too. Someone
+taken off the list loses their session and every token at their next request.
+
+**The central MCP** is one address for everyone: `claude mcp add --transport http stuntman https://stuntman.example.com/mcp`.
+The first use opens the browser (sign-in, then "Allow"). Each call works in one environment: the `environment` argument
+(every tool has it), else the session's (`use_environment`), else the person's (the **Use in MCP** button, or
+`PUT /api/users/{email}/current-environment` with the admin key). There is no silent default: without one the tool
+answers with the list. Every answer starts with `[name]`. `create_environment` and `delete_environment` need the
+admin key there: people make environments in the pipeline.
+
+**An environment's token** (`stm_env_…`) comes back from `create_environment` and opens only `/e/<name>/api` and
+`/e/<name>/mcp`; a person sees it in the environment's settings, `rotate_environment_token` replaces it, and it goes
+away with the environment. **Settings › MCP access** lists people's agents and revokes them.
+
 ## Delete and expiry
 
 `DELETE /api/environments/{name}` takes everything at once: the folder (YAML, `duble.sqlite`, `telemetry.sqlite`,
@@ -119,7 +155,7 @@ answers 404 and the name is free for a new one, which starts clean. Expiry (chec
 
 A new version opens every environment in `/data` as it was, with its state. Database changes are migrations that
 only add tables and columns, and new `environment.yaml` keys are optional: an older file reads as before. Pin the
-image tag (`edivanteixeira/stuntman:0.9.0`) and read the release notes before you move it.
+image tag (`edivanteixeira/stuntman:0.10.0`) and read the release notes before you move it.
 
 ## Sizing
 

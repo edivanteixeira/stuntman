@@ -9,7 +9,7 @@ use leptos_router::{
 };
 use serde_json::Value;
 
-use crate::{ai, api, apis, catalog, email, events, ftp, kinesis, pubsub, sms, streams, environments, identity, keyvault, messaging, storage, telemetry, timeline, ui, webhook, whatsapp};
+use crate::{access, ai, api, apis, catalog, email, events, ftp, kinesis, pubsub, sms, streams, environments, identity, keyvault, messaging, storage, telemetry, timeline, ui, webhook, whatsapp};
 
 #[component]
 pub fn App() -> impl IntoView {
@@ -18,6 +18,10 @@ pub fn App() -> impl IntoView {
     provide_context(live);
     let env = RwSignal::new(Value::Null);
     provide_context(env);
+    // Who is signed in (sign-in on), where their MCP sessions start.
+    let me = Me(RwSignal::new(Value::Null));
+    provide_context(me);
+    leptos::task::spawn_local(async move { if let Ok(v) = api::get("/whoami").await { me.0.set(v) } });
     api::keep_links_under_base();
     let load = move || {
         leptos::task::spawn_local(async move {
@@ -48,6 +52,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/environments/new") view=environments::new::New/>
                     <Route path=path!("/environments/:name") view=environments::settings::Settings/>
                     <Route path=path!("/environments/:name/connections") view=environments::connections::Connections/>
+                    <Route path=path!("/settings/access") view=access::Access/>
                     <Route path=path!("/") view=move || {
                         // Wait for /api/env: a shared Stuntman's root opens the list of environments.
                         let e = env.get();
@@ -153,7 +158,7 @@ const TOP: [(&str, &str, &str); 2] = [("Timeline", "/timeline", ""), ("Telemetry
 const KINDS: [(&str, &str, &str); 15] = [("E-mail", "/notifications", "email"), ("WhatsApp", "/whatsapp", "whatsapp"), ("SMS", "/sms", "sms"), ("Storage", "/files", "storage"), ("Queues", "/queues", "queues"),
     ("Streams", "/streams", "streams"), ("Pub/Sub", "/pubsub", "pubsub"), ("Kinesis", "/kinesis", "kinesis"), ("Files", "/ftp", "files"), ("Key Vault", "/secrets", "keyvault"), ("Identity", "/identity", "identity"),
     ("HTTP APIs", "/apis", "apis"), ("AI models", "/ai", "ai"), ("Events", "/events", "events"), ("Webhooks", "/inboxes/webhooks", "webhooks")];
-const BOTTOM: [(&str, &str, &str); 3] = [("Environments", "/environments", ""), ("Catalog", "/catalog", ""), ("Settings", "", "")];
+const BOTTOM: [(&str, &str, &str); 3] = [("Environments", "/environments", ""), ("Catalog", "/catalog", ""), ("Settings", "/settings/access", "")];
 const SHOW_KEY: &str = "stuntman.rail.services";
 
 /// Which rail entry a path belongs to.
@@ -178,6 +183,7 @@ fn rail_on(path: &str) -> &'static str {
     else if any(&["/identity", "/oauth-clients"]) { "Identity" }
     else if any(&["/environments"]) { "Environments" }
     else if any(&["/catalog"]) { "Catalog" }
+    else if any(&["/settings"]) { "Settings" }
     else { "" }
 }
 
@@ -195,8 +201,21 @@ fn stored(key: &str) -> Option<String> {
     web_sys::window()?.local_storage().ok()??.get_item(key).ok()?
 }
 
+/// whoami: { auth, who, email, currentEnvironment, mcp }
+#[derive(Clone, Copy)]
+pub struct Me(pub RwSignal<Value>);
+
+impl Me {
+    /// A person signed in on the screen (sign-in on).
+    pub fn person(&self) -> Option<String> {
+        let v = self.0.get();
+        (v["auth"] == true && api::s(&v, "who").starts_with("person:")).then(|| api::s(&v, "email"))
+    }
+}
+
 #[component]
 fn Rail() -> impl IntoView {
+    let me = expect_context::<Me>();
     let loc = use_location();
     let nav = use_navigate();
     let live = expect_context::<api::Live>();
@@ -298,6 +317,9 @@ fn Rail() -> impl IntoView {
                     }
                 }}
             </div>
+            {move || me.person().map(|e| view! {
+                <div class="me"><div class="row"><span class="grow" style="font-weight:500">{e.split('@').next().unwrap_or("").split(['.', '_', '-']).map(|w| { let mut c = w.chars(); c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default() }).collect::<Vec<_>>().join(" ")}</span>
+                    <a class="link small" href="/auth/logout">"Sign out"</a></div><div class="small cap">{e.clone()}</div></div> })}
             <div class="foot">{move || format!("Stuntman {}", api::s(&env.get(), "version"))}</div>
         </nav>
     }

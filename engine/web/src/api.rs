@@ -45,7 +45,7 @@ pub fn keep_links_under_base() {
     let f = Closure::<dyn FnMut(web_sys::Event)>::new(move |e: web_sys::Event| {
         let Some(a) = e.target().and_then(|t| t.dyn_into::<web_sys::Element>().ok()).and_then(|el| el.closest("a[href]").ok().flatten()) else { return };
         let Some(h) = a.get_attribute("href") else { return };
-        if h.starts_with('/') && !h.starts_with("//") && !h.starts_with("/e/") {
+        if h.starts_with('/') && !h.starts_with("//") && !h.starts_with("/e/") && !h.starts_with("/auth/") && !h.starts_with("/oauth/") {
             let _ = a.set_attribute("href", &format!("{base}{h}"));
         }
     });
@@ -93,7 +93,15 @@ fn with_client(r: RequestBuilder) -> RequestBuilder {
 async fn finish(r: Result<gloo_net::http::Response, gloo_net::Error>) -> Result<Value, String> {
     let r = r.map_err(|e| format!("Stuntman is not answering: {e}"))?;
     let ok = r.ok();
+    let status = r.status();
     let v: Value = r.json().await.unwrap_or(Value::Null);
+    // The session ended (12 h, or taken off the list): sign in again and come back here.
+    if status == 401 && v["error"].as_str().map(|e| e.starts_with("Sign in")).unwrap_or(false) {
+        if let Some(w) = web_sys::window() {
+            let here = w.location().pathname().unwrap_or_default() + &w.location().search().unwrap_or_default();
+            let _ = w.location().assign(&format!("/auth/login?next={}", enc(&here)));
+        }
+    }
     if ok {
         Ok(v)
     } else {

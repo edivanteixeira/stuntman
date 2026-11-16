@@ -1,5 +1,6 @@
 //! Stuntman UI (Leptos, client-side). The shell is shared; each service brings its own folder of screens.
 
+mod access;
 mod ai;
 mod api;
 mod apis;

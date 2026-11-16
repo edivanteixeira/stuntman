@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use super::{act, all, day, expiring_soon, label, lifetime};
 use crate::{
     api::{self, s},
-    ui::Confirm,
+    ui::{self, Confirm},
 };
 
 fn line(e: &Value) -> String {
@@ -56,6 +56,15 @@ pub fn List() -> impl IntoView {
     let n_new = nav.clone();
     // A shared Stuntman's root: each environment opens under /e/<name>/.
     let root = api::shared_root();
+    let me = expect_context::<crate::shell::Me>();
+    // Use in MCP: where this person's new MCP sessions start.
+    let use_in_mcp = move |n: String| leptos::task::spawn_local(async move {
+        let Some(email) = me.person() else { return };
+        match api::send("PUT", &format!("/users/{}/current-environment", api::enc(&email)), json!({"environment": n})).await {
+            Ok(_) => { me.0.update(|v| v["currentEnvironment"] = json!(n)); ui::toast(format!("Your new MCP sessions start in {n}")) }
+            Err(e) => ui::toast_err(e),
+        }
+    });
     let host = web_sys::window().and_then(|w| w.location().host().ok()).unwrap_or_default();
     view! {
         <div class="page">
@@ -70,6 +79,14 @@ pub fn List() -> impl IntoView {
             </div>
             <div class="body">
                 <div class="pane pad">
+                    {move || (root && me.person().is_some()).then(|| {
+                        let v = me.0.get();
+                        let mcp = s(&v, "mcp");
+                        let cmd = format!("claude mcp add --transport http stuntman {mcp}");
+                        view! { <div class="mcpbar row"><b>"Your MCP"</b><span class="mono small">{mcp.clone()}</span>
+                            <span class="t2 small grow">{if v["currentEnvironment"].is_null() { "new sessions ask which environment".to_string() } else { format!("new sessions start in {}", s(&v, "currentEnvironment")) }}</span>
+                            <button class="link small" on:click=move |_| ui::copy(&cmd, "The command to add it to Claude Code")>"Connect an agent ›"</button></div> }
+                    })}
                     {move || list.get().into_iter().map(|e| {
                         let name = s(&e, "name");
                         let n2 = name.clone();
@@ -84,7 +101,10 @@ pub fn List() -> impl IntoView {
                                     <span class="state" class:attn=paused class:ok=!paused>{if paused { "paused" } else { "running" }}</span>
                                     <span class="grow"></span>
                                     <span class="small" class:attn=soon class:cap=!soon>{lifetime(&e)}</span>
-                                    {root.then(|| view! { <span class="link" style="margin-left:40px">"Open ›"</span> })}
+                                    {(root && me.person().is_some()).then(|| { let n3 = s(&e, "name"); let cur = s(&me.0.get(), "currentEnvironment") == n3;
+                                        if cur { view! { <span class="chip" style="margin-left:24px">"In your MCP"</span> }.into_any() }
+                                        else { view! { <button class="btn small" style="margin-left:24px" on:click=move |ev| { ev.stop_propagation(); use_in_mcp(n3.clone()) }>"Use in MCP"</button> }.into_any() } })}
+                                    {root.then(|| view! { <span class="link" style="margin-left:24px">"Open ›"</span> })}
                                 </div>
                                 <div class="l2 t2">{line(&e)}</div>
                                 <div class="mono small cap">{if root { format!("/e/{}/", s(&e, "name")) } else { s(&e, "baseDomain") }}</div>

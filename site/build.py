@@ -262,18 +262,18 @@ def anchor(name):
 # Every provider Stuntman simulates, by area: (color, area, anchor on /providers, names).
 SIMULATED = [
     ("orange", "AI models", "ai-models", ["OpenAI", "Azure OpenAI", "Anthropic", "Google Gemini", "OpenRouter", "DeepSeek"]),
-    ("red", "SMS, chat and push", "sms", ["Zenvia SMS", "WhatsApp Cloud API", "Comtele SMS", "OneSignal", "Microsoft Teams bots"]),
+    ("red", "SMS, chat and push", "sms", ["Zenvia SMS", "Twilio", "WhatsApp Cloud API", "Comtele SMS", "OneSignal", "Slack", "Microsoft Teams bots"]),
     ("amber", "Email", "email", ["SMTP", "SendGrid", "Resend", "IMAP", "POP3"]),
-    ("graphite", "Payments", "http-apis", ["Stripe", "Bank gateway (boletos)"]),
+    ("graphite", "Payments", "http-apis", ["Stripe", "PayPal", "Adyen", "Mercado Pago", "Pagar.me", "Asaas", "Pix", "Bank gateway (boletos)"]),
     ("brown", "Storage and files", "storage", ["Azure Blob Storage", "Amazon S3", "Google Drive", "FTP", "FTPS", "SFTP"]),
     ("teal", "Queues and streams", "messaging", ["Azure Service Bus", "RabbitMQ", "RabbitMQ management API", "Apache Kafka", "Confluent Schema Registry",
                                                "Google Cloud Pub/Sub", "Apache ActiveMQ", "Amazon Kinesis", "Azure Event Hubs"]),
     ("green", "Identity and secrets", "identity", ["Microsoft Entra ID", "Google sign-in", "Okta", "Any OIDC provider", "SAML 2.0", "LDAP",
-                                                  "Azure Key Vault", "reCAPTCHA", "Cloudflare Turnstile"]),
-    ("blue", "Brazil: signatures and tax", "http-apis", ["SERPRO Datavalid", "BirdID", "VIDaaS", "REST PKI", "ICP-Brasil certificates", "SEFAZ NF-e",
-                                                        "ReceitaWS"]),
-    ("graphite", "Maps and documents", "http-apis", ["Google Maps", "OSRM", "Nominatim (OpenStreetMap)", "OCR.space"]),
-    ("teal", "Workplace and dev tools", "http-apis", ["Microsoft Graph", "Calendly", "lemlist", "Azure DevOps", "New Relic"]),
+                                                  "Auth0", "Azure Key Vault", "reCAPTCHA", "Cloudflare Turnstile"]),
+    ("blue", "Brazil: signatures, tax and shipping", "http-apis", ["SERPRO Datavalid", "BirdID", "VIDaaS", "REST PKI", "ICP-Brasil certificates", "SEFAZ NF-e",
+                                                        "NFS-e", "ReceitaWS", "BrasilAPI"]),
+    ("graphite", "Maps, shipping and documents", "http-apis", ["Google Maps", "OSRM", "Nominatim (OpenStreetMap)", "OCR.space", "Correios", "Melhor Envio", "ViaCEP"]),
+    ("teal", "Workplace, commerce and dev tools", "http-apis", ["Microsoft Graph", "Calendly", "lemlist", "HubSpot", "Shopify", "GitHub", "Azure DevOps", "Sentry", "New Relic"]),
     ("red", "Analytics and observability", "product-events", ["PostHog", "Segment", "Mixpanel", "Google Analytics 4", "OpenTelemetry", "Graylog (GELF)",
                                                              "StatsD"]),
     ("blue", "Any other API", "http-apis", ["Your REST or GraphQL API", "SOAP from a WSDL", "OpenAPI and Swagger", "WireMock mappings",
@@ -282,8 +282,8 @@ SIMULATED = [
 
 
 ROSTER_PAGE = {"AI models": "ai-models", "SMS, chat and push": "sms", "Email": "email", "Payments": "catalog", "Storage and files": "storage",
-               "Queues and streams": "messaging", "Identity and secrets": "identity", "Brazil: signatures and tax": "catalog",
-               "Maps and documents": "catalog", "Workplace and dev tools": "catalog", "Analytics and observability": "events",
+               "Queues and streams": "messaging", "Identity and secrets": "identity", "Brazil: signatures, tax and shipping": "catalog",
+               "Maps, shipping and documents": "catalog", "Workplace, commerce and dev tools": "catalog", "Analytics and observability": "events",
                "Any other API": "http-apis"}
 
 
@@ -438,7 +438,7 @@ def provider_list():
     return [("blue", "HTTP APIs", "REST · GraphQL · OAuth2 · Basic · session cookies · mTLS · browser steps · streamed answers · MCP servers",
           "Routes, state per route and data tables, written in YAML; webhooks signed like Stripe, Svix, GitHub or CloudEvents; idempotency keys; scenarios.",
           "Named answers, latency, 5xx, reset, timeout, cut streams, expired tokens, rate limits, badly signed or repeated webhooks.", "route-editor",
-          f"Point your app at <code>http://localhost:8028/&lt;service&gt;</code>. 26 plugins in the catalog, from Stripe to Microsoft Graph. <a href='{DOCS}/plugins.md'>Plugins guide</a>."),
+          f"Point your app at <code>http://localhost:8028/&lt;service&gt;</code>. 45 plugins in the catalog, from Stripe, PayPal and Pix to Shopify, Slack and Microsoft Graph. <a href='{DOCS}/plugins.md'>Plugins guide</a>."),
          ("blue", "SOAP services", "SOAP 1.1 and 1.2 · made from the WSDL · WS&#8209;Security UsernameToken",
           "Operations from the WSDL with the same steps as routes; bodies checked against its XSD; the WSDL served back.",
           "Any fault the WSDL declares, the provider's validation fault, refused credentials, slow or failed calls.", "soap",

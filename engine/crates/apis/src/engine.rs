@@ -664,7 +664,7 @@ pub async fn run(ctx: &Ctx, p: &Plugin, r: &Route, params: Map<String, Value>, r
         let key = expr::eval(&k.key, &sc).map(|v| expr::text(&v)).unwrap_or_default();
         let ok = o.status > 0 && o.status < 400;
         if !dry && ok {
-            let _ = store::keep(ctx, &svc.name, &k.state, &key, json!({"at": util::now_ms(), "body": req.body})).await;
+            let _ = store::keep(ctx, &svc.name, &k.state, &key, json!({"at": sc.get("__now").cloned().unwrap_or_else(|| json!(util::now_ms())), "body": req.body})).await;
         }
         steps.push(json!({"step": "keep", "text": if ok { format!("Saved to state “{}” by {}{}", k.state, key, if dry { " (not kept: Try it)" } else { "" }) } else { format!("Not saved to state “{}”: the answer is {}", k.state, o.status) }, "ok": true}));
     }

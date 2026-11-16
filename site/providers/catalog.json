@@ -3,7 +3,7 @@
  "order": 24,
  "name": "Plugin catalog",
  "color": "blue",
- "tagline": "26 ready plugins for providers apps call every day, installed one at a time or a whole collection at once.",
+ "tagline": "45 ready plugins for providers apps call every day, installed one at a time or a whole collection at once.",
  "stands_in_for": [
   "Google reCAPTCHA",
   "Cloudflare Turnstile",
@@ -30,7 +30,26 @@
   "Calendly",
   "lemlist",
   "Azure DevOps",
-  "New Relic NerdGraph"
+  "New Relic NerdGraph",
+  "Pix (Banco Central API)",
+  "Mercado Pago",
+  "Pagar.me",
+  "Asaas",
+  "NFS-e Nacional",
+  "NFS-e ABRASF",
+  "Correios",
+  "Melhor Envio",
+  "ViaCEP",
+  "BrasilAPI",
+  "Twilio",
+  "PayPal",
+  "Adyen",
+  "Shopify",
+  "Slack",
+  "HubSpot",
+  "GitHub",
+  "Sentry",
+  "Auth0"
  ],
  "point": [
   [
@@ -76,12 +95,12 @@
    "text": "validate_plugin returns schema and expression errors with line numbers before anything is saved."
   },
   {
-   "title": "Stripe in test mode",
-   "text": "PaymentIntents with test payment methods such as pm_card_chargeDeclined, Idempotency-Key replays and Stripe-signed webhooks."
+   "title": "Payments, two ways",
+   "text": "Stripe, PayPal, Adyen, Mercado Pago, Pagar.me, Asaas and Pix: charges, refunds and signed webhooks your app must verify."
   },
   {
-   "title": "Brazil signing stack",
-   "text": "Datavalid identity checks, BirdID authorize pages, ViDaaS push approvals and REST PKI PAdES signatures, with synthetic CPFs."
+   "title": "Brazil, end to end",
+   "text": "ICP-Brasil signing, NFS-e Nacional and ABRASF, Correios, Melhor Envio, ViaCEP and BrasilAPI with valid synthetic CPFs, CNPJs and CEPs."
   }
  ],
  "excerpts": [

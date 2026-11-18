@@ -5,13 +5,13 @@ Every action in Stuntman is one tool. Each tool is an **MCP tool** (same name) a
 
 _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit by hand._
 
-**399 tools** in 17 areas.
+**400 tools** in 17 areas.
 
 - [Environments, timeline and access](#environments-timeline-and-access) · 21 tools
 - [Email and mailboxes](#email-and-mailboxes) · 39 tools
 - [SMS](#sms) · 17 tools
 - [WhatsApp](#whatsapp) · 28 tools
-- [HTTP APIs (plugins)](#http-apis-plugins) · 68 tools
+- [HTTP APIs (plugins)](#http-apis-plugins) · 69 tools
 - [AI models](#ai-models) · 9 tools
 - [Product events](#product-events) · 8 tools
 - [Storage (Azure Blob, S3)](#storage-azure-blob-s3) · 45 tools
@@ -218,6 +218,7 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `make_plugin` | `POST /api/plugins/{service}/recording/plugin` | service | routes, rules | Writes the plugin from a recording: the routes it found (routes= only these, “METHOD /path”), their answers (binary ones as files) and the suggested rules (rules=false: each route gives its usual answer). Routes the service has stay as they are. The recording ends; the provider is no longer needed. |
 | `import_mocks` | `POST /api/plugins/import` | source | kind, group_by, name, dry, replace | Services from mocks you already have. kind=wiremock: a folder with mappings/*.json (and __files/) becomes plugins: request patterns → routes (regex paths kept), matchers → rules, responses → answers, fixedDelay → latency, faults → reset/empty, scenarios → set_scenario. kind=wsdl: every .wsdl under the folder becomes a SOAP service. dry=true only shows what it would make. |
 | `set_scenario` | `PUT /api/plugins/{service}/scenario` | service | scenario | Moves a service to a scenario (imported WireMock scenarios: rules with `scenario == 'x'`). Started is the normal one. |
+| `get_scenario` | `GET /api/plugins/{service}/scenario` | service | — | The scenario a service is in now (Started is the normal one) and the scenarios its rules name. |
 | `new_test_certificate` | `POST /api/apis/test-certificates` | holder | cnpj, cpf, valid_days, expired, not_yet_valid, untrusted, password | An ICP-Brasil style A1 test certificate: an e-CNPJ (cnpj) or e-CPF (cpf) with an RSA 2048 key, signed by the Stuntman Test CA (or an unknown CA with untrusted=true), valid for valid_days or already expired. Returns the .pfx (base64) and its password, the certificate and key PEM. For mTLS to services with client_certificate_icp and for signing XML. |
 | `list_test_certificates` | `GET /api/apis/test-certificates` | — | — | The test certificates made in this environment (holder, CNPJ or CPF, validity, state). Keys are not shown. |
 | `sign_xml` | `POST /api/apis/xml/sign` | xml, id, certificate | sha256, exclusive, place, prefix | Signs an XML document's element (by Id) with a test certificate, as an app would sign an NF-e or CT-e: enveloped ds:Signature after the element (or inside it for SAML-like documents), RSA-SHA1 by default. |
@@ -316,7 +317,7 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `get_consumer` | `GET /api/messaging/{namespace}/consumers/{id}` | namespace, id | — | One consumer: connection, the locks it holds now and its last messages. |
 | `disconnect_consumer` | `POST /api/messaging/{namespace}/consumers/{id}/disconnect` | namespace, id | — | Forces a consumer off (RabbitMQ: CONNECTION_FORCED; Service Bus: amqp:link:detach-forced). Its locks are released: tests the app's reconnect logic. |
 | `expire_consumer_locks` | `POST /api/messaging/{namespace}/consumers/{id}/expire-locks` | namespace, id | — | Expires the locks a consumer holds now: its next complete fails with MessageLockLost and the messages are delivered again. |
-| `set_namespace_reachability` | `PUT /api/messaging/{namespace}/reachability` | namespace, mode | — | The whole namespace: ok \| refuse (connection refused) \| timeout (no answer) \| 401 (key rejected) \| busy (ServerBusy / connection.blocked). |
+| `set_namespace_reachability` | `PUT /api/messaging/{namespace}/reachability` | namespace, mode | — | The whole namespace: ok \| refuse (new connections refused) \| timeout (no answer) \| 401 (key rejected) \| busy (ServerBusy / connection.blocked) \| down (a dead broker: open connections drop without a word, new ones are refused, management answers 503) \| close (the same, but open connections get a forced close first). |
 | `add_entity` | `POST /api/services/{name}/accounts/{account}/entities` | namespace, entity | kind, lock, max_delivery, sessions, exchange_type | Adds a queue or a topic to a namespace (or marks one the app created as declared: “Keep it in the YAML”). |
 | `remove_entity` | `DELETE /api/services/{name}/accounts/{account}/entities/{entity}` | namespace, name | — | Removes a queue or a topic and its messages. |
 | `add_subscription` | `POST /api/services/{name}/accounts/{account}/topics/{topic}/subscriptions` | namespace, topic, subscription | filter, lock, max_delivery | Adds a subscription to a topic (RabbitMQ: binds a queue to the exchange; filter is the binding key). |
@@ -437,7 +438,7 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `get_secret` | `GET /api/keyvault/secrets/{name}` | name | version, vault, by | The value (synthetic) and attributes of a secret version; recorded in the access log. |
 | `set_secret` | `PUT /api/keyvault/secrets/{name}` | name, value | expires, content_type, tags, vault, by | A new version of a secret (creates it); SecretNewVersionCreated goes to subscribers. Values are synthetic: never paste a real one. |
 | `set_secret_state` | `PATCH /api/keyvault/secrets/{name}` | name | enabled, expires, version, vault | Disables, enables or expires a secret version (default the current one). |
-| `provoke_secret` | `POST /api/keyvault/secrets/{name}/provoke` | name, answer | for, vault, by | Makes the next reads of a secret fail: 403, 404, disabled, 429 or slow (3 s), for a while or until changed; normal stops it. |
+| `provoke_secret` | `POST /api/keyvault/secrets/{name}/provoke` | name, answer | for, vault, by | Makes the next reads of a secret fail: 403, 404, disabled, 429, 503 or slow (3 s), for a while or until changed; normal stops it. |
 | `secret_reads` | `GET /api/keyvault/secrets/{name}/reads` | name | since, vault | Who read a secret, how often, and whether it looks cached (per process). |
 | `secret_used_by` | `GET /api/keyvault/used-by/{name}` | name | — | Files in this environment that point at secret://<name> (also before the secret exists). |
 | `delete_secret` | `DELETE /api/keyvault/secrets/{name}` | name | vault | Soft-deletes a secret (recreating the name gets 409 until recovered or purged). |
@@ -457,7 +458,7 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `renew_certificate` | `POST /api/keyvault/certificates/{name}/renew` | name | vault | A new version signed by the Test CA (same subject and validity); CertificateNewVersionCreated. |
 | `provoke_certificate` | `POST /api/keyvault/certificates/{name}/provoke` | name, answer | for, vault, by | Next reads of a certificate: missing (404), expired, not_yet_valid, wrong_password (.pfx) or untrusted (issuer); normal stops it. |
 | `get_vault` | `GET /api/keyvault/vaults/{name}` | — | name | The vault block: identities with roles and scopes, managed identity endpoint, throttling, latency, soft delete, subscribers. |
-| `set_vault` | `PUT /api/keyvault/vaults/{name}` | name | any_token, throttle, latency, soft_delete_days, subscribers, identities, seed_on_reset | Creates or changes a vault: any_token, throttle (2000/10s), latency, soft_delete_days, subscribers, seed_on_reset. A new vault imports this environment's secret:// values. |
+| `set_vault` | `PUT /api/keyvault/vaults/{name}` | name | any_token, throttle, latency, soft_delete_days, subscribers, identities, seed_on_reset, reachability, for, by | Creates or changes a vault: any_token, throttle (2000/10s), latency, soft_delete_days, subscribers, seed_on_reset; reachability (503, timeout, refused, normal; with for) takes the whole vault down. A new vault imports this environment's secret:// values. |
 | `set_vault_identity` | `PUT /api/keyvault/identities/{id}` | id | roles, scope, vault | Adds or changes an identity: roles (administrator, secrets-user, secrets-officer, crypto-user, crypto-officer, certificate-user, certificates-officer) and name scopes. No roles removes it. |
 | `provoke_imds` | `POST /api/keyvault/imds/provoke` | answer | for, by | The managed identity endpoint answers 500, slow (5 s) or no_identity; normal stops it. |
 | `would_fail` | `GET /api/keyvault/would-fail` | — | since, vault | Operations allowed only because any token is on: what a real vault would have refused. |

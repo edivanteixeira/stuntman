@@ -420,6 +420,18 @@ fn call(name: &str, a: &[Value], sc: &Scope) -> Result<Value, String> {
             let re = a.get(1).map(text).unwrap_or_default();
             json!(match regex::Regex::new(&re) { Ok(r) => r.is_match(&s0()), Err(_) => fancy_regex::Regex::new(&re).ok().and_then(|r| r.is_match(&s0()).ok()).unwrap_or(false) })
         }
+        // xpath(raw, '//*[local-name()='a']/*[local-name()='b']'): the values found (a list);
+        // xpath(raw, expr, 'equalTo' | 'contains' | 'matches', v): whether one of them matches.
+        "xpath" => {
+            let found = crate::hbs::xpath_select(&s0(), &a.get(1).map(text).unwrap_or_default()).unwrap_or_default();
+            match (a.get(2).map(text), a.get(3).map(text)) {
+                (Some(kind), Some(want)) => {
+                    let re = fancy_regex::Regex::new(&format!("^(?:{want})$")).ok();
+                    json!(found.iter().any(|v| match kind.as_str() { "equalTo" => *v == want, "contains" => v.contains(&want), "matches" => re.as_ref().and_then(|r| r.is_match(v).ok()).unwrap_or(false), _ => false }))
+                }
+                _ => json!(found),
+            }
+        }
         "json" => json!(serde_json::to_string(a.first().unwrap_or(&Value::Null)).unwrap_or_default()),
         // lookup("people", "cpf", body.cpf): the first row of a data table whose field equals the value.
         "lookup" => {

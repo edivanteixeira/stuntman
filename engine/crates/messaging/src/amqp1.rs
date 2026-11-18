@@ -532,7 +532,7 @@ pub async fn serve(envs: Envs, sock: crate::amqp::Io, remote: String, header: [u
     let found = if eh.is_some() { None } else { open.hostname.as_deref().and_then(|h| resolve(&envs, h)) };
     if let Some((_, n)) = &found {
         match n.behaviour.reachability.as_str() {
-            "refuse" => return,
+            "refuse" | "down" | "close" => return,
             "timeout" => {
                 tokio::time::sleep(std::time::Duration::from_secs(600)).await;
                 return;
@@ -573,8 +573,24 @@ pub async fn serve(envs: Envs, sock: crate::amqp::Io, remote: String, header: [u
         }
     });
     let kill = conn.kill.clone();
+    // Service Bus namespaces follow `down` / `close` too; Event Hubs connections have none here.
+    let mut reach = found.as_ref().map(|(c, n)| config::reach_watch(c, n)).unwrap_or_else(|| tokio::sync::watch::channel(String::new()).1);
+    let mut dead = false;
     let reason = loop {
         let next = tokio::select! {
+            Ok(()) = reach.changed() => {
+                let mode = reach.borrow_and_update().clone();
+                if mode == "close" {
+                    conn.send(perf(0, &Performative::Close(Close { error: Some(err("amqp:connection:forced", "The service is shutting down (Stuntman: reachability close).")) })));
+                    break "the namespace shut down (Stuntman: reachability close)";
+                }
+                if mode == "down" {
+                    dead = true;
+                    writer.abort();
+                    break "the namespace went down (Stuntman: reachability down)";
+                }
+                continue;
+            }
             f = read_frame(&mut r) => f,
             _ = kill.notified() => {
                 conn.send(perf(0, &Performative::Close(Close { error: Some(err("amqp:connection:forced", "The connection was closed by Stuntman (set_eventhubs drop_connections).")) })));
@@ -602,7 +618,9 @@ pub async fn serve(envs: Envs, sock: crate::amqp::Io, remote: String, header: [u
         }
     }
     drop(tx);
-    let _ = writer.await;
+    if !dead {
+        let _ = writer.await;
+    }
 }
 
 async fn handle(conn: &Arc<Conn>, ch: u16, p: Performative, payload: Vec<u8>) -> bool {

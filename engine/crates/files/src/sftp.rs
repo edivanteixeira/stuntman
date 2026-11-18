@@ -188,10 +188,10 @@ impl russh_sftp::server::Handler for Sftp {
             return Err(StatusCode::Failure);
         }
         let d = self.disk(&filename);
-        if write {
-            if let Some(p) = d.parent() {
-                let _ = std::fs::create_dir_all(p);
-            }
+        // Folders exist only when set_file_server declares them or mkdir makes them: SSH_FX_NO_SUCH_FILE, as OpenSSH.
+        if !d.parent().map(|p| p.is_dir()).unwrap_or(false) {
+            store::log(&self.ctx, &self.server, &self.user, "SFTP", if write { "put" } else { "get" }, &path, 0, false, "no such folder").await;
+            return Err(StatusCode::NoSuchFile);
         }
         let mut o = tokio::fs::OpenOptions::new();
         o.read(pflags.contains(OpenFlags::READ)).write(write).create(pflags.contains(OpenFlags::CREATE)).truncate(pflags.contains(OpenFlags::TRUNCATE)).append(pflags.contains(OpenFlags::APPEND));

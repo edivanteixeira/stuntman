@@ -27,6 +27,10 @@ impl rustls::server::ResolvesServerCert for Fixed {
 #[derive(Clone)]
 pub struct ClientCert(pub String);
 
+/// The request came over the HTTPS port (request.scheme in WireMock templates).
+#[derive(Clone, Copy)]
+pub struct Tls;
+
 /// The client certificate itself (DER), for the CNPJ of an ICP-Brasil style one.
 #[derive(Clone)]
 pub struct ClientCertDer(pub Vec<u8>);
@@ -129,6 +133,7 @@ pub async fn serve(port: u16, envs: Envs, app: Router) {
             let svc_fn = hyper::service::service_fn(move |mut req: hyper::Request<hyper::body::Incoming>| {
                 req.extensions_mut().insert(k2.clone());
                 req.extensions_mut().insert(Remote(addr));
+                req.extensions_mut().insert(Tls);
                 if let Some(c) = &cert {
                     req.extensions_mut().insert(ClientCert(c.clone()));
                 }

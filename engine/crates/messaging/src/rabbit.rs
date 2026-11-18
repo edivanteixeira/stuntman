@@ -23,7 +23,7 @@ use crate::{broker, config};
 
 type Tx = mpsc::UnboundedSender<Vec<u8>>;
 
-fn enc(f: &AMQPFrame) -> Vec<u8> {
+pub(crate) fn enc(f: &AMQPFrame) -> Vec<u8> {
     cookie_factory::gen_simple(gen_frame(f), Vec::new()).unwrap_or_default()
 }
 
@@ -70,6 +70,11 @@ pub fn from_json(v: &Value) -> AMQPValue {
         Value::Object(o) => AMQPValue::FieldTable(table(o)),
         Value::Null => AMQPValue::Void,
     }
+}
+
+#[cfg(test)]
+pub(crate) fn table_of(v: &Value) -> FieldTable {
+    v.as_object().map(table).unwrap_or_default()
 }
 
 fn table(o: &Map<String, Value>) -> FieldTable {
@@ -142,6 +147,20 @@ fn properties(c: &broker::Claimed) -> basic::AMQPProperties {
 /// RabbitMQ namespace). An unknown name is created in the default environment, so an app works
 /// on day zero; it shows up on the screen like any other.
 pub fn find(envs: &Envs, vhost: &str) -> Option<(Ctx, config::Namespace)> {
+    if let Some(found) = find_existing(envs, vhost) {
+        return Some(found);
+    }
+    let v = vhost.trim_start_matches('/');
+    if v.contains('/') {
+        return None;
+    }
+    let ctx = envs.default_env()?;
+    config::valid_name(v).ok()?;
+    config::create(&ctx, config::RABBIT, v).ok().map(|n| (ctx, n))
+}
+
+/// The namespace a vhost names, without creating one (the management API answers 404).
+pub fn find_existing(envs: &Envs, vhost: &str) -> Option<(Ctx, config::Namespace)> {
     let v = vhost.trim_start_matches('/');
     if let Some((e, n)) = v.split_once('/') {
         let ctx = envs.get(e)?;
@@ -155,24 +174,14 @@ pub fn find(envs: &Envs, vhost: &str) -> Option<(Ctx, config::Namespace)> {
         let n = config::list(&ctx).into_iter().find(|n| n.kind == config::RABBIT).or_else(|| config::create(&ctx, config::RABBIT, "default-rabbit").ok())?;
         return Some((ctx, n));
     }
-    for c in &all {
-        if let Ok(n) = config::get(c, v) {
-            if n.kind == config::RABBIT {
-                return Some((c.clone(), n));
-            }
-        }
-    }
-    let ctx = envs.default_env()?;
-    config::valid_name(v).ok()?;
-    config::create(&ctx, config::RABBIT, v).ok().map(|n| (ctx, n))
+    all.into_iter().find_map(|c| config::get(&c, v).ok().filter(|n| n.kind == config::RABBIT).map(|n| (c, n)))
 }
 
 // ---------------------------------------------------------------- connection
 
 struct Unacked {
     token: String,
-    seq: i64,
-    consumer_id: String,
+    queue: String,
     lose_lock: bool,
 }
 
@@ -211,7 +220,7 @@ fn close_chan(tx: &Tx, ch: u16, code: u16, text: &str, class: u16, method: u16) 
 }
 
 /// Reads whole frames from the socket into `buf`.
-async fn next_frame<R: tokio::io::AsyncRead + Unpin>(r: &mut R, buf: &mut Vec<u8>) -> Option<AMQPFrame> {
+pub(crate) async fn next_frame<R: tokio::io::AsyncRead + Unpin>(r: &mut R, buf: &mut Vec<u8>) -> Option<AMQPFrame> {
     loop {
         if !buf.is_empty() {
             match parse_frame(&buf[..]) {
@@ -224,12 +233,11 @@ async fn next_frame<R: tokio::io::AsyncRead + Unpin>(r: &mut R, buf: &mut Vec<u8
                 Err(_) => return None,
             }
         }
-        let mut tmp = [0u8; 65536];
-        let n = r.read(&mut tmp).await.ok()?;
-        if n == 0 {
+        // Straight into buf: a 64 KiB array here would sit in every future that awaits a frame.
+        buf.reserve(65536);
+        if r.read_buf(buf).await.ok()? == 0 {
             return None;
         }
-        buf.extend_from_slice(&tmp[..n]);
     }
 }
 
@@ -267,6 +275,12 @@ pub async fn serve(envs: Envs, sock: crate::amqp::Io, remote: String) {
             let platform = if platform.contains(".NET") { ".NET" } else { platform.split_whitespace().next().unwrap_or("") };
             format!("{product}{}{} :{}", if platform.is_empty() { "" } else { " " }, platform, remote.rsplit(':').next().unwrap_or(""))
         });
+    // A declared user with a wrong password is refused right after start-ok, as RabbitMQ does.
+    if envs.default_env().map(|d| matches!(crate::rabbit_mgmt::login(&d, &user, &pass), crate::rabbit_mgmt::Login::Refused)).unwrap_or(false) {
+        close_conn(&tx, 403, "ACCESS_REFUSED - Login was refused using authentication mechanism PLAIN. For details see the broker logfile.", 10, 40);
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        return;
+    }
     send(&tx, AMQPFrame::Method(0, AMQPClass::Connection(connection::AMQPMethod::Tune(connection::Tune { channel_max: 2047, frame_max: 131072, heartbeat: 60 }))));
     let mut heartbeat = 60u16;
     let vhost = loop {
@@ -282,7 +296,7 @@ pub async fn serve(envs: Envs, sock: crate::amqp::Io, remote: String) {
         return;
     };
     match ns.behaviour.reachability.as_str() {
-        "refuse" => return,
+        "refuse" | "down" | "close" => return,
         "timeout" => {
             tokio::time::sleep(std::time::Duration::from_secs(600)).await;
             return;
@@ -294,7 +308,18 @@ pub async fn serve(envs: Envs, sock: crate::amqp::Io, remote: String) {
         }
         _ => {}
     }
-    let allowed = ns.access.any_key || (ns.access.policies.contains_key(&user) && config::key_value(&ctx, &ns.namespace, &user) == pass);
+    // A user declared through the management API (rabbitmqadmin) is checked as RabbitMQ does:
+    // its password, then its permission on this vhost. Anyone else: the namespace's own rules.
+    let allowed = match crate::rabbit_mgmt::login(&ctx, &user, &pass) {
+        crate::rabbit_mgmt::Login::Ok(_) if !ns.access.permissions.contains_key(&user) => {
+            close_conn(&tx, 530, &format!("NOT_ALLOWED - access to vhost '{}' refused for user '{user}'", if vhost.is_empty() { "/" } else { &vhost }), 10, 40);
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            return;
+        }
+        crate::rabbit_mgmt::Login::Ok(_) => true,
+        crate::rabbit_mgmt::Login::Refused => false,
+        crate::rabbit_mgmt::Login::Unknown => ns.access.any_key || (ns.access.policies.contains_key(&user) && config::key_value(&ctx, &ns.namespace, &user) == pass),
+    };
     if !allowed {
         close_conn(&tx, 403, "ACCESS_REFUSED - Login was refused using authentication mechanism PLAIN. For details see the broker logfile.", 10, 40);
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -321,6 +346,8 @@ pub async fn serve(envs: Envs, sock: crate::amqp::Io, remote: String) {
         }
     });
 
+    let mut reach = config::reach_watch(&ctx, &ns);
+    let mut dead = false;
     let reason = loop {
         let f = tokio::select! {
             f = next_frame(&mut r, &mut buf) => f,
@@ -328,6 +355,21 @@ pub async fn serve(envs: Envs, sock: crate::amqp::Io, remote: String) {
                 close_conn(&tx, 320, "CONNECTION_FORCED - Closed via management plugin (Stuntman: Disconnect it)", 0, 0);
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 break "disconnected from Stuntman (Disconnect it)";
+            }
+            Ok(()) = reach.changed() => {
+                let mode = reach.borrow_and_update().clone();
+                if mode == "close" {
+                    close_conn(&tx, 320, "CONNECTION_FORCED - broker forced connection closure with reason 'shutdown'", 0, 0);
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    break "the broker shut down (Stuntman: reachability close)";
+                }
+                if mode == "down" {
+                    // A killed broker: the socket just goes, nothing is said.
+                    dead = true;
+                    writer.abort();
+                    break "the broker went down (Stuntman: reachability down)";
+                }
+                continue;
             }
         };
         let Some(f) = f else { break "connection closed by the client" };
@@ -342,7 +384,9 @@ pub async fn serve(envs: Envs, sock: crate::amqp::Io, remote: String) {
         close_channel_state(&conn, &c, reason).await;
     }
     drop(tx);
-    let _ = writer.await;
+    if !dead {
+        let _ = writer.await;
+    }
 }
 
 fn credentials(mech: &str, resp: &[u8]) -> (String, String) {
@@ -368,11 +412,12 @@ async fn close_channel_state(conn: &Conn, c: &Arc<Mutex<Chan>>, why: &str) {
         stop.notify_one();
         broker::consumer_close(&conn.ctx, id, why).await;
     }
-    let mut seen = std::collections::HashSet::new();
+    // Unacked messages go back to their queue; a quorum queue counts the return and drops (or
+    // dead-letters) the message past its delivery limit. Nacks with requeue do not count (RabbitMQ 4).
+    let ns = config::get(&conn.ctx, &conn.ns.namespace).unwrap_or_else(|_| conn.ns.clone());
     for u in unacked.values() {
-        if seen.insert(u.consumer_id.clone()) {
-            broker::release_all(&conn.ctx, &conn.ns.namespace, &u.consumer_id, true, &format!("{why}: unacked, redelivered")).await;
-        }
+        let limit = ns.rabbit_queue(&u.queue).and_then(|q| q.delivery_limit);
+        broker::rabbit_return(&conn.ctx, &conn.ns.namespace, &u.token, &format!("{why}: unacked, redelivered"), limit).await;
     }
     // Messages fetched with basic.get carry the channel's own id.
     conn.acked.notify_waiters();
@@ -462,7 +507,7 @@ async fn handle(conn: &Arc<Conn>, f: AMQPFrame) -> bool {
             AMQPClass::Exchange(exchange::AMQPMethod::Declare(d)) => {
                 let name = d.exchange.as_str().to_string();
                 let kind = d.kind.as_str().to_string();
-                match declare_exchange(conn, &name, &kind, d.passive) {
+                match declare_exchange(ctx, &nsn, &conn.client, &name, &kind, d.passive) {
                     Ok(()) => {
                         if !d.nowait {
                             send(tx, AMQPFrame::Method(ch, AMQPClass::Exchange(exchange::AMQPMethod::DeclareOk(exchange::DeclareOk {}))));
@@ -474,26 +519,39 @@ async fn handle(conn: &Arc<Conn>, f: AMQPFrame) -> bool {
             }
             AMQPClass::Exchange(exchange::AMQPMethod::Delete(d)) => {
                 let name = d.exchange.as_str().to_string();
-                let _ = config::change(ctx, &nsn, |n| {
-                    if n.entities.get(&name).map(|e| e.topic.is_some()).unwrap_or(false) {
-                        n.entities.remove(&name);
+                let r = config::change(ctx, &nsn, |n| {
+                    if d.if_unused && exchange_in_use(n, &name) {
+                        return Err(stuntman_core::ApiError::new(406, format!("PRECONDITION_FAILED - exchange '{name}' in vhost '{nsn}' in use")));
                     }
+                    drop_exchange(n, &name);
                     Ok(())
                 });
-                if !d.nowait {
-                    send(tx, AMQPFrame::Method(ch, AMQPClass::Exchange(exchange::AMQPMethod::DeleteOk(exchange::DeleteOk {}))));
+                match r {
+                    Err(e) if e.status == 406 => close_and_forget(conn, ch, 406, &e.message, 40, 20).await,
+                    _ if !d.nowait => send(tx, AMQPFrame::Method(ch, AMQPClass::Exchange(exchange::AMQPMethod::DeleteOk(exchange::DeleteOk {})))),
+                    _ => {}
                 }
                 true
             }
             AMQPClass::Exchange(exchange::AMQPMethod::Bind(b)) => {
-                // Exchange-to-exchange bindings are accepted but not followed (Stuntman routes one hop).
-                if !b.nowait {
-                    send(tx, AMQPFrame::Method(ch, AMQPClass::Exchange(exchange::AMQPMethod::BindOk(exchange::BindOk {}))));
+                // Exchange-to-exchange: what MassTransit binds message types to its endpoints with.
+                let (dst, src, key) = (b.destination.as_str().to_string(), b.source.as_str().to_string(), b.routing_key.as_str().to_string());
+                match config::change(ctx, &nsn, |n| bind(n, &src, &dst, true, &key, &binding_args(&b.arguments))) {
+                    Ok(_) if !b.nowait => send(tx, AMQPFrame::Method(ch, AMQPClass::Exchange(exchange::AMQPMethod::BindOk(exchange::BindOk {})))),
+                    Ok(_) => {}
+                    Err(e) => close_and_forget(conn, ch, e.status, &e.message, 40, 30).await,
                 }
                 true
             }
-            AMQPClass::Exchange(exchange::AMQPMethod::Unbind(_)) => {
-                send(tx, AMQPFrame::Method(ch, AMQPClass::Exchange(exchange::AMQPMethod::UnbindOk(exchange::UnbindOk {}))));
+            AMQPClass::Exchange(exchange::AMQPMethod::Unbind(u)) => {
+                let (dst, src, key) = (u.destination.as_str().to_string(), u.source.as_str().to_string(), u.routing_key.as_str().to_string());
+                let _ = config::change(ctx, &nsn, |n| {
+                    unbind(n, &src, &dst, true, &key);
+                    Ok(())
+                });
+                if !u.nowait {
+                    send(tx, AMQPFrame::Method(ch, AMQPClass::Exchange(exchange::AMQPMethod::UnbindOk(exchange::UnbindOk {}))));
+                }
                 true
             }
             AMQPClass::Exchange(_) => true,
@@ -502,8 +560,8 @@ async fn handle(conn: &Arc<Conn>, f: AMQPFrame) -> bool {
                 if name.is_empty() {
                     name = format!("amq.gen-{}", &broker::uuid4()[..13]);
                 }
-                let dlx = d.arguments.inner().get(&ss("x-dead-letter-exchange")).map(|v| to_json(v).as_str().unwrap_or("").to_string()).unwrap_or_default();
-                match declare_queue(conn, &name, d.passive, &dlx) {
+                let args = table_json(&d.arguments);
+                match declare_queue(ctx, &nsn, &conn.client, &name, d.passive, d.durable && !d.exclusive, args) {
                     Ok(()) => {
                         if !d.nowait {
                             let counts = broker::counts(ctx, &nsn, &name).await;
@@ -517,19 +575,7 @@ async fn handle(conn: &Arc<Conn>, f: AMQPFrame) -> bool {
             }
             AMQPClass::Queue(queue::AMQPMethod::Bind(b)) => {
                 let (q, ex, key) = (b.queue.as_str().to_string(), b.exchange.as_str().to_string(), b.routing_key.as_str().to_string());
-                let r = config::change(ctx, &nsn, |n| {
-                    if ex.is_empty() {
-                        return Err(stuntman_core::ApiError::new(403, "ACCESS_REFUSED - operation not permitted on the default exchange"));
-                    }
-                    if n.entities.get(&q).and_then(|e| e.queue.as_ref()).is_none() {
-                        return Err(stuntman_core::ApiError::not_found(format!("NOT_FOUND - no queue '{q}' in vhost '{}'", n.namespace)));
-                    }
-                    let Some(t) = n.entities.get_mut(&ex).and_then(|e| e.topic.as_mut()) else {
-                        return Err(stuntman_core::ApiError::not_found(format!("NOT_FOUND - no exchange '{ex}' in vhost '{}'", n.namespace)));
-                    };
-                    t.subscriptions.entry(q.clone()).or_insert(config::Subscription { lock: "30s".into(), max_delivery: 10, filter: key.clone(), ..Default::default() }).filter = key.clone();
-                    Ok(())
-                });
+                let r = config::change(ctx, &nsn, |n| bind(n, &ex, &q, false, &key, &binding_args(&b.arguments)));
                 match r {
                     Ok(_) => {
                         if !b.nowait {
@@ -541,11 +587,9 @@ async fn handle(conn: &Arc<Conn>, f: AMQPFrame) -> bool {
                 true
             }
             AMQPClass::Queue(queue::AMQPMethod::Unbind(u)) => {
-                let (q, ex) = (u.queue.as_str().to_string(), u.exchange.as_str().to_string());
+                let (q, ex, key) = (u.queue.as_str().to_string(), u.exchange.as_str().to_string(), u.routing_key.as_str().to_string());
                 let _ = config::change(ctx, &nsn, |n| {
-                    if let Some(t) = n.entities.get_mut(&ex).and_then(|e| e.topic.as_mut()) {
-                        t.subscriptions.remove(&q);
-                    }
+                    unbind(n, &ex, &q, false, &key);
                     Ok(())
                 });
                 send(tx, AMQPFrame::Method(ch, AMQPClass::Queue(queue::AMQPMethod::UnbindOk(queue::UnbindOk {}))));
@@ -560,14 +604,13 @@ async fn handle(conn: &Arc<Conn>, f: AMQPFrame) -> bool {
             }
             AMQPClass::Queue(queue::AMQPMethod::Delete(d)) => {
                 let q = d.queue.as_str().to_string();
+                if let Err(text) = can_delete_queue(ctx, &conn.ns.namespace, &q, d.if_unused, d.if_empty).await {
+                    close_and_forget(conn, ch, 406, &format!("PRECONDITION_FAILED - {text}"), 50, 40).await;
+                    return true;
+                }
                 let n = broker::purge(ctx, &nsn, &q, None).await.unwrap_or(0);
                 let _ = config::change(ctx, &nsn, |ns| {
-                    ns.entities.remove(&q);
-                    for e in ns.entities.values_mut() {
-                        if let Some(t) = e.topic.as_mut() {
-                            t.subscriptions.remove(&q);
-                        }
-                    }
+                    drop_queue(ns, &q);
                     Ok(())
                 });
                 if !d.nowait {
@@ -595,46 +638,155 @@ async fn close_and_forget(conn: &Arc<Conn>, ch: u16, code: u16, text: &str, clas
     close_chan(&conn.tx, ch, code, text, class, method);
 }
 
-fn declare_exchange(conn: &Conn, name: &str, kind: &str, passive: bool) -> Result<(), (u16, String)> {
+pub fn declare_exchange(ctx: &Ctx, nsn: &str, creator: &str, name: &str, kind: &str, passive: bool) -> Result<(), (u16, String)> {
     if name.is_empty() || name.starts_with("amq.") {
         return Ok(());
     }
-    let nsn = conn.ns.namespace.clone();
-    let creator = conn.client.clone();
-    config::change(&conn.ctx, &nsn, |n| {
-        match n.entities.get(name) {
-            Some(e) => match &e.topic {
-                Some(t) if !t.kind.is_empty() && !kind.is_empty() && t.kind != kind => Err(stuntman_core::ApiError::new(406, format!("PRECONDITION_FAILED - inequivalent arg 'type' for exchange '{name}' in vhost '{nsn}': received '{kind}' but current is '{}'", t.kind))),
-                Some(_) => Ok(()),
-                None => Err(stuntman_core::ApiError::new(406, format!("PRECONDITION_FAILED - '{name}' is a queue in vhost '{nsn}'"))),
-            },
+    config::change(ctx, nsn, |n| {
+        match n.entities.get(name).and_then(|e| e.topic.as_ref()) {
+            Some(t) if !t.kind.is_empty() && !kind.is_empty() && t.kind != kind => Err(stuntman_core::ApiError::new(406, format!("PRECONDITION_FAILED - inequivalent arg 'type' for exchange '{name}' in vhost '{nsn}': received '{kind}' but current is '{}'", t.kind))),
+            Some(_) => Ok(()),
             None if passive => Err(stuntman_core::ApiError::not_found(format!("NOT_FOUND - no exchange '{name}' in vhost '{nsn}'"))),
             None if !n.behaviour.auto_create => Err(stuntman_core::ApiError::not_found(format!("NOT_FOUND - no exchange '{name}' in vhost '{nsn}' (Stuntman: “Create queues the app asks for” is off)"))),
             None => {
-                n.entities.insert(name.into(), config::Entity { queue: None, topic: Some(config::Topic { kind: if kind.is_empty() { "direct".into() } else { kind.into() }, subscriptions: Default::default(), created_by: creator.clone() }) });
+                // A queue of the same name keeps its own entry: RabbitMQ keeps them apart.
+                n.entities.entry(name.into()).or_default().topic = Some(config::Topic { kind: if kind.is_empty() { "direct".into() } else { kind.into() }, created_by: creator.into(), ..Default::default() });
                 Ok(())
             }
         }
     })
     .map(|_| ())
-    .map_err(|e| (if e.status == 404 { 404 } else { e.status }, e.message))
+    .map_err(|e| (e.status, e.message))
 }
 
-fn declare_queue(conn: &Conn, name: &str, passive: bool, dlx: &str) -> Result<(), (u16, String)> {
-    let nsn = conn.ns.namespace.clone();
-    let creator = conn.client.clone();
-    config::change(&conn.ctx, &nsn, |n| match n.entities.get(name) {
-        Some(e) if e.queue.is_some() => Ok(()),
-        Some(_) => Err(stuntman_core::ApiError::new(406, format!("PRECONDITION_FAILED - '{name}' is an exchange in vhost '{nsn}'"))),
-        None if passive => Err(stuntman_core::ApiError::not_found(format!("NOT_FOUND - no queue '{name}' in vhost '{nsn}'"))),
-        None if !n.behaviour.auto_create => Err(stuntman_core::ApiError::not_found(format!("NOT_FOUND - no queue '{name}' in vhost '{nsn}' (Stuntman: “Create queues the app asks for” is off)"))),
-        None => {
-            n.entities.insert(name.into(), config::Entity { queue: Some(config::Queue { lock: "30s".into(), max_delivery: 10, dead_letter_exchange: dlx.into(), created_by: creator.clone(), ..Default::default() }), topic: None });
-            Ok(())
+/// The queue type a declare gets: its x-queue-type, else the vhost's default for durable,
+/// non-exclusive queues (RabbitMQ 4), else classic.
+fn queue_type(n: &config::Namespace, args: &Map<String, Value>, durable_shared: bool) -> String {
+    match args.get("x-queue-type").and_then(|v| v.as_str()) {
+        Some(t) if !t.is_empty() => t.to_string(),
+        _ if durable_shared && !n.default_queue_type.is_empty() => n.default_queue_type.clone(),
+        _ => "classic".into(),
+    }
+}
+
+pub fn declare_queue(ctx: &Ctx, nsn: &str, creator: &str, name: &str, passive: bool, durable_shared: bool, mut args: Map<String, Value>) -> Result<(), (u16, String)> {
+    config::change(ctx, nsn, |n| {
+        if let Some(q) = n.entities.get(name).and_then(|e| e.queue.as_ref()) {
+            let have = q.arguments.get("x-queue-type").and_then(|v| v.as_str()).unwrap_or("classic");
+            return match args.get("x-queue-type").and_then(|v| v.as_str()) {
+                Some(want) if !passive && !want.is_empty() && want != have => Err(stuntman_core::ApiError::new(406, format!("PRECONDITION_FAILED - inequivalent arg 'x-queue-type' for queue '{name}' in vhost '{nsn}': received '{want}' but current is '{have}'"))),
+                _ => Ok(()),
+            };
         }
+        if passive {
+            return Err(stuntman_core::ApiError::not_found(format!("NOT_FOUND - no queue '{name}' in vhost '{nsn}'")));
+        }
+        if !n.behaviour.auto_create {
+            return Err(stuntman_core::ApiError::not_found(format!("NOT_FOUND - no queue '{name}' in vhost '{nsn}' (Stuntman: “Create queues the app asks for” is off)")));
+        }
+        let kind = queue_type(n, &args, durable_shared);
+        args.insert("x-queue-type".into(), json!(kind));
+        let dlx = args.remove("x-dead-letter-exchange").and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+        n.entities.entry(name.into()).or_default().queue = Some(config::Queue { lock: "30s".into(), max_delivery: 10, dead_letter_exchange: dlx, created_by: creator.into(), arguments: args.into_iter().collect(), ..Default::default() });
+        Ok(())
     })
     .map(|_| ())
     .map_err(|e| (e.status, e.message))
+}
+
+// ---------------------------------------------------------------- topology, shared with the management API
+
+/// Headers-exchange binding arguments as "k=v, k2=v2"; other bindings carry none Stuntman reads.
+fn binding_args(t: &FieldTable) -> String {
+    t.inner().iter().map(|(k, v)| format!("{}={}", k.as_str(), to_json(v).as_str().map(String::from).unwrap_or_else(|| to_json(v).to_string()))).collect::<Vec<_>>().join(", ")
+}
+
+/// Binds a queue (or an exchange) to an exchange with one more key. Both must exist.
+pub fn bind(n: &mut config::Namespace, source: &str, dest: &str, to_exchange: bool, key: &str, headers: &str) -> Result<(), stuntman_core::ApiError> {
+    let vh = n.namespace.clone();
+    if source.is_empty() {
+        return Err(stuntman_core::ApiError::new(403, "ACCESS_REFUSED - operation not permitted on the default exchange"));
+    }
+    let dest_ok = n.entities.get(dest).map(|e| if to_exchange { e.topic.is_some() } else { e.queue.is_some() }).unwrap_or(false);
+    if !dest_ok {
+        return Err(stuntman_core::ApiError::not_found(format!("NOT_FOUND - no {} '{dest}' in vhost '{vh}'", if to_exchange { "exchange" } else { "queue" })));
+    }
+    let Some(t) = n.entities.get_mut(source).and_then(|e| e.topic.as_mut()) else {
+        return Err(stuntman_core::ApiError::not_found(format!("NOT_FOUND - no exchange '{source}' in vhost '{vh}'")));
+    };
+    let key = if t.kind == "headers" { headers } else { key };
+    let map = if to_exchange { &mut t.exchanges } else { &mut t.subscriptions };
+    match map.get_mut(dest) {
+        Some(s) => {
+            s.add_key(key);
+        }
+        None => {
+            map.insert(dest.into(), config::Subscription { lock: "30s".into(), max_delivery: 10, filter: key.into(), ..Default::default() });
+        }
+    }
+    Ok(())
+}
+
+/// Removes one binding (the key between source and destination); unknown ones are ignored.
+pub fn unbind(n: &mut config::Namespace, source: &str, dest: &str, to_exchange: bool, key: &str) {
+    if let Some(t) = n.entities.get_mut(source).and_then(|e| e.topic.as_mut()) {
+        let key = if t.kind == "headers" { t.subscriptions.get(dest).map(|s| s.filter.clone()).unwrap_or_default() } else { key.to_string() };
+        let map = if to_exchange { &mut t.exchanges } else { &mut t.subscriptions };
+        if map.get_mut(dest).map(|s| s.remove_key(&key)).unwrap_or(false) {
+            map.remove(dest);
+        }
+    }
+}
+
+/// An exchange is in use while it is the source of a binding.
+pub fn exchange_in_use(n: &config::Namespace, x: &str) -> bool {
+    n.entities.get(x).and_then(|e| e.topic.as_ref()).map(|t| !t.subscriptions.is_empty() || !t.exchanges.is_empty()).unwrap_or(false)
+}
+
+/// Removes a queue and the bindings to it; an exchange of the same name stays.
+pub fn drop_queue(n: &mut config::Namespace, q: &str) {
+    if let Some(e) = n.entities.get_mut(q) {
+        e.queue = None;
+        if e.topic.is_none() {
+            n.entities.remove(q);
+        }
+    }
+    for e in n.entities.values_mut() {
+        if let Some(t) = e.topic.as_mut() {
+            t.subscriptions.remove(q);
+        }
+    }
+}
+
+/// Removes an exchange and the exchange bindings to it; a queue of the same name stays.
+pub fn drop_exchange(n: &mut config::Namespace, x: &str) {
+    if let Some(e) = n.entities.get_mut(x) {
+        e.topic = None;
+        if e.queue.is_none() {
+            n.entities.remove(x);
+        }
+    }
+    for e in n.entities.values_mut() {
+        if let Some(t) = e.topic.as_mut() {
+            t.exchanges.remove(x);
+        }
+    }
+}
+
+/// queue.delete's if-unused and if-empty (and the management API's): why not, or Ok.
+pub async fn can_delete_queue(ctx: &Ctx, ns: &str, q: &str, if_unused: bool, if_empty: bool) -> Result<(), String> {
+    if if_empty && broker::counts(ctx, ns, q).await["active"].as_i64().unwrap_or(0) > 0 {
+        return Err(format!("queue '{q}' in vhost '{ns}' not empty"));
+    }
+    if if_unused && active_consumers(ctx, ns, q).await > 0 {
+        return Err(format!("queue '{q}' in vhost '{ns}' in use"));
+    }
+    Ok(())
+}
+
+/// Consumers attached now (not the ones that left today).
+pub async fn active_consumers(ctx: &Ctx, ns: &str, q: &str) -> usize {
+    broker::consumers(ctx, ns, q).await.map(|v| v.iter().filter(|c| c["state"] == "receiving" && c["entity"] == json!(q)).count()).unwrap_or(0)
 }
 
 async fn finish_publish(conn: &Arc<Conn>, ch: u16) {
@@ -679,6 +831,7 @@ async fn finish_publish(conn: &Arc<Conn>, ch: u16) {
         }
         Err(broker::Refusal::NotFound(t)) => close_and_forget(conn, ch, 404, &format!("NOT_FOUND - {t}"), 60, 40).await,
         Err(broker::Refusal::Unauthorized(t)) => close_and_forget(conn, ch, 403, &format!("ACCESS_REFUSED - {t}"), 60, 40).await,
+        Err(broker::Refusal::Quota(_)) if !confirm => {}
         Err(_) if confirm => {
             send(&conn.tx, AMQPFrame::Method(ch, AMQPClass::Basic(basic::AMQPMethod::Nack(basic::Nack { delivery_tag: tag, multiple: false, requeue: false }))));
         }
@@ -761,7 +914,7 @@ async fn basic(conn: &Arc<Conn>, ch: u16, b: basic::AMQPMethod) -> bool {
                         gd.next_tag += 1;
                         if !g.no_ack {
                             let nt = gd.next_tag;
-                            gd.unacked.insert(nt, Unacked { token: c.lock_token.clone(), seq: c.seq, consumer_id: id.clone(), lose_lock: c.lose_lock });
+                            gd.unacked.insert(nt, Unacked { token: c.lock_token.clone(), queue: c.holder.clone(), lose_lock: c.lose_lock });
                         }
                         gd.next_tag
                     };
@@ -812,16 +965,16 @@ async fn settle_tags(conn: &Arc<Conn>, ch: u16, tag: u64, multiple: bool, how: S
             Settle::Ack => broker::settle(&conn.ctx, &nsn, &u.token, "complete", "", "", &conn.client).await,
             Settle::Requeue => broker::settle(&conn.ctx, &nsn, &u.token, "release", "nack, requeue=true", "", &conn.client).await,
             Settle::Reject => {
-                let dlx = config::get(&conn.ctx, &nsn).ok().and_then(|n| {
-                    let h: Option<String> = None;
-                    let _ = h;
-                    n.entities.values().find_map(|e| e.queue.as_ref().map(|q| q.dead_letter_exchange.clone())).filter(|d| !d.is_empty())
-                });
-                let desc = if dlx.is_some() { "sent to its dead-letter exchange".to_string() } else { "a real RabbitMQ discards it: this queue has no x-dead-letter-exchange".to_string() };
-                broker::settle(&conn.ctx, &nsn, &u.token, "dead_letter", "Rejected (nack, requeue=false)", &desc, &conn.client).await
+                let dlx = config::get(&conn.ctx, &nsn).ok().and_then(|n| n.rabbit_queue(&u.queue)).and_then(|q| q.dead_letter_exchange);
+                let desc = match &dlx { Some(x) => format!("sent to its dead-letter exchange '{x}'"), None => "a real RabbitMQ discards it: this queue has no dead-letter exchange".to_string() };
+                let r = broker::settle(&conn.ctx, &nsn, &u.token, "dead_letter", "Rejected (nack, requeue=false)", &desc, &conn.client).await;
+                if let Ok(seq) = r {
+                    broker::rabbit_forward(&conn.ctx, &nsn, seq, "rejected").await;
+                }
+                r
             }
         };
-        let _ = (r, u.seq);
+        let _ = r;
     }
     conn.acked.notify_waiters();
 }
@@ -857,7 +1010,7 @@ async fn consume(conn: Arc<Conn>, ch: u16, tag: String, id: String, q: String, n
                     g.next_tag += 1;
                     if !no_ack {
                         let nt = g.next_tag;
-                        g.unacked.insert(nt, Unacked { token: m.lock_token.clone(), seq: m.seq, consumer_id: id.clone(), lose_lock: m.lose_lock });
+                        g.unacked.insert(nt, Unacked { token: m.lock_token.clone(), queue: m.holder.clone(), lose_lock: m.lose_lock });
                     }
                     g.next_tag
                 };

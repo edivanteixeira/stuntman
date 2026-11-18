@@ -5,9 +5,9 @@ permission denied, a transfer dropped halfway, a changed SFTP host key; the tran
     pip install paramiko   (for SFTP)
     cargo build -p stuntman && python3 tests/e2e_files.py
 """
-import ftplib, io, os, ssl, tempfile, time
+import ftplib, io, os, socket, ssl, tempfile, time
 
-from harness import Stuntman, wait
+from harness import Stuntman, free_port, wait
 
 OCOREN = "000ACME TRANSPORTES      GLOBEX LOGISTICA         151126014200OCO15111\r\n3411234567890123400001501112026014200 ENTREGUE\r\n" * 3
 
@@ -61,6 +61,51 @@ def main():
         f.cwd("/out/ocoren")
         f.storbinary("STOR OCOREN_0143.txt", io.BytesIO(b"tls upload"))
         assert "OCOREN_0143.txt" in f.nlst()
+        f.quit()
+
+        # A folder nobody declared: 553 on upload (vsftpd), 550 on CWD, and no file made.
+        f = ftp(s)
+        try:
+            f.storbinary("STOR /missing/x.txt", io.BytesIO(b"x")); raise AssertionError("no such folder")
+        except ftplib.error_perm as e:
+            assert str(e).startswith("553"), e
+        try:
+            f.cwd("/missing"); raise AssertionError("no such folder")
+        except ftplib.error_perm as e:
+            assert str(e).startswith("550"), e
+        s.call("GET", "/files/servers/edi-acme/file?path=/missing/x.txt", expect=404)
+        f.mkd("/out/new")
+        f.storbinary("STOR /out/new/x.txt", io.BytesIO(b"x"))
+
+        # Active mode: PORT (ftplib with passive off), EPRT, and 425 when the client is not listening.
+        f.set_pasv(False)
+        f.storbinary("STOR /out/new/active.txt", io.BytesIO(b"active upload"))
+        buf = io.BytesIO()
+        f.retrbinary("RETR /out/new/active.txt", buf.write)
+        assert buf.getvalue() == b"active upload", buf.getvalue()
+        lsn = socket.socket(); lsn.bind(("127.0.0.1", 0)); lsn.listen(1)
+        assert f.sendcmd(f"EPRT |1|127.0.0.1|{lsn.getsockname()[1]}|").startswith("200")
+        f.putcmd("NLST /out/new")
+        assert f.getresp().startswith("150")
+        d, _ = lsn.accept()
+        names = b""
+        while chunk := d.recv(4096):
+            names += chunk
+        d.close(); lsn.close()
+        assert f.getresp().startswith("226") and sorted(names.decode().split()) == ["active.txt", "x.txt"], names
+        closed = free_port()
+        assert f.sendcmd(f"PORT 127,0,0,1,{closed >> 8},{closed & 255}").startswith("200")
+        f.putcmd("STOR /out/new/never.txt")
+        assert f.getresp().startswith("150")
+        try:
+            f.getresp(); raise AssertionError("425")
+        except ftplib.error_temp as e:
+            assert str(e).startswith("425"), e
+        s.call("GET", "/files/servers/edi-acme/file?path=/out/new/never.txt", expect=404)
+        try:
+            f.sendcmd("PORT 10,1,2,3,4,5"); raise AssertionError("bounce")
+        except ftplib.error_perm as e:
+            assert str(e).startswith("500"), e
         f.quit()
 
         # Read-only user, wrong password.
@@ -119,6 +164,12 @@ def main():
                 fh.write(b"sftp upload " * 100)
             assert sf.stat("/out/ocoren/OCOREN_0144.txt").st_size == 1200
             sf.rename("/out/ocoren/OCOREN_0144.txt", "/out/ocoren/OCOREN_0145.txt")
+            for bad in (lambda: sf.open("/missing/x.txt", "wb"), lambda: sf.chdir("/missing")):
+                try:
+                    bad(); raise AssertionError("no such folder")
+                except FileNotFoundError:
+                    pass
+            s.call("GET", "/files/servers/edi-acme/file?path=/missing/x.txt", expect=404)
             sf.remove("/out/ocoren/OCOREN_0145.txt")
             t.close()
             t = paramiko.Transport(("127.0.0.1", s.SFTP_PORT)); t.connect(username="edi", password="secret")

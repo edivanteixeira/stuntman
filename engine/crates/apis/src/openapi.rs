@@ -604,7 +604,7 @@ pub async fn import(http: &reqwest::Client, service: &str, source: &str, text: O
     let info = root.get("info").cloned().unwrap_or(json!({}));
     let mut service = plugin::Service { name: service.into(), title: info.get("title").and_then(|t| t.as_str()).unwrap_or(service).to_string(), origin: "yours".into(),
         description: info.get("description").and_then(|d| d.as_str()).unwrap_or("").lines().next().unwrap_or("").chars().take(120).collect(),
-        base_url: if host.is_empty() { String::new() } else { format!("https://{host}") }, real_host: host, ..Default::default() };
+        base_url: if host.is_empty() { String::new() } else { format!("https://{host}") }, real_host: host.into(), ..Default::default() };
     if token_path.is_some() {
         service.auth.oauth2_client_credentials = Some(OAuth { any_client: true, token_ttl: "60m".into(), ..Default::default() });
     }
@@ -722,14 +722,14 @@ pub fn tools() -> Vec<Tool> {
             let mut v = if text.trim_start().starts_with('<') {
                 let mut im = crate::soap::import(&ctx.http, &s, &src, Some(text)).await?;
                 if let Some(t) = a.str("title") { im.plugin.service.title = t; }
-                if let Some(h) = a.str("real_host") { im.plugin.service.real_host = h; }
+                if let Some(h) = a.str("real_host") { im.plugin.service.real_host = h.into(); }
                 let mut v = crate::soap::save(&ctx, im, None)?;
                 v["kind"] = json!("wsdl");
                 v
             } else {
                 let mut im = import(&ctx.http, &s, &src, Some(text)).await?;
                 if let Some(t) = a.str("title") { im.plugin.service.title = t; }
-                if let Some(h) = a.str("real_host") { im.plugin.service.real_host = h; }
+                if let Some(h) = a.str("real_host") { im.plugin.service.real_host = h.into(); }
                 if a.bool("validate") == Some(false) { if let Some(sp) = im.plugin.spec.as_mut() { sp.validate = false; } }
                 save(&ctx, im, None)?
             };
@@ -816,7 +816,7 @@ webhooks:
     async fn spec_to_plugin_and_checks() {
         let im = import(&reqwest::Client::new(), "example-payments", "openapi.yaml", Some(SPEC.into())).await.unwrap();
         let p = &im.plugin;
-        assert_eq!(p.service.real_host, "api.payments.example.com");
+        assert_eq!(p.service.real_host.first(), "api.payments.example.com");
         assert_eq!(p.service.title, "Example Payments API");
         let r = p.routes.iter().find(|r| r.route == "POST /v1/charges").unwrap();
         assert_eq!((r.operation.as_str(), r.receive.auth.as_str(), r.receive.schema.as_str(), r.receive.invalid.as_str()), ("createCharge", "bearer", "ChargeRequest", "invalid"));

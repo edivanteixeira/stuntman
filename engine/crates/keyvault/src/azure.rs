@@ -63,10 +63,33 @@ impl Req {
     }
 }
 
+/// The vault-wide outage set_vault provokes: 503 | timeout | refused (None: reachable).
+pub async fn reachability(ctx: &Ctx, vault: &str) -> Option<String> {
+    store::provoked(ctx, vault, "vault", "").await.ok().flatten().map(|p| p.0)
+}
+
 /// One data-plane request for the vault named by the host's first label.
 pub async fn handle(ctx: Ctx, host: String, method: Method, path: String, query: String, h: HeaderMap, body: Bytes) -> Response {
     let vname = host.split('.').next().unwrap_or("").to_string();
     let Ok(v) = config::get(&ctx, &vname) else { return azerr(404, "VaultNotFound", &format!("No vault {vname} in {}", ctx.env), None) };
+    let outage = |why: &str| store::Entry { vault: v.name.clone(), op: "Unavailable".into(), status: 503, request: format!("{method} {path}"), why: why.into(), ..Default::default() };
+    match reachability(&ctx, &v.name).await.as_deref() {
+        Some("503") => {
+            let _ = store::log(&ctx, outage("provoked: vault unavailable (503)")).await;
+            let mut r = azerr(503, "ServiceUnavailable", "The service is currently unavailable. Please try again later.", None);
+            r.headers_mut().insert("Retry-After", "10".parse().unwrap());
+            return r;
+        }
+        // The request hangs while the outage lasts (at most 10 minutes), as an unreachable vault behind a load balancer.
+        Some("timeout") => {
+            let _ = store::log(&ctx, store::Entry { status: 0, ..outage("provoked: vault timeout (held)") }).await;
+            for _ in 0..600 {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                if reachability(&ctx, &v.name).await.as_deref() != Some("timeout") { break; }
+            }
+        }
+        _ => {}
+    }
     let base = format!("https://{host}");
     let auth = h.get("authorization").and_then(|x| x.to_str().ok()).unwrap_or("").to_string();
     if !auth.to_lowercase().starts_with("bearer ") {
@@ -163,6 +186,7 @@ async fn gate(r: &Req, op: &str, kind: &str, name: &str, need: Need) -> Result<(
         Some("404") | Some("missing") => Some(refuse(404, match kind { SECRET => "SecretNotFound", KEY => "KeyNotFound", _ => "CertificateNotFound" }, format!("A {what} with (name/id) {name} was not found in this key vault."), None)),
         Some("disabled") => Some(refuse(403, "Forbidden", format!("Operation {} is not allowed on a disabled {what}.", if op.starts_with("Get") { "get".into() } else { op.to_lowercase() }), Some(match kind { SECRET => "SecretDisabled", _ => "KeyDisabled" }))),
         Some("429") => Some(refuse(429, "Throttled", "Request was not processed because too many requests were received (provoked).".into(), None)),
+        Some("503") => Some(refuse(503, "ServiceUnavailable", "The service is currently unavailable. Please try again later.".into(), None)),
         _ => None,
     };
     if let Some((st, code, msg, inner)) = out {

@@ -106,13 +106,13 @@ pub fn all() -> Vec<Tool> {
             store::update(&ctx, &v.name, SECRET, &n, &x.id, a.bool("enabled"), None, exp, None, None).await?;
             Ok(json!({"name": n, "version": x.id}))
         }).req("name", "secret name").param("enabled", "true or false").param("expires", "now, never or 30d").param("version", "default current").param("vault", "vault").route("PATCH", "/keyvault/secrets/{name}"),
-        Tool::new("provoke_secret", "Makes the next reads of a secret fail: 403, 404, disabled, 429 or slow (3 s), for a while or until changed; normal stops it.", |ctx, a| async move {
+        Tool::new("provoke_secret", "Makes the next reads of a secret fail: 403, 404, disabled, 429, 503 or slow (3 s), for a while or until changed; normal stops it.", |ctx, a| async move {
             let v = config::pick(&ctx, a.str("vault"))?;
             let ans = a.need("answer")?;
-            if !["normal", "403", "404", "disabled", "429", "slow"].contains(&ans.as_str()) { return Err(ApiError::bad("answer: normal, 403, 404, disabled, 429 or slow")); }
+            if !["normal", "403", "404", "disabled", "429", "503", "slow"].contains(&ans.as_str()) { return Err(ApiError::bad("answer: normal, 403, 404, disabled, 429, 503 or slow")); }
             store::provoke(&ctx, &v.name, SECRET, &a.need("name")?, &ans, until(&a)?, &who(&a)).await?;
             Ok(json!({"answer": ans}))
-        }).req("name", "secret name").req("answer", "normal | 403 | 404 | disabled | 429 | slow").param("for", "10m (default: until changed)").param("vault", "vault").param("by", "who").route("POST", "/keyvault/secrets/{name}/provoke"),
+        }).req("name", "secret name").req("answer", "normal | 403 | 404 | disabled | 429 | 503 | slow").param("for", "10m (default: until changed)").param("vault", "vault").param("by", "who").route("POST", "/keyvault/secrets/{name}/provoke"),
         Tool::new("secret_reads", "Who read a secret, how often, and whether it looks cached (per process).", |ctx, a| async move {
             let v = config::pick(&ctx, a.str("vault"))?;
             let n = a.need("name")?;
@@ -261,7 +261,7 @@ pub fn all() -> Vec<Tool> {
                 "imds": {"url": format!("{}/metadata/identity/oauth2/token", ctx.app_url(stuntman_core::main_port())), "provoked": imds.map(|x| x.0)},
                 "deleted": {"secrets": store::deleted(&ctx, &v.name, SECRET).await?, "keys": store::deleted(&ctx, &v.name, KEY).await?, "certificates": store::deleted(&ctx, &v.name, CERT).await?}}))
         }).param("name", "vault name (default the first)").route("GET", "/keyvault/vaults/{name}"),
-        Tool::new("set_vault", "Creates or changes a vault: any_token, throttle (2000/10s), latency, soft_delete_days, subscribers, seed_on_reset. A new vault imports this environment's secret:// values.", |ctx, a| async move {
+        Tool::new("set_vault", "Creates or changes a vault: any_token, throttle (2000/10s), latency, soft_delete_days, subscribers, seed_on_reset; reachability (503, timeout, refused, normal; with for) takes the whole vault down. A new vault imports this environment's secret:// values.", |ctx, a| async move {
             let name = a.need("name")?;
             config::valid_name(&name)?;
             let created = config::get(&ctx, &name).is_err();
@@ -273,6 +273,10 @@ pub fn all() -> Vec<Tool> {
             if let Some(x) = a.bool("seed_on_reset") { v.behaviour.seed_on_reset = x; }
             if a.get("subscribers").is_some() { v.subscribers = a.list("subscribers"); }
             if let Some(ids) = a.get("identities") { v.access.identities = serde_json::from_value(ids.clone()).map_err(|e| ApiError::bad(format!("identities: {e}")))?; }
+            if let Some(x) = a.str("reachability") {
+                if !["normal", "503", "timeout", "refused"].contains(&x.as_str()) { return Err(ApiError::bad("reachability: normal, 503, timeout or refused")); }
+                store::provoke(&ctx, &name, "vault", "", &x, until(&a)?, &who(&a)).await?;
+            }
             if v.behaviour.throttle() .is_none() && v.behaviour.throttle != "off" { return Err(ApiError::bad("throttle: like 2000/10s, or off")); }
             config::save(&ctx, &v)?;
             if created {
@@ -284,9 +288,9 @@ pub fn all() -> Vec<Tool> {
                 }
             }
             ctx.live.send("keyvault.vault", &name, "changed");
-            Ok(json!({"vault": v, "created": created}))
+            Ok(json!({"vault": v, "created": created, "reachability": crate::azure::reachability(&ctx, &name).await.unwrap_or("normal".into())}))
         }).req("name", "vault name").param("any_token", "true: every token reads everything").param("throttle", "2000/10s or off").param("latency", "none or 300ms")
-          .param("soft_delete_days", "90").param("subscribers", "Event Grid endpoint URLs").param("identities", "[{id, roles, scope}] (replaces)").param("seed_on_reset", "load seed/secrets.yaml on reset")
+          .param("soft_delete_days", "90").param("subscribers", "Event Grid endpoint URLs").param("identities", "[{id, roles, scope}] (replaces)").param("seed_on_reset", "load seed/secrets.yaml on reset").param("reachability", "normal | 503 | timeout | refused: every data-plane call to the vault").param("for", "10m (default: until changed)").param("by", "who")
           .route("PUT", "/keyvault/vaults/{name}"),
         Tool::new("set_vault_identity", "Adds or changes an identity: roles (administrator, secrets-user, secrets-officer, crypto-user, crypto-officer, certificate-user, certificates-officer) and name scopes. No roles removes it.", |ctx, a| async move {
             let mut v = config::pick(&ctx, a.str("vault"))?;

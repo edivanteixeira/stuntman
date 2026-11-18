@@ -31,7 +31,40 @@ pub struct Access {
     pub policies: BTreeMap<String, Policy>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub managed_identity: bool,
+    /// RabbitMQ: users of the management API (rabbitmqadmin) allowed on this vhost, with their
+    /// configure / write / read patterns. A user declared there and missing here is refused.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub permissions: BTreeMap<String, Permission>,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Permission {
+    #[serde(default)]
+    pub configure: String,
+    #[serde(default)]
+    pub write: String,
+    #[serde(default)]
+    pub read: String,
+}
+
+/// A RabbitMQ policy (management API `/api/policies/<vhost>/<name>`): queues or exchanges whose
+/// name matches `pattern` take `definition` (max-length, overflow, delivery-limit,
+/// dead-letter-exchange…); the highest priority wins.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct RabbitPolicy {
+    pub pattern: String,
+    /// all | queues | classic_queues | quorum_queues | streams | exchanges
+    #[serde(rename = "apply-to", default = "all")]
+    pub apply_to: String,
+    #[serde(default)]
+    pub priority: i64,
+    #[serde(default)]
+    pub definition: BTreeMap<String, serde_json::Value>,
+}
+fn all() -> String {
+    "all".into()
+}
+pub const APPLY_TO: [&str; 6] = ["all", "queues", "classic_queues", "quorum_queues", "streams", "exchanges"];
 fn yes() -> bool {
     true
 }
@@ -53,6 +86,10 @@ pub struct Queue {
     /// RabbitMQ: x-dead-letter-exchange (empty: a rejected message is discarded).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub dead_letter_exchange: String,
+    /// RabbitMQ: the x-arguments it was declared with (x-queue-type, x-delivery-limit,
+    /// x-max-length, x-overflow, x-dead-letter-routing-key…).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub arguments: BTreeMap<String, serde_json::Value>,
     /// The app created it (auto create on): who and when; "Keep it in the YAML" clears it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub created_by: String,
@@ -84,8 +121,38 @@ pub struct Subscription {
     /// RabbitMQ: the binding key (topic pattern, direct key or empty for fanout).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub filter: String,
+    /// RabbitMQ: more binding keys between the same exchange and destination.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub created_by: String,
+}
+
+impl Subscription {
+    /// Every binding key: the filter and the others.
+    pub fn all_keys(&self) -> Vec<String> {
+        std::iter::once(self.filter.clone()).chain(self.keys.iter().cloned()).collect()
+    }
+    /// Adds a binding key; false when it was there.
+    pub fn add_key(&mut self, k: &str) -> bool {
+        if self.all_keys().iter().any(|x| x == k) {
+            return false;
+        }
+        self.keys.push(k.into());
+        true
+    }
+    /// Removes a binding key; true when none is left.
+    pub fn remove_key(&mut self, k: &str) -> bool {
+        if self.filter == k {
+            if self.keys.is_empty() {
+                return true;
+            }
+            self.filter = self.keys.remove(0);
+        } else {
+            self.keys.retain(|x| x != k);
+        }
+        false
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -96,6 +163,9 @@ pub struct Topic {
     /// Service Bus: subscriptions by name. RabbitMQ: bindings by destination queue.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub subscriptions: BTreeMap<String, Subscription>,
+    /// RabbitMQ: exchange-to-exchange bindings by destination exchange.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub exchanges: BTreeMap<String, Subscription>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub created_by: String,
 }
@@ -158,9 +228,39 @@ pub struct Namespace {
     pub behaviour: Behaviour,
     #[serde(default)]
     pub seed: String,
+    /// RabbitMQ: the vhost's default queue type (empty: classic).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub default_queue_type: String,
+    /// RabbitMQ: policies by name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub policies: BTreeMap<String, RabbitPolicy>,
 }
 
-pub const REACH: [&str; 5] = ["ok", "refuse", "timeout", "401", "busy"];
+pub const REACH: [&str; 7] = ["ok", "refuse", "timeout", "401", "busy", "down", "close"];
+
+/// Modes where the broker is gone: new connections are refused and open ones end
+/// (`down`: the TCP connection just drops, as a killed broker; `close`: a forced close first).
+pub fn is_down(mode: &str) -> bool {
+    matches!(mode, "down" | "close")
+}
+
+type Watches = std::sync::Mutex<std::collections::HashMap<String, tokio::sync::watch::Sender<String>>>;
+
+fn watches() -> &'static Watches {
+    static W: std::sync::OnceLock<Watches> = std::sync::OnceLock::new();
+    W.get_or_init(Default::default)
+}
+
+/// Open connections watch their namespace's reachability, so `down` reaches them at once.
+pub fn reach_watch(ctx: &Ctx, n: &Namespace) -> tokio::sync::watch::Receiver<String> {
+    watches().lock().unwrap().entry(format!("{}|{}", ctx.env, n.namespace)).or_insert_with(|| tokio::sync::watch::channel(n.behaviour.reachability.clone()).0).subscribe()
+}
+
+fn reach_publish(ctx: &Ctx, n: &Namespace) {
+    if let Some(tx) = watches().lock().unwrap().get(&format!("{}|{}", ctx.env, n.namespace)) {
+        tx.send_if_modified(|m| if *m != n.behaviour.reachability { *m = n.behaviour.reachability.clone(); true } else { false });
+    }
+}
 
 impl Namespace {
     pub fn new(kind: &str, name: &str) -> Self {
@@ -173,10 +273,12 @@ impl Namespace {
         Namespace {
             kind: kind.into(),
             namespace: name.into(),
-            access: Access { any_key: true, policies, managed_identity: false },
+            access: Access { any_key: true, policies, managed_identity: false, permissions: BTreeMap::new() },
             entities: BTreeMap::new(),
             behaviour: Behaviour::default(),
             seed: format!("seed/messaging/{name}"),
+            default_queue_type: String::new(),
+            policies: BTreeMap::new(),
         }
     }
 
@@ -188,26 +290,41 @@ impl Namespace {
         for (n, e) in &self.entities {
             valid_entity(n)?;
             match (&e.queue, &e.topic) {
-                (Some(q), None) => {
-                    util::parse_ms(&q.lock).ok_or(format!("entities.{n}.queue.lock: a duration like 30s"))?;
-                    if q.max_delivery == 0 {
-                        return Err(format!("entities.{n}.queue.max_delivery: 1 or more"));
-                    }
-                    if !q.ttl.is_empty() && q.ttl != "never" && util::parse_ms(&q.ttl).is_none() {
-                        return Err(format!("entities.{n}.queue.ttl: never or a duration like 14d"));
-                    }
-                }
-                (None, Some(t)) => {
-                    if self.kind == RABBIT && !["topic", "direct", "fanout", "headers", ""].contains(&t.kind.as_str()) {
-                        return Err(format!("entities.{n}.topic.kind: topic | direct | fanout | headers"));
-                    }
-                    for (s, sub) in &t.subscriptions {
-                        valid_entity(s)?;
-                        util::parse_ms(&sub.lock).ok_or(format!("entities.{n}.topic.subscriptions.{s}.lock: a duration like 30s"))?;
-                    }
-                }
-                _ => return Err(format!("entities.{n}: either queue or topic")),
+                // RabbitMQ keeps queues and exchanges apart: one name can be both (MassTransit does it).
+                (Some(_), Some(_)) if self.kind != RABBIT => return Err(format!("entities.{n}: either queue or topic")),
+                (None, None) => return Err(format!("entities.{n}: either queue or topic")),
+                _ => {}
             }
+            if let Some(q) = &e.queue {
+                util::parse_ms(&q.lock).ok_or(format!("entities.{n}.queue.lock: a duration like 30s"))?;
+                if q.max_delivery == 0 {
+                    return Err(format!("entities.{n}.queue.max_delivery: 1 or more"));
+                }
+                if !q.ttl.is_empty() && q.ttl != "never" && util::parse_ms(&q.ttl).is_none() {
+                    return Err(format!("entities.{n}.queue.ttl: never or a duration like 14d"));
+                }
+            }
+            if let Some(t) = &e.topic {
+                if self.kind == RABBIT && !["topic", "direct", "fanout", "headers", ""].contains(&t.kind.as_str()) {
+                    return Err(format!("entities.{n}.topic.kind: topic | direct | fanout | headers"));
+                }
+                for (s, sub) in &t.subscriptions {
+                    valid_entity(s)?;
+                    util::parse_ms(&sub.lock).ok_or(format!("entities.{n}.topic.subscriptions.{s}.lock: a duration like 30s"))?;
+                }
+                for x in t.exchanges.keys() {
+                    valid_entity(x)?;
+                }
+            }
+        }
+        if !["", "classic", "quorum", "stream"].contains(&self.default_queue_type.as_str()) {
+            return Err("default_queue_type: classic | quorum | stream".into());
+        }
+        for (name, p) in &self.policies {
+            if !APPLY_TO.contains(&p.apply_to.as_str()) {
+                return Err(format!("policies.{name}.apply-to: {}", APPLY_TO.join(" | ")));
+            }
+            regex::Regex::new(&p.pattern).map_err(|e| format!("policies.{name}.pattern: {e}"))?;
         }
         if latency_ms(&self.behaviour.latency).is_none() {
             return Err("behaviour.latency: none or a number of ms like 200ms".into());
@@ -274,6 +391,81 @@ impl Namespace {
             dead_letter_on_expiration: dle,
             dead_letter_exchange: dlx,
         }
+    }
+}
+
+/// What a RabbitMQ queue does: its type, the policy that applies to it and the limits its
+/// x-arguments and that policy give (the lower of both, as RabbitMQ does).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RabbitQueue {
+    /// classic | quorum | stream
+    pub kind: String,
+    /// The policy that applies; empty: none.
+    pub policy: String,
+    pub definition: BTreeMap<String, serde_json::Value>,
+    /// Quorum queues: returns (not nacks) before the message is dropped or dead-lettered.
+    pub delivery_limit: Option<i64>,
+    pub max_length: Option<i64>,
+    /// drop-head | reject-publish | reject-publish-dlx
+    pub overflow: String,
+    pub dead_letter_exchange: Option<String>,
+    pub dead_letter_routing_key: Option<String>,
+}
+
+/// RabbitMQ 4: a quorum queue without a delivery limit gets this one.
+pub const QUORUM_DELIVERY_LIMIT: i64 = 20;
+
+fn num(v: Option<&serde_json::Value>) -> Option<i64> {
+    v.and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+}
+
+fn min_of(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.min(y)),
+        (x, y) => x.or(y),
+    }
+}
+
+impl Namespace {
+    /// The policy of a queue or an exchange (`queue`: which kind of object the name is).
+    pub fn policy_for(&self, name: &str, queue_kind: Option<&str>) -> Option<(&String, &RabbitPolicy)> {
+        self.policies
+            .iter()
+            .filter(|(_, p)| {
+                let fits = match (p.apply_to.as_str(), queue_kind) {
+                    ("all", _) => true,
+                    ("exchanges", None) => true,
+                    ("queues", Some(_)) => true,
+                    ("classic_queues", Some("classic")) | ("quorum_queues", Some("quorum")) | ("streams", Some("stream")) => true,
+                    _ => false,
+                };
+                fits && regex::Regex::new(&p.pattern).map(|r| r.is_match(name)).unwrap_or(false)
+            })
+            .max_by(|a, b| a.1.priority.cmp(&b.1.priority).then(b.0.cmp(a.0)))
+    }
+
+    pub fn rabbit_queue(&self, name: &str) -> Option<RabbitQueue> {
+        let q = self.entities.get(name)?.queue.as_ref()?;
+        let arg = |k: &str| q.arguments.get(k);
+        let kind = arg("x-queue-type").and_then(|v| v.as_str()).unwrap_or("classic").to_string();
+        let (policy, definition) = self.policy_for(name, Some(&kind)).map(|(n, p)| (n.clone(), p.definition.clone())).unwrap_or_default();
+        let def = |k: &str| definition.get(k);
+        let s = |v: Option<&serde_json::Value>| v.and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from);
+        let delivery_limit = if kind == "quorum" {
+            min_of(num(arg("x-delivery-limit")), num(def("delivery-limit"))).or(Some(QUORUM_DELIVERY_LIMIT)).filter(|n| *n >= 0)
+        } else {
+            None
+        };
+        Some(RabbitQueue {
+            delivery_limit,
+            max_length: min_of(num(arg("x-max-length")), num(def("max-length"))),
+            overflow: s(arg("x-overflow")).or(s(def("overflow"))).unwrap_or_else(|| "drop-head".into()),
+            dead_letter_exchange: Some(q.dead_letter_exchange.clone()).filter(|s| !s.is_empty()).or(s(arg("x-dead-letter-exchange"))).or(s(def("dead-letter-exchange"))),
+            dead_letter_routing_key: s(arg("x-dead-letter-routing-key")).or(s(def("dead-letter-routing-key"))),
+            kind,
+            policy,
+            definition,
+        })
     }
 }
 
@@ -351,6 +543,7 @@ pub fn save(ctx: &Ctx, n: &Namespace) -> Result<(), ApiError> {
     let f = file(ctx, &n.namespace);
     let tmp = f.with_extension("yaml.tmp");
     std::fs::write(&tmp, t).and_then(|_| std::fs::rename(&tmp, &f)).map_err(|e| ApiError::internal(e.to_string()))?;
+    reach_publish(ctx, n);
     ctx.live.send("messaging.namespace", &n.namespace, "updated");
     Ok(())
 }
@@ -365,6 +558,7 @@ pub fn change<F: FnOnce(&mut Namespace) -> Result<(), ApiError>>(ctx: &Ctx, name
     let path = file(ctx, name);
     let tmp = path.with_extension("yaml.tmp");
     std::fs::write(&tmp, t).and_then(|_| std::fs::rename(&tmp, &path)).map_err(|e| ApiError::internal(e.to_string()))?;
+    reach_publish(ctx, &n);
     ctx.live.send("messaging.namespace", name, "updated");
     Ok(n)
 }
@@ -442,10 +636,43 @@ mod t {
         assert_eq!(n.limits("document-events/subscriptions/audit").lock_ms, 120_000);
         n.behaviour.throughput = "throttle_now".into();
         assert_eq!(n.throughput(), Some(Some(0)));
-        n.behaviour.reachability = "down".into();
+        n.behaviour.reachability = "dead".into();
         assert!(n.validate().is_err());
         let y = serde_yaml::to_string(&Namespace::new(RABBIT, "acme-rabbit-stg")).unwrap();
+        assert!(!y.contains("\npolicies:") && !y.contains("default_queue_type"));
         assert!(y.contains("kind: rabbitmq"));
         assert!(serde_yaml::from_str::<Namespace>(&y).unwrap().validate().is_ok());
+    }
+
+    #[test]
+    fn rabbit_queue_takes_the_policy_and_the_lower_limit() {
+        let mut n = Namespace::new(RABBIT, "acme-rabbit-stg");
+        let q = |args: serde_json::Value| Entity { queue: Some(Queue { lock: "30s".into(), max_delivery: 10, arguments: serde_json::from_value(args).unwrap(), ..Default::default() }), topic: Some(Topic { kind: "fanout".into(), ..Default::default() }) };
+        n.entities.insert("orders".into(), q(serde_json::json!({"x-queue-type": "quorum"})));
+        n.entities.insert("orders-capped".into(), q(serde_json::json!({"x-queue-type": "quorum", "x-max-length": 2, "x-delivery-limit": 50})));
+        n.entities.insert("audit".into(), q(serde_json::json!({})));
+        n.entities.insert("globex-reports".into(), q(serde_json::json!({"x-queue-type": "quorum"})));
+        let def = |m: serde_json::Value| serde_json::from_value(m).unwrap();
+        n.policies.insert("acme-defaults".into(), RabbitPolicy { pattern: ".*".into(), apply_to: "quorum_queues".into(), priority: 10, definition: def(serde_json::json!({"max-length": 5000, "overflow": "drop-head", "delivery-limit": 3})) });
+        n.policies.insert("globex-reports".into(), RabbitPolicy { pattern: "^globex-reports$".into(), apply_to: "quorum_queues".into(), priority: 20, definition: def(serde_json::json!({"max-length": 5000, "delivery-limit": 5, "consumer-timeout": 3600000})) });
+        assert!(n.validate().is_ok(), "{:?}", n.validate());
+        let o = n.rabbit_queue("orders").unwrap();
+        assert_eq!((o.kind.as_str(), o.policy.as_str(), o.delivery_limit, o.max_length, o.overflow.as_str()), ("quorum", "acme-defaults", Some(3), Some(5000), "drop-head"));
+        let c = n.rabbit_queue("orders-capped").unwrap();
+        assert_eq!((c.delivery_limit, c.max_length), (Some(3), Some(2)));
+        assert_eq!(n.rabbit_queue("globex-reports").unwrap().policy, "globex-reports");
+        // a classic queue: the policy is for quorum queues, and classic queues have no delivery limit
+        let a = n.rabbit_queue("audit").unwrap();
+        assert_eq!((a.kind.as_str(), a.policy.as_str(), a.delivery_limit, a.max_length), ("classic", "", None, None));
+        n.policies.clear();
+        assert_eq!(n.rabbit_queue("orders").unwrap().delivery_limit, Some(QUORUM_DELIVERY_LIMIT));
+        n.policies.insert("bad".into(), RabbitPolicy { pattern: "(".into(), apply_to: "all".into(), ..Default::default() });
+        assert!(n.validate().is_err());
+        n.policies.insert("bad".into(), RabbitPolicy { pattern: ".*".into(), apply_to: "nope".into(), ..Default::default() });
+        assert!(n.validate().is_err());
+        // Service Bus still keeps one name for one thing
+        let mut sb = Namespace::new(SB, "acme-bus-stg");
+        sb.entities.insert("x".into(), q(serde_json::json!({})));
+        assert!(sb.validate().is_err());
     }
 }

@@ -48,7 +48,7 @@ pub async fn service_view(ctx: &Ctx, p: &Plugin) -> Value {
         "signature": p.soap.as_ref().and_then(|s| s.signature.clone()), "icp": p.service.auth.client_certificate.as_ref().map(|c| c.icp).unwrap_or(false),
         "urls": {"local": format!("http://{ip}:{}{}/{}", crate::port(), ctx.prefix(), p.service.name), "host": format!("http://{}.{base}:{}", p.service.name, crate::port()),
                  "real": p.service.real_host, "realBase": p.service.base_url,
-                 "https": format!("https://{}:{}", if p.service.real_host.is_empty() { format!("{}.{base}", p.service.name) } else { p.service.real_host.clone() }, crate::tls_port())},
+                 "https": format!("https://{}:{}", if p.service.real_host.is_empty() { format!("{}.{base}", p.service.name) } else { p.service.real_host.first().to_string() }, crate::tls_port())},
     })
 }
 
@@ -668,16 +668,19 @@ fn service_tools() -> Vec<Tool> {
                     _ => Some(plugin::Idempotency { header: "Idempotency-Key".into(), ttl: "24h".into() }),
                 };
             }
-            for (k, f) in [("base_url", &mut sv.base_url), ("real_host", &mut sv.real_host), ("title", &mut sv.title), ("description", &mut sv.description)] {
+            for (k, f) in [("base_url", &mut sv.base_url), ("title", &mut sv.title), ("description", &mut sv.description)] {
                 if let Some(x) = a.str(k) {
                     *f = x;
                 }
+            }
+            if a.get("real_host").is_some() {
+                sv.real_host = a.list("real_host").into();
             }
             let v = plugin::save(&ctx, &p)?;
             Ok(json!({"service": p.service, "version": v}))
         })
         .req("service", "plugin").param("any_client", "bool").param("token_ttl", "60m").param("client_certificate", "bool: require the app's certificate (mTLS) on HTTPS").param("client_certificate_icp", "bool: the certificate must carry a CNPJ (ICP-Brasil e-CNPJ)").param("session_ttl", "30m: session-cookie portals").param("billing", "bool: count billable calls").param("per_call", "price").param("warn_above", "100/day")
-        .param("latency", "300ms..600ms | none").param("rate", "10/s | none").param("fail_share", "0 to 1, or 50%").param("base_url", "real base URL").param("real_host", "real host name").param("title", "display name").param("version", "the version you read")
+        .param("latency", "300ms..600ms | none").param("rate", "10/s | none").param("fail_share", "0 to 1, or 50%").param("base_url", "real base URL").param("real_host", "real host name, or a list (several names, comma-separated)").param("title", "display name").param("version", "the version you read")
         .param("webhook_signing", "hex | hex_ts | stripe | svix | github | cloudevents | twilio | slack | shopify | hubspot | none").param("webhook_secret", "secret://name").param("webhook_header", "the signature header").param("webhook_tolerance", "seconds, 300")
         .param("webhook_provoke", "wrong_signature, old_timestamp, no_signature, twice, out_of_order | none").param("idempotency", "true | false | the header name (Idempotency-Key)")
         .param("xml_signature_check", "SOAP: bool, check the request's XML signature").param("xml_signature_sign", "SOAP: the answer element to sign (infProt), empty: none").param("xml_signature_invalid", "SOAP: the answer for a bad signature").param("xml_signature_sha256", "SOAP: bool, RSA-SHA256 instead of RSA-SHA1")

@@ -33,7 +33,7 @@ Stuntman write it.
 | **Webhooks** | sends after answering, signed like the provider: HMAC hex, Stripe, Svix, GitHub, CloudEvents, Twilio, Slack, Shopify or HubSpot; delays follow the [environment's clock](clock.md) |
 | **WireMock** | a folder of WireMock mappings becomes plugins, templates included ([WireMock mocks](mocks.md)) |
 | **It keeps** | state collections per route, data tables (people, documents…), every call with its answer and sentence |
-| **You can provoke** | any named answer or SOAP fault, latency, `reset`, `empty`, `timeout`, `401`, `403`, `500`, `503`, an HTML error page with 200; expired tokens; rate limits; a share of failures; a stream that is `cut` or `slow`; webhooks badly signed, too old, sent twice or out of order |
+| **You can provoke** | any named answer or SOAP fault, latency, `reset`, `empty`, `timeout`, `401`, `403`, `500`, `503`, an HTML error page with 200 or with 503 (`503_html`); expired tokens; rate limits; a share of failures; a stream that is `cut` or `slow`; webhooks badly signed, too old, sent twice or out of order |
 | **Also** | per-call billing counters, `Idempotency-Key` replays, unmatched requests with "create a route from this request" |
 
 The catalog, by collection:
@@ -156,7 +156,7 @@ Each server is a folder; FTP, FTPS and SFTP all see the same files.
 
 | | |
 |---|---|
-| **Speaks** | FTP and explicit FTPS (AUTH TLS, PROT P) on `:2121`, passive mode (PASV, EPSV) with the commands EDI clients use (LIST, NLST, MLSD, RETR, STOR, APPE, DELE, MKD, RMD, RNFR/RNTO, SIZE, MDTM, REST); SFTP (SSH with password logins) on `:2222` |
+| **Speaks** | FTP and explicit FTPS (AUTH TLS, PROT P) on `:2121`, passive (PASV, EPSV) and active mode (PORT, EPRT) with the commands EDI clients use (LIST, NLST, MLSD, RETR, STOR, APPE, DELE, MKD, RMD, RNFR/RNTO, SIZE, MDTM, REST); SFTP (SSH with password logins) on `:2222` |
 | **Point your app at** | host `localhost`, port `2121` (FTP/FTPS) or `2222` (SFTP); the login is `user` or `user@server`; FTPS uses the [Test CA](configuration.md#the-stuntman-test-ca) |
 | **It keeps** | each server's users (`read_only` ones get "permission denied" on writes) and folders under `files/<server>/`, and every login and transfer; servers in `files/servers.yaml` |
 | **You can provoke** | `set_file_server` with `provoke`: `login_refused` (530), `disk_full` (552 on uploads), `permission_denied` (550), `drop_mid` (the transfer breaks after 4 KB), `slow` (20 KB/s), `host_key_changed` (SFTP shows another host key) |
@@ -164,6 +164,12 @@ Each server is a folder; FTP, FTPS and SFTP all see the same files.
 A user with no password takes any password except `wrong`. The SFTP host key is kept (`files/ssh_host_ed25519`), so a
 client that pinned it keeps trusting it. One port serves every environment: logins go to the default one. In Docker,
 passive data connections use ports `30000-30009` (`STUNTMAN_FTP_PASSIVE_PORTS`); see [Configuration](configuration.md).
+
+Folders exist only when `set_file_server` declares them (`folders`) or a client makes them (MKD, mkdir). An upload
+into a folder that does not exist fails as on a real server: FTP answers `553 Could not create file.` (vsftpd),
+SFTP `SSH_FX_NO_SUCH_FILE`, and no file is made; CWD into it answers `550`. In active mode the server connects back to
+the address PORT/EPRT gave, only to the client's own IP (as vsftpd: `500 Illegal PORT command.` otherwise); when it
+cannot connect it answers `425 Can't open data connection.`, which is also what a client behind NAT (Docker bridge) gets.
 
 ```text
 set_file_server {"name": "edi-acme", "users": [{"user": "edi", "password": "s3cret"}], "folders": ["/in", "/out"]}
@@ -183,12 +189,51 @@ Tools: `list_file_servers`, `set_file_server`, `list_files`, `get_file`, `put_fi
 | **Speaks** | AMQP for Azure Service Bus, Azure Event Hubs ([below](#azure-event-hubs)) and RabbitMQ, on `:5673` (and `:5671` with TLS); ActiveMQ over OpenWire on `:61616` ([below](#activemq-openwire)) |
 | **Point your app at** | Service Bus: `Endpoint=sb://<namespace>.<env base domain>:5673;…` (any key), or `:5300` for the [administration client](#management-administration-client) too; RabbitMQ: `<host>:5673`, vhost `<env>/<namespace>` |
 | **It keeps** | namespaces, queues, topics, subscriptions, every message with its deliveries, consumers and their locks |
-| **You can provoke** | lost locks, duplicates, held, dropped, dead-lettered or out-of-order messages; a namespace that refuses, times out, rejects the key or is busy |
+| **You can provoke** | lost locks, duplicates, held, dropped, dead-lettered or out-of-order messages; a namespace that refuses, times out, rejects the key, is busy, or goes down (`down`, `close`: open connections drop) |
 
 **RabbitMQ management API.** Tools and libraries that create vhosts, queues, exchanges and bindings over HTTP
-before they connect (MassTransit, provisioning scripts) find it on `:15672`: `/api/overview`, `/api/whoami`,
-`/api/vhosts`, `/api/permissions`, `/api/queues`, `/api/exchanges`, `/api/bindings`, `/api/aliveness-test`. Its vhosts
-are the RabbitMQ namespaces of the default environment, so what a script creates there is what the app finds on AMQP.
+before they connect (MassTransit setups, provisioning scripts, `rabbitmqadmin` v2) find it on `:15672`
+(`STUNTMAN_RABBITMQ_MGMT_PORT`). Its vhosts are the RabbitMQ namespaces of the default environment, so what a
+script creates there is what the app finds on AMQP. It answers:
+
+- `/api/overview`, `/api/whoami`, `/api/health/checks/alarms` and `local-alarms` (503 while a namespace is set to
+  busy), `/api/healthchecks/node`, `/api/aliveness-test/{vhost}`
+- `/api/vhosts[/{vhost}]`: GET, PUT (with `default_queue_type`; a PUT without it sets it back to classic, as
+  RabbitMQ does), DELETE. An unknown vhost is 404 here; it is not created.
+- `/api/users[/{user}]` (PUT with `password` or `password_hash`, `tags`), `/api/users/{user}/permissions`,
+  `/api/permissions[/{vhost}/{user}]`, `/api/vhosts/{vhost}/permissions`
+- `/api/policies[/{vhost}[/{name}]]`: GET returns what was PUT (pattern, apply-to, priority, definition)
+- `/api/queues[/{vhost}[/{name}]]` (`?columns=`, DELETE with `if-unused` / `if-empty`; quorum queues refuse
+  both, as in RabbitMQ 4), `/api/queues/{vhost}/{name}/contents`
+- `/api/exchanges[/{vhost}[/{name}]]` (DELETE with `if-unused`), `/api/bindings[/{vhost}]`,
+  `/api/bindings/{vhost}/e/{x}/q/{q}` and `/e/{x}/e/{x2}` (POST, GET, DELETE `/{props}`)
+
+What the broker does with them, as RabbitMQ 4:
+
+- A queue and an exchange may share a name; exchange-to-exchange bindings are followed (MassTransit's topology:
+  a fanout exchange per message type bound to the endpoint's exchange); one binding may carry several keys.
+- `x-queue-type` and the vhost's default type make quorum queues (durable, not exclusive). A redeclare with another
+  type gets `PRECONDITION_FAILED`.
+- Policies and `x-` arguments apply (the lower limit wins): `max-length` with `overflow` `drop-head` drops the
+  oldest ready message, `reject-publish` nacks the publish; `delivery-limit` (quorum queues, 20 when unset) drops a
+  message returned to the queue (its channel closed with it unacked) more times than the limit, and counts returns
+  in `x-delivery-count`. A nack or reject with requeue does not count, as in RabbitMQ 4.
+- A rejected message, a dropped head and a message over its delivery limit go to the queue's dead-letter exchange
+  (`x-dead-letter-exchange` or the policy's `dead-letter-exchange`) with `x-death` and `x-first-death-*` headers;
+  without one they are discarded (the screen still shows them as dead-lettered).
+- A user declared through the API is checked: a wrong password gets 401 here and `ACCESS_REFUSED` on AMQP, and a vhost
+  with no permission for that user refuses the connection (`NOT_ALLOWED`). A user without the `administrator` tag sees
+  only its vhosts and cannot change vhosts, users, permissions or policies (`policymaker` may change policies). Users
+  nobody declared get in as before (the namespace's “Accept any key”).
+
+A namespace set to `down` (or `close`) with `set_namespace_reachability` acts as a stopped broker: open AMQP
+connections drop at once (`down`: the TCP connection closes without connection.close, as a killed process; `close`:
+320 CONNECTION_FORCED first), new ones are refused, unacked deliveries go back to their queues, and the management
+API answers 503 for that vhost's endpoints (the port is shared with the other vhosts, so it cannot refuse the
+connection). Queued messages stay. `ok` brings it back. Service Bus namespaces follow the same modes.
+
+Not done: `consumer-timeout` is kept in the policy but not enforced; permission patterns are kept but not checked per
+operation; `/` is an alias of the first RabbitMQ namespace.
 
 Service Bus finds the namespace by host name: give the environment a base domain under a wildcard DNS name that
 points at Stuntman. See [Environments](environments.md#how-a-request-finds-its-environment).
@@ -569,12 +614,19 @@ The same provider, its users and its apps also answer the older ways apps sign p
 
 | | |
 |---|---|
-| **Speaks** | Azure Key Vault over HTTPS on `:8444`, and the managed identity (IMDS) token endpoint |
+| **Speaks** | Azure Key Vault over HTTPS on `:8444`, and the managed identity token endpoints: IMDS (`/metadata/identity/oauth2/token`) and App Service (`/msi/token`) on `:8025` |
 | **Point your app at** | `https://<vault>.vault.<env base domain>:8444`; trust the Stuntman Test CA |
 | **It keeps** | secrets with versions, keys that really sign, verify, wrap and unwrap, certificates, who read what and how often |
-| **You can provoke** | 403, 404, 429, disabled, slow reads (`provoke_secret`); wrong signatures (`provoke_key`); missing, expired, not-yet-valid or untrusted certificates; an IMDS that fails or has no identity |
+| **You can provoke** | 403, 404, 429, 503, disabled, slow reads (`provoke_secret`); a whole vault down: 503, timeout or refused (`set_vault` with `reachability`); wrong signatures (`provoke_key`); missing, expired, not-yet-valid or untrusted certificates; an IMDS that fails or has no identity |
 
 Read counts prove caching: an app that reads a secret on every request shows up immediately.
+
+Managed identity, App Service form: set `IDENTITY_ENDPOINT=http://<stuntman>:8025/msi/token` and any `IDENTITY_HEADER`
+in the app, and Azure.Identity's `ManagedIdentityCredential` calls `GET /msi/token?resource=…&api-version=2019-08-01`
+(`client_id`, `principal_id` or `mi_res_id` names the identity; without one, the `IDENTITY_HEADER` value does) with
+`X-IDENTITY-HEADER`. The answer is `{access_token, expires_on, resource, token_type, client_id}`. A call without the
+header gets 400 (`{"statusCode": 400, "message": …}`); set `STUNTMAN_IDENTITY_HEADER` to also refuse a wrong value.
+`provoke_imds` applies to both endpoints.
 
 A disabled version answers as Azure does: 403 `Forbidden` (inner `KeyDisabled` / `SecretDisabled`), "Operation get is
 not allowed on a disabled key." (or secret; sign, encrypt, wrap… likewise). Properties update per version or for the

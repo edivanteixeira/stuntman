@@ -181,6 +181,7 @@ async fn handle(envs: Envs, req: Request<Incoming>) -> Response<Full<Bytes>> {
     match n.behaviour.reachability.as_str() {
         "401" => return error(StatusCode::UNAUTHORIZED, "InvalidSignature: The token has an invalid signature (Stuntman: the namespace is set to 401)."),
         "busy" => return error(StatusCode::SERVICE_UNAVAILABLE, "ServerBusy (Stuntman: the namespace is set to busy)."),
+        "down" | "close" => return error(StatusCode::SERVICE_UNAVAILABLE, "ServiceUnavailable (Stuntman: the namespace is set to down)."),
         "timeout" => {
             tokio::time::sleep(std::time::Duration::from_secs(600)).await;
             return error(StatusCode::GATEWAY_TIMEOUT, "timeout");

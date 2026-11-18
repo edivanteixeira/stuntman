@@ -49,18 +49,18 @@ service.
 | `url`, `urlPath`, `urlPathTemplate` | the route's path (`{name}` segments; query parameters in `url` become conditions) |
 | `urlPattern`, `urlPathPattern` | a [regex route](plugins.md#regex-routes) (`GET ~/v2/positions/[A-Z0-9]+`), or a plain path when the pattern has no regex in it; the query part of a `urlPattern` is reported as a gap |
 | no URL at all | a route that takes every path (`~.*`) |
-| `method` | the route's method; `ANY` becomes a `GET` and a `POST` route |
-| `queryParameters`, `headers` | conditions in `decide`: `equalTo`, `contains`, `doesNotContain`, `matches`, `doesNotMatch`, `absent` |
+| `method` | the route's method; `ANY` becomes an `ANY` route, which takes every method |
+| `queryParameters`, `headers` | conditions in `decide`: `equalTo`, `contains`, `doesNotContain`, `matches`, `doesNotMatch`, `absent`; `matches` is a whole-value match, as Java's `String.matches` (`^(?:re)$`) |
 | `host` | only used by `group_by=host` |
 | `basicAuthCredentials` | a condition on the `Authorization` header (`Basic` with that user and password) |
 | `cookies` | conditions on one cookie each: `cookie(headers['cookie'], 'sid') == 's1'` |
-| `bodyPatterns` | conditions on the body: `equalTo`, `contains`, `matches` and their negations, `equalToJson` (one condition per field, nested objects included; lists compare whole and in order), `matchesJsonPath` (a path, or a `$[?(@.x == 'y')]` filter), `matchesXPath` (the forms mocks use: `//x`, `//x[text()='y']`, `//*[local-name()='x' and text()='y']`) |
-| each mapping | one rule in the route's `decide` and one named answer; rules follow the mappings' `priority` |
+| `bodyPatterns` | conditions on the body: `equalTo`, `contains`, `matches` and their negations, `equalToJson` (one condition per field, nested objects included; lists compare whole and in order), `matchesJsonPath` (a path, or a `$[?(@.x == 'y')]` filter), `matchesXPath`, evaluated as XPath on the body: `/` and `//` steps, `*` or a name (any namespace), predicates joined by `and` (`local-name()`, `name()`, `text()`, `.`, a child, `@attr`, `contains(…)`, `starts-with(…)`, a position), a last `text()` or `@attr`; with an `equalTo`, `contains` or `matches` sub-matcher one of the values must match. Other XPath is reported as a gap |
+| each mapping | one rule and one named answer. As in WireMock, a request gets the best `priority` among every mapping that matches it (any path, any method), the one read last on a tie: each route holds every rule that can match its requests, in that order, including a pattern mapping's (`/acme/.*`) on the plain routes it covers. Rules copied onto another pattern route check `request_path` |
 | `status`, `headers`, `body`, `jsonBody`, `base64Body`, `bodyFileName` | the answer; a binary file is copied to `apis/<service>.files/` |
 | `fixedDelayMilliseconds`, `delayDistribution.median` | the answer's `latency` |
 | `fault` | `EMPTY_RESPONSE` becomes `empty`, the others `reset` |
 | `scenarioName`, `requiredScenarioState`, `newScenarioState` | [scenarios](plugins.md#scenarios): rules with `scenario == '…'` and a `scenario:` move after the answer |
-| a body with `{{ }}` or the `response-template` transformer | an answer with `template: handlebars` |
+| a body or a header with `{{ }}`, or the `response-template` transformer | an answer with `template: handlebars` (its headers render as templates too) |
 | `postServeActions` / `serveEventListeners` `webhook` | a `send` on the route that fires only after that mapping's answer (`when: answer == '…'`), with its method, URL, headers, body and delay; templates stay WireMock templates (`template: handlebars`) reading `originalRequest` and `originalResponse` |
 | no mapping matched | the answer `not_matched`: 404 "Request was not matched", as WireMock answers |
 
@@ -79,17 +79,18 @@ set_scenario(service="acme-tracking")            → back to Started
 
 ## Response templates
 
-An answer with `template: handlebars` renders its body like WireMock's response-template transformer. The template
+An answer with `template: handlebars` renders its body and its headers like WireMock's response-template transformer. The template
 reads `request`:
 
 | Field | Value |
 |---|---|
-| `request.url` | path and query |
-| `request.path`, `request.pathSegments.[n]` | the path inside the service, and its segments |
-| `request.query.<name>` | a query parameter |
-| `request.headers.<name>` | a header, whatever its case |
+| `request.url` | path and query, the query as the app sent it (`?h=a%26b`) |
+| `request.path`, `request.pathSegments.[n]` | the path inside the service, and its segments (see the limits) |
+| `request.query.<name>` | a query parameter: a list, as in WireMock. `{{request.query.c}}` prints the first value, `{{request.query.l.[1]}}` the second, `{{#each request.query.l}}` reads them all |
+| `request.headers.<name>` | a header, whatever its case; a list too (`request.headers.X-Id.[0]`) |
 | `request.body` | the body as text |
-| `request.method`, `request.baseUrl`, `request.host` | the rest of the request |
+| `request.method` | the method |
+| `request.scheme`, `request.host`, `request.port`, `request.baseUrl` | as received: host and port from the `Host` header (80 or 443 when it has no port), `baseUrl` is `scheme://host[:port]` without a default port or a trailing slash |
 
 Helpers:
 
@@ -98,13 +99,22 @@ Helpers:
 | `now` | `{{now}}`, `{{now format='yyyy-MM-dd'}}`, `{{now offset='3 days' timezone='America/New_York'}}`, `format='epoch'` or `'unix'` |
 | `randomValue` | `{{randomValue length=8 type='ALPHANUMERIC' uppercase=true}}`; types `ALPHANUMERIC`, `ALPHABETIC`, `NUMERIC`, `HEXADECIMAL`, `ALPHANUMERIC_AND_SYMBOLS`, `UUID` |
 | `randomInt` | `{{randomInt lower=1 upper=9}}` |
-| `math`, `numberFormat` | `{{math 2 '*' 3}}` (`+ - * / %`) |
+| `math`, `numberFormat` | `{{math 2 '*' 3}}` (`+ - * / %`), decimal arithmetic as WireMock's BigDecimal: `0.1 + 0.2` is `0.3`, `10 / 4` is `3` (division keeps the left operand's decimals, rounded half up), `1.5 * 2` is `3.0` |
 | `jsonPath` | `{{jsonPath request.body '$.order.id'}}` |
 | `xPath` | `{{xPath request.body '//protocol/text()'}}`, `//x/@attr`, `count(//x)` |
 | `regexExtract` | `{{regexExtract request.body '[A-Z]{3}[0-9]{4}'}}` |
-| `parseJson`, `assign` | `{{#parseJson request.body 'order'}}{{/parseJson}}{{order.id}}`; `{{#assign 'name'}}…{{/assign}}` |
-| strings | `trim`, `replace`, `contains`, `upper`, `lower`, `base64` (`decode=true` decodes), `size`, `toJson` |
-| logic | `eq`, `ne` (`neq`), `lt`, `gt`, `lte`, `gte`, `and`, `or`, `not`, and Handlebars' own `if`, `unless`, `each`, `with` |
+| `parseJson`, `assign` | `{{#parseJson request.body 'order'}}{{/parseJson}}{{order.id}}`; `{{#assign 'name'}}…{{/assign}}`. These variables (and `regexExtract`'s and `formData`'s) belong to the whole template: set or read them inside `each`, `with` or `if`; a field of the current item with the same name comes first. parseJson keeps a decimal's text (`-26.30`); text that is not JSON is a template error |
+| `formData` | `{{formData request.body 'f'}}{{f.k}}`: a urlencoded body as the variable `f`, each field a list; `urlDecode=true` decodes the values |
+| `matches`, `range` | `{{#if (matches request.url '.*/v2/.*')}}`: the whole value matches the regex (the block form renders nothing when it does not); `{{#each (range 1 3) as \|i\|}}{{i}}{{/each}}` |
+| strings | `trim`, `replace`, `contains`, `substring` (`{{substring 'abcdef' 1 3}}` → `bc`), `upper`, `lower`, `base64` (`decode=true` decodes), `size`, `toJson` |
+| logic | `eq`, `ne` (`neq`), `lt`, `gt`, `lte`, `gte`, `and`, `or`, `not`, and Handlebars' own `if`, `unless`, `each`, `with`, `lookup` |
+
+As in WireMock, the comparisons and `contains` also work as blocks (`{{#eq request.query.c.[0] '1'}}one{{else}}other{{/eq}}`),
+and `{{ }}` output is not HTML-escaped: a value with `&` or `"` goes into a JSON body as it is. `toJson`, and a
+`jsonPath` that finds an object or a list, print JSON as WireMock does (`{\n  "a" : 1\n}`, keys in their order).
+Whitespace follows Handlebars.java: lines with only a block tag are kept, and `~` does not trim the text before the
+first tag or after the last one. `randomValue` is lower case unless `uppercase=true`. A template that fails answers 500. A comparison takes the
+list as a list: `{{#eq request.query.c '1'}}` is false in WireMock and here; compare `request.query.c.[0]`.
 
 `now` reads the [environment's clock](clock.md), so a moved clock moves the dates in the answers too. You can use
 `template: handlebars` in any plugin, not only imported ones; plugin templates otherwise use
@@ -120,10 +130,14 @@ Helpers:
   `webhook`…) is listed in the import's gaps, file by file. `equalToJson` with `ignoreArrayOrder` is reported too:
   lists are compared in order. `pathParameters` of a `urlPathTemplate` match any value.
 - `host`, `port` and `scheme` are not conditions: the app reaches Stuntman, not the real host.
-- `ANY` becomes `GET` and `POST` only.
+- Mapping files are read in path order; WireMock's own order for equal priorities across files may differ.
+- When nothing matches, the 404 body is `Request was not matched`, without WireMock's closest-stub report.
 - Templates: `jsonPath` takes plain paths (`$.a.b`, `$.a[0]`, `$['a']`), not filters or wildcards; `xPath` takes the
-  forms listed above, not full XPath. Helpers not listed here (`pickRandom`, `dateFormat`, `parseDate`,
-  `formData`, `request.cookies`…) are not available.
+  forms listed above, not full XPath. Helpers not listed here (`pickRandom`, `dateFormat`, `parseDate`, `array`,
+  `request.cookies`…) are not available. WireMock has no `split` helper either.
+- `request.path` is the path inside the service: on `:8028/<service>/…` it does not include the `/<service>` prefix,
+  so it matches the mapping's `url` as WireMock saw it. A bare `{{x}}` whose value is a list prints the first item
+  (WireMock prints `request.pathSegments` whole).
 - Delays from `delayDistribution` use the median only; `chunkedDribbleDelay` is not read.
 - Proxying (`proxyBaseUrl`) is not imported: use [Recording](recording.md).
 - Request journals and the WireMock admin API (`/__admin`) are not served.

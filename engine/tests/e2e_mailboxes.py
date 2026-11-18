@@ -133,6 +133,42 @@ def main():
         log = s.call("GET", "/mailboxes/nfe@acme.example/messages")["log"]
         assert not any("s3cret" in x["line"] for x in log), "no passwords in the log"
         assert any("FETCH" in x["line"] for x in log), log[:5]
+
+        # Empty a mailbox between test runs: the password and folders stay; UIDs are never reused.
+        box = "/mailboxes/orders@acme.example"
+        s.call("PUT", box, {"password": "s3cret"})
+        for i in range(3):
+            last = s.call("POST", f"{box}/messages", {"from": "buyer@globex.example", "subject": f"Order {i}", "text": "x"})["uid"]
+        m = imap(s, "orders@acme.example")
+        typ, d = m.select("INBOX")
+        assert d == [b"3"], d
+        p = poplib.POP3("127.0.0.1", s.POP3_PORT)
+        p.user("orders@acme.example"); p.pass_("s3cret")
+        assert p.stat()[0] == 3
+        r = s.call("DELETE", f"{box}/messages")
+        assert r["removed"] == 3, r
+        assert s.call("GET", f"{box}/messages")["messages"] == []
+        # IMAP: the open session hears the expunges on its next command, as from another client.
+        assert m.noop()[0] == "OK"
+        untagged = [x for x in m.untagged_responses.get("EXPUNGE", [])]
+        assert len(untagged) == 3 and m.untagged_responses.get("EXISTS", [b"?"])[-1] == b"0", m.untagged_responses
+        m.logout()
+        # POP3: a session in TRANSACTION keeps the messages it saw at login.
+        assert p.stat()[0] == 3 and b"Order 0" in b"\n".join(p.retr(1)[1])
+        p.quit()
+        # The next message gets a new UID; the password still holds.
+        assert s.call("POST", f"{box}/messages", {"subject": "Order 4", "text": "x"})["uid"] > last
+        m = imap(s, "orders@acme.example")
+        assert m.select("INBOX")[1] == [b"1"]
+        m.logout()
+        s.call("POST", f"{box}/messages", {"subject": "Archived", "text": "x", "folder": "Archive"})
+        assert s.call("DELETE", f"{box}/messages?folder=INBOX")["removed"] == 1
+        assert len(s.call("GET", f"{box}/messages?folder=Archive")["messages"]) == 1
+        # Delete the mailbox: gone from the list; a second delete is 404.
+        s.call("DELETE", box)
+        assert all(x["address"] != "orders@acme.example" for x in s.call("GET", "/mailboxes")["mailboxes"])
+        s.call("DELETE", box, expect=404)
+        s.call("DELETE", f"{box}/messages", expect=404)
     print("Mailboxes e2e: ok")
 
 

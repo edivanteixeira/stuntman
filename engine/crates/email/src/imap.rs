@@ -247,6 +247,28 @@ async fn refresh(s: &mut S) {
     }
 }
 
+/// NOOP / IDLE: messages removed elsewhere (EXPUNGE, clear_mailbox) are told as EXPUNGE, then EXISTS
+/// when the count changed, as a server tells a session about another client's changes.
+async fn sync(c: &mut BufReader<BoxIo>, s: &mut S) -> std::io::Result<()> {
+    let before: Vec<i64> = s.view.iter().map(|m| m.uid).collect();
+    refresh(s).await;
+    if s.folder.is_none() {
+        return Ok(());
+    }
+    let now: std::collections::HashSet<i64> = s.view.iter().map(|m| m.uid).collect();
+    let mut removed = 0;
+    for (i, uid) in before.iter().enumerate() {
+        if !now.contains(uid) {
+            w(c, &format!("* {} EXPUNGE", i + 1 - removed)).await?;
+            removed += 1;
+        }
+    }
+    if removed > 0 || s.view.len() != before.len() {
+        w(c, &format!("* {} EXISTS", s.view.len())).await?;
+    }
+    Ok(())
+}
+
 async fn fetch(c: &mut BufReader<BoxIo>, s: &mut S, set: &str, items: &str, by_uid: bool) -> std::io::Result<bool> {
     let up = items.to_uppercase();
     let mut want: Vec<String> = match up.trim() {
@@ -405,10 +427,7 @@ async fn conn(ctx: Ctx, sock: tokio::net::TcpStream) {
                 Ok("CAPABILITY completed".into())
             }
             "NOOP" | "CHECK" => {
-                refresh(&mut s).await;
-                if s.folder.is_some() {
-                    let _ = w(&mut c, &format!("* {} EXISTS", s.view.len())).await;
-                }
+                let _ = sync(&mut c, &mut s).await;
                 Ok(format!("{cmd} completed"))
             }
             "LOGOUT" => {
@@ -614,18 +633,13 @@ async fn conn(ctx: Ctx, sock: tokio::net::TcpStream) {
             }
             "IDLE" => {
                 if w(&mut c, "+ idling").await.is_err() { break }
-                let mut known = s.view.len();
                 loop {
                     let mut l = String::new();
                     match tokio::time::timeout(Duration::from_secs(1), c.read_line(&mut l)).await {
                         Ok(Ok(0)) | Ok(Err(_)) => return,
                         Ok(Ok(_)) if l.trim().eq_ignore_ascii_case("DONE") => break,
                         _ => {
-                            refresh(&mut s).await;
-                            if s.view.len() != known {
-                                known = s.view.len();
-                                if w(&mut c, &format!("* {known} EXISTS")).await.is_err() { return }
-                            }
+                            if sync(&mut c, &mut s).await.is_err() { return }
                         }
                     }
                 }

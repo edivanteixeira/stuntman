@@ -127,7 +127,20 @@ put_mail    {"address": "invoices@acme.example", "from": "billing@globex.example
              "text": "Attached.", "attachments": [{"filename": "invoice-1234.xml", "content_type": "application/xml", "text": "<invoice/>"}]}
 ```
 
-Tools: `list_mailboxes`, `set_mailbox`, `put_mail`, `list_mailbox_messages`. In the web UI: **E-mail › Mailboxes**.
+To start each test run with an empty mailbox, `clear_mailbox` (`DELETE /api/mailboxes/{address}/messages`, optional
+`folder`) removes the messages and answers how many; the mailbox, its password and folders stay. As after an EXPUNGE,
+UIDVALIDITY and the next UID do not change, so UIDs are never reused. `delete_mailbox` (`DELETE /api/mailboxes/{address}`)
+removes the mailbox with its messages and log (404 when there is none); made again, it gets a new UIDVALIDITY.
+Open sessions: an IMAP session hears `* n EXPUNGE` and `* n EXISTS` on its next NOOP or during IDLE, as when another
+client removes messages; a POP3 session already logged in keeps the messages it saw at login, as POP3 does.
+
+```text
+clear_mailbox  {"address": "invoices@acme.example"}            → {"removed": 3}
+delete_mailbox {"address": "invoices@acme.example"}
+```
+
+Tools: `list_mailboxes`, `set_mailbox`, `put_mail`, `list_mailbox_messages`, `clear_mailbox`, `delete_mailbox`. In the web
+UI: **E-mail › Mailboxes**.
 
 ## Storage
 

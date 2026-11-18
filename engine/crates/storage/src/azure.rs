@@ -316,10 +316,8 @@ async fn run(c: Call, a: Account, container: String, blob: String) -> Response {
                 return o.into(&c.version);
             }
             let prefix = c.qm.get("prefix").cloned().unwrap_or_default();
-            let items: String = a.containers.keys().filter(|n| n.starts_with(&prefix)).map(|n| {
-                format!("<Container><Name>{}</Name><Properties><Last-Modified>{}</Last-Modified><Etag>\"0x8DD000000000000\"</Etag><LeaseStatus>unlocked</LeaseStatus><LeaseState>available</LeaseState><PublicAccess>{}</PublicAccess><HasImmutabilityPolicy>false</HasImmutabilityPolicy><HasLegalHold>false</HasLegalHold></Properties></Container>",
-                    xml_escape(n), auth::rfc1123(util::now_ms()), match a.containers[n].access.as_str() { "private" => "", x => x })
-            }).collect();
+            let items: String = a.containers.keys().filter(|n| n.starts_with(&prefix))
+                .map(|n| container_item(n, &a.containers[n].access, &auth::rfc1123(util::now_ms()))).collect();
             return Out::new(200).xml(format!("<EnumerationResults ServiceEndpoint=\"{}/\"><Prefix>{}</Prefix><Containers>{items}</Containers><NextMarker/></EnumerationResults>", ops::endpoint(&c.ctx, &a), xml_escape(&prefix))).into(&c.version);
         }
         return err(400, "InvalidQueryParameterValue", "Unsupported account operation").into(&c.version);
@@ -576,6 +574,27 @@ pub fn copy_source(src: &str, prefix: &str) -> (String, String, String) {
     }
     let parts: Vec<String> = path.splitn(3, '/').map(auth::decode_path).collect();
     (parts.first().cloned().unwrap_or_default(), parts.get(1).cloned().unwrap_or_default(), parts.get(2).cloned().unwrap_or_default())
+}
+
+/// One <Container> of List Containers. A private container has no <PublicAccess> element, as in Azure: the .NET SDK
+/// throws "Unknown PublicAccessType value" on an empty one.
+fn container_item(name: &str, access: &str, modified: &str) -> String {
+    let public = if access == "private" { String::new() } else { format!("<PublicAccess>{}</PublicAccess>", xml_escape(access)) };
+    format!("<Container><Name>{}</Name><Properties><Last-Modified>{modified}</Last-Modified><Etag>\"0x8DD000000000000\"</Etag><LeaseStatus>unlocked</LeaseStatus><LeaseState>available</LeaseState>{public}<HasImmutabilityPolicy>false</HasImmutabilityPolicy><HasLegalHold>false</HasLegalHold></Properties></Container>", xml_escape(name))
+}
+
+#[cfg(test)]
+mod list_t {
+    #[test]
+    fn private_container_has_no_public_access() {
+        let private = super::container_item("acme-docs", "private", "Wed, 18 Nov 2026 13:20:02 GMT");
+        assert!(!private.contains("PublicAccess"), "{private}");
+        assert!(private.contains("<Name>acme-docs</Name>"));
+        let blob = super::container_item("acme-pub", "blob", "Wed, 18 Nov 2026 13:20:02 GMT");
+        assert!(blob.contains("<PublicAccess>blob</PublicAccess>"), "{blob}");
+        let container = super::container_item("acme-all", "container", "Wed, 18 Nov 2026 13:20:02 GMT");
+        assert!(container.contains("<PublicAccess>container</PublicAccess>"), "{container}");
+    }
 }
 
 #[cfg(test)]

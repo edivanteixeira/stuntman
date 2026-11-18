@@ -35,6 +35,10 @@ pub struct Req {
     pub method: String,
     pub path: String,
     pub query: Map<String, Value>,
+    /// The query string as received (WireMock templates read every value of a repeated parameter).
+    pub raw_query: String,
+    /// http or https, as received.
+    pub scheme: String,
     pub headers: BTreeMap<String, String>,
     pub body: Value,
     pub raw_body: Vec<u8>,
@@ -115,7 +119,7 @@ pub fn match_path_case(pattern: &str, path: &str, ignore_case: bool) -> Option<M
     Some(m)
 }
 
-fn netserve_decode(s: &str) -> String {
+pub(crate) fn netserve_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = vec![];
     let mut i = 0;
@@ -238,7 +242,7 @@ pub fn read_request(method: &str, path: &str, query: &str, headers: BTreeMap<Str
         (serde_json::from_slice(&raw).unwrap_or_else(|_| json!(String::from_utf8_lossy(&raw))), vec![])
     };
     let c = caller(&headers);
-    Req { client_cert: None, client_cnpj: None, method: method.into(), path: path.into(), query: q, headers, body, raw_body: raw, files, caller: c }
+    Req { client_cert: None, client_cnpj: None, method: method.into(), path: path.into(), query: q, raw_query: query.into(), scheme: String::new(), headers, body, raw_body: raw, files, caller: c }
 }
 
 fn get_path<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
@@ -279,6 +283,8 @@ fn generic(name: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
         "503" => (503, vec![("content-type".into(), "application/json".into()), ("retry-after".into(), "5".into())], br#"{"message":"Service Unavailable"}"#.to_vec()),
         "429" => (429, vec![("content-type".into(), "application/json".into()), ("retry-after".into(), "1".into())], br#"{"message":"Too Many Requests"}"#.to_vec()),
         "html" => (200, vec![("content-type".into(), "text/html".into())], b"<html><body><h1>Service temporarily unavailable</h1><p>Please try again later.</p></body></html>".to_vec()),
+        // A proxy or load balancer in front of the API: 503 with its HTML page.
+        "503_html" => (503, vec![("content-type".into(), "text/html".into()), ("retry-after".into(), "5".into())], b"<html><head><title>503 Service Temporarily Unavailable</title></head><body><center><h1>503 Service Temporarily Unavailable</h1></center></body></html>".to_vec()),
         _ => (502, vec![], vec![]),
     }
 }
@@ -327,6 +333,9 @@ pub async fn run(ctx: &Ctx, p: &Plugin, r: &Route, params: Map<String, Value>, r
     sc.insert("__now".into(), json!(stuntman_core::clock::now(ctx)));
     sc.insert("raw".into(), json!(String::from_utf8_lossy(&req.raw_body)));
     sc.insert("__path".into(), json!(req.path));
+    sc.insert("request_path".into(), json!(req.path));
+    sc.insert("__query".into(), json!(req.raw_query));
+    sc.insert("__scheme".into(), json!(if req.scheme.is_empty() { "http" } else { &req.scheme }));
     sc.insert("__method".into(), json!(req.method));
     sc.insert("scenario".into(), sc["state"].pointer("/__scenario/state/name").cloned().unwrap_or(json!("Started")));
     if !r.graphql.is_empty() {
@@ -741,11 +750,15 @@ pub fn gql_matches(body: &Value, name: &str) -> bool {
 
 /// Status, headers, body and the first answered fields of a named answer.
 pub fn render_answer(a: &Answer, sc: &Map<String, Value>) -> (u16, Vec<(String, String)>, Vec<u8>, Value) {
-    let mut headers: Vec<(String, String)> = a.headers.iter().map(|(k, v)| (k.to_lowercase(), expr::render(v, sc).unwrap_or_else(|_| v.clone()))).collect();
+    // A WireMock template renders its headers as templates too (Location: http://localhost:{{request.port}}/x).
+    let hb = a.template == "handlebars";
+    let mut headers: Vec<(String, String)> = a.headers.iter().map(|(k, v)| (k.to_lowercase(), if hb { crate::hbs::render(v, sc).unwrap_or_else(|_| v.clone()) } else { expr::render(v, sc).unwrap_or_else(|_| v.clone()) })).collect();
+    let mut status = a.status;
     let body = if a.raw {
         a.body.clone()
     } else if a.template == "handlebars" {
-        crate::hbs::render(&a.body, sc).unwrap_or_else(|e| format!("Stuntman: template error: {e}"))
+        // A template that fails answers 500, as WireMock does.
+        crate::hbs::render(&a.body, sc).unwrap_or_else(|e| { status = 500; format!("Stuntman: template error: {e}") })
     } else {
         expr::render(&a.body, sc).unwrap_or_else(|e| format!("{{\"stuntman\": \"template error: {e}\"}}"))
     };
@@ -757,7 +770,7 @@ pub fn render_answer(a: &Answer, sc: &Map<String, Value>) -> (u16, Vec<(String, 
     if let Ok(v) = serde_json::from_str::<Value>(&body) {
         leaves(&v, "", &mut lv);
     }
-    (a.status, headers, body.into_bytes(), Value::Object(lv.into_iter().collect()))
+    (status, headers, body.into_bytes(), Value::Object(lv.into_iter().collect()))
 }
 
 /// Checks an answer against the route's schema with a sample request (A4 "must be a number").
@@ -986,7 +999,7 @@ pub fn find_service<'a>(plugins: &'a [Plugin], host: &str, path: &str) -> Option
     let h = host.split(':').next().unwrap_or("").to_lowercase();
     let first = h.split('.').next().unwrap_or("");
     let base_host = |u: &str| u.split("://").nth(1).unwrap_or(u).split('/').next().unwrap_or("").to_lowercase();
-    if let Some(p) = plugins.iter().find(|p| (!p.service.real_host.is_empty() && p.service.real_host.eq_ignore_ascii_case(&h)) || (!p.service.base_url.is_empty() && base_host(&p.service.base_url) == h) || (h.contains('.') && p.service.name == first)) {
+    if let Some(p) = plugins.iter().find(|p| (!p.service.real_host.is_empty() && p.service.real_host.matches(&h)) || (!p.service.base_url.is_empty() && base_host(&p.service.base_url) == h) || (h.contains('.') && p.service.name == first)) {
         return Some((p, path.to_string()));
     }
     let seg = path.trim_start_matches('/').split('/').next().unwrap_or("");
@@ -997,6 +1010,7 @@ pub async fn handle(State(envs): State<Envs>, mut req: Request) -> Response {
     let kill = req.extensions().get::<Kill>().cloned();
     let _remote = req.extensions().get::<Remote>().map(|r| r.0.ip().to_string()).unwrap_or_default();
     let client_cert = req.extensions().get::<crate::tls::ClientCert>().map(|c| c.0.clone());
+    let scheme = if req.extensions().get::<crate::tls::Tls>().is_some() { "https" } else { "http" };
     let client_cnpj = req.extensions().get::<crate::tls::ClientCertDer>().and_then(|c| crate::ca::cnpj_of(&c.0));
     let routed = match netserve::route(&envs, &mut req) {
         Ok(r) => r,
@@ -1026,6 +1040,7 @@ pub async fn handle(State(envs): State<Envs>, mut req: Request) -> Response {
     // "/acme/v0/…" reached by the path prefix: the pages post back under the same prefix.
     let base = format!("{}{}", ctx.prefix(), path[..path.len() - inner.len().min(path.len())].trim_end_matches('/'));
     let mut rq = read_request(&method, &inner, &query, headers.clone(), raw);
+    rq.scheme = scheme.into();
     rq.client_cert = client_cert;
     rq.client_cnpj = client_cnpj;
     if !headers.contains_key("x-stuntman-app") && !headers.contains_key("x-duble-app") {
@@ -1126,7 +1141,8 @@ pub async fn handle(State(envs): State<Envs>, mut req: Request) -> Response {
     // GraphQL routes first (they share a path and differ by operation), then the others.
     let candidates: Vec<(&Route, Map<String, Value>)> = p.routes.iter().filter(|r| !r.graphql.is_empty()).chain(p.routes.iter().filter(|r| r.graphql.is_empty())).filter_map(|r| {
         let (m, pat) = r.method_path();
-        if m != method && !(m == "GET" && method == "HEAD") {
+        // ANY: every method (imported WireMock mappings).
+        if m != method && m != "ANY" && !(m == "GET" && method == "HEAD") {
             return None;
         }
         if !r.graphql.is_empty() && !gql_matches(&rq.body, &r.graphql) {
@@ -1289,6 +1305,36 @@ mod t {
         let p: Plugin = serde_yaml::from_str("service: {name: serpro}\nroutes:\n  - route: POST /datavalid/v5/pessoa-fisica/validacao\n").unwrap();
         let c = closest(&[p], "", "POST", "/datavalid/v4/pessoa-fisica/validacao");
         assert_eq!(c["text"], "Differs in one segment: v4 here, v5 in the plugin.");
+    }
+
+    #[test]
+    fn handlebars_headers() {
+        let a: crate::plugin::Answer = serde_yaml::from_str("name: go\nstatus: 302\nheaders: {Location: 'http://localhost:{{request.port}}/acme/x'}\nbody: '{{request.baseUrl}}'\ntemplate: handlebars\n").unwrap();
+        let mut sc = Map::new();
+        sc.insert("headers".into(), json!({"host": "localhost:18084"}));
+        let (st, h, b, _) = render_answer(&a, &sc);
+        assert_eq!((st, h.iter().find(|x| x.0 == "location").map(|x| x.1.as_str()), b.as_slice()), (302, Some("http://localhost:18084/acme/x"), b"http://localhost:18084".as_slice()));
+    }
+
+    #[test]
+    fn generic_503_html() {
+        let (st, h, b) = generic("503_html");
+        assert_eq!((st, h[0].1.as_str()), (503, "text/html"));
+        assert!(String::from_utf8_lossy(&b).contains("<html>"));
+    }
+
+    #[test]
+    fn real_host_list() {
+        let one: Plugin = serde_yaml::from_str("service: {name: acme, real_host: api.acme.example.com}\n").unwrap();
+        let many: Plugin = serde_yaml::from_str("service: {name: globex, real_host: [a.globex.example.com, b.globex.example.com]}\n").unwrap();
+        let ps = [one, many];
+        let svc = |h: &str| find_service(&ps, h, "/v1/x").map(|(p, inner)| (p.service.name.clone(), inner));
+        assert_eq!(svc("api.acme.example.com:443"), Some(("acme".into(), "/v1/x".into())));
+        assert_eq!(svc("A.globex.example.com"), Some(("globex".into(), "/v1/x".into())));
+        assert_eq!(svc("b.globex.example.com"), Some(("globex".into(), "/v1/x".into())));
+        // One name is written back as a string, several as a list.
+        assert!(serde_yaml::to_string(&ps[0].service).unwrap().contains("real_host: api.acme.example.com"));
+        assert!(serde_yaml::to_string(&ps[1].service).unwrap().contains("real_host:\n- a.globex.example.com\n- b.globex.example.com"));
     }
 
     #[test]

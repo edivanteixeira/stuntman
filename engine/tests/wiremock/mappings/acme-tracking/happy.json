@@ -18,6 +18,7 @@
       "response": {"status": 200, "headers": {"Content-Type": "text/xml"}, "bodyFileName": "acme-tracking/register-ok.xml", "fixedDelayMilliseconds": 300}
     },
     {
+      "priority": 6,
       "request": {"method": "POST", "urlPath": "/acme-tracking/Tracking.asmx", "headers": {"SOAPAction": {"contains": "/RegisterTrip"}}},
       "response": {"status": 500, "headers": {"Content-Type": "text/xml"}, "body": "<fault>unknown plate</fault>"}
     }

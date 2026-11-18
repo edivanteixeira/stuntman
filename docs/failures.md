@@ -45,7 +45,7 @@ named answers and `force_answer` instead.
 
 | Line | Tool | Answers |
 |---|---|---|
-| HTTP APIs | `force_answer` | any named answer of the plugin, or `reset`, `empty`, `timeout`, `500`, `503`, `html`; `count=N` or `for=10m`; one route or all |
+| HTTP APIs | `force_answer` | any named answer of the plugin, or `reset`, `empty`, `timeout`, `500`, `503`, `html` (200 with an HTML page), `503_html` (503 with an HTML page, as a proxy in front answers); `count=N` or `for=10m`; one route or all |
 | HTTP APIs (SOAP) | `force_answer`, a `fault:` answer | any fault the WSDL declares or one you add; `500` goes out as a `Receiver` fault; a body that breaks the XSD gets the validation fault; see [SOAP services](soap.md) |
 | HTTP APIs (OpenAPI) | `force_answer`, a body that does not match the schema | any response the spec declares; a wrong body gets the spec's 400 or 422 answer; see [OpenAPI specs](openapi.md) |
 | HTTP APIs | `expire_tokens` | every token and session cookie becomes invalid; the next call gets 401 |
@@ -72,7 +72,7 @@ named answers and `force_answer` instead.
 | Storage | `set_account_reachability` | the whole account: `timeout`, `503`, `401` |
 | Messaging | `set_next_delivery` (with `namespace`) | `lose_lock`, `duplicate`, `hold`, `drop`, `dead_letter`, `out_of_order` |
 | Messaging | `expire_consumer_locks` | the consumer's next complete fails with MessageLockLost |
-| Messaging | `set_namespace_reachability` | `refuse`, `timeout`, `401`, `busy` |
+| Messaging | `set_namespace_reachability` | `refuse` (new connections only), `timeout`, `401`, `busy`; `down`: a dead broker (open AMQP connections drop without a close, new ones are refused, the RabbitMQ management API answers 503 for the vhost, unacked deliveries go back to their queue); `close`: the same with a forced close first (RabbitMQ 320 CONNECTION_FORCED, Service Bus `amqp:connection:forced`); `ok` brings it back |
 | Streams | `set_streams` with `provoke` | `leader_not_available`, `sasl_refused`, `slow_fetch`, `duplicate`, `registry_down`; `none` stops it |
 | Streams | `rebalance`, `produce` with `bad_schema` | a consumer-group rebalance; a record with an unknown schema id |
 | Messaging (ActiveMQ) | `set_activemq` | `refuse_login` (SecurityException), `drop_after` N dispatches, `slow_dispatch`, `redeliver` (the next N acks are lost), `fail_commits` (the next N commits roll back), `max_redeliveries` and `individual_dlq` for the DLQ; `reset` stops it |
@@ -82,7 +82,8 @@ named answers and `force_answer` instead.
 | Identity | `provoke_idp` | discovery, JWKS or token endpoint failures |
 | Identity (LDAP) | `set_provider` with `ldap_provoke` | `busy` (51), `unavailable` (52), `timeout`; `normal` stops it; locked or disabled users answer as Active Directory does |
 | Identity (Bot Framework) | `send_bot_activity` with `twist` | `bad_signature`, `expired`, `wrong_audience`, `no_token` |
-| Secrets | `provoke_secret` | `403`, `404`, `disabled`, `429`, `slow` |
+| Secrets | `provoke_secret` | `403`, `404`, `disabled`, `429`, `503`, `slow` |
+| Secrets | `set_vault` with `reachability` | the whole vault: `503` (`ServiceUnavailable` on every call), `timeout` (held), `refused` (connection closed); `for=10m`; `normal` stops it |
 | Secrets | `provoke_key` | `disabled`, `403`, `429`, `slow`, `wrong_signature` |
 | Secrets | `provoke_certificate` | `missing`, `expired`, `not_yet_valid`, `wrong_password`, `untrusted` |
 | Secrets | `provoke_imds` | `500`, `slow`, `no_identity` |

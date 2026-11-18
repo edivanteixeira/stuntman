@@ -63,7 +63,7 @@ duplicate.
 | `title`, `description` | shown in the UI |
 | `origin` | `official`, `community` or `yours` (default) |
 | `region` | optional, for regional providers |
-| `base_url`, `real_host` | the provider's real address; `real_host` lets you resolve the real name to Stuntman |
+| `base_url`, `real_host` | the provider's real address; `real_host` lets you resolve the real name to Stuntman. It takes one name or a list (`real_host: [a.example.com, b.example.com]`): the service answers each of them, on :8028 by `Host` and on :8443 by SNI |
 | `auth` | `oauth` (client credentials: `client_id`, `client_secret`, `any_client`, `token_ttl`), `basic` (`users`, `any_user`, `challenge`), `session` (`cookie`, `ttl`, `users`), `client_certificate.required` (mTLS) and `client_certificate.icp` (the certificate must carry a CNPJ, as ICP-Brasil e-CNPJ certificates do; see [SOAP › XML signatures](soap.md#xml-signatures-and-icp-brasil-certificates)) |
 | `billing` | `enabled`, `per_call`, `warn_above`: a counter, never real money |
 | `limits` | `latency` (e.g. `300ms..600ms`), `rate`, `fail_share` |
@@ -77,7 +77,7 @@ Each route reads top to bottom: **receive → let → keep → wait → decide �
 
 | Key | Meaning |
 |---|---|
-| `route` | `METHOD /path`; `{name}` segments are path parameters, a last `{*}` segment takes the rest as `path.rest`; `METHOD ~regex` matches the whole path with a regular expression, and its named groups are path parameters ([Regex routes](#regex-routes)) |
+| `route` | `METHOD /path`; `{name}` segments are path parameters, a last `{*}` segment takes the rest as `path.rest`; `ANY /path` takes every method; `METHOD ~regex` matches the whole path with a regular expression, and its named groups are path parameters ([Regex routes](#regex-routes)) |
 | `receive.auth` | `none`, `bearer` (a token from this service's token route), `basic`, `session` |
 | `receive.body` | required body fields (dotted paths); a missing one answers 400, or the answer named by `missing` |
 | `receive.schema`, `receive.invalid` | the body is checked against this schema of `spec.schemas`; a body that does not match it gets the answer named by `invalid`, or 400 naming the field (see [OpenAPI](openapi.md)) |
@@ -88,7 +88,7 @@ Each route reads top to bottom: **receive → let → keep → wait → decide �
 | `decide` | a list of `when` → `answer`; the first match wins; the last item usually has no `when`. `scenario` moves the service to that scenario after this answer ([Scenarios](#scenarios)) |
 | `respond.latency` | e.g. `300ms..600ms` |
 | `send` | callbacks after answering: `url` (a template), `method`, `body`, `delay` (on the [environment's clock](clock.md)), `secret` (HMAC-SHA256 into `header`; may be a template), `sign` (overrides `service.webhooks.sign`), `event` (the event type), `headers` (names and values are templates; a name that renders empty is left out; the name `"*"` takes `Name: value` lines, one header each, e.g. the headers a subscriber chose), `when` (an expression: sent only when it is true), `template` (`handlebars`: url, body and header values are WireMock templates reading `originalRequest` and `originalResponse`), `operation` (a SOAP callback) |
-| `fail` | a generic failure on this route only: `reset`, `empty`, `timeout`, `401`, `403`, `500`, `503`, `html` |
+| `fail` | a generic failure on this route only: `reset`, `empty`, `timeout`, `401`, `403`, `500`, `503`, `html`, `503_html` |
 | `schema` | response fields and their types; answers are checked against it |
 | `billable`, `token`, `login`, `grant`, `step` | billing, the OAuth2 token route, the session login route, people grants (authorization code with PKCE), push approvals polled by the app |
 | `graphql` | the GraphQL operation name, or first field of the query, this route answers ([GraphQL](#graphql)) |
@@ -135,10 +135,10 @@ Conditions and templates use a small, side-effect-free language (a CEL-like subs
 
 | | |
 |---|---|
-| **Read** | `body.x` (JSON, form fields, `multipart/form-data` fields, or the JSON part of a `multipart/related` upload), `files` (the uploaded parts: `field`, `filename`, `size`, `contentType`), `query.x`, `path.x`, `headers.x`, `raw` (the body as text; a `Content-Encoding: gzip` body arrives decompressed), `state.<collection>`, `data.<table>`, the `let` names (`person.x`), `caller`, `client_cert` and `client_cnpj` (mTLS), `scenario`; on GraphQL routes `variables` and `operation`; in `send`, `answer` |
+| **Read** | `body.x` (JSON, form fields, `multipart/form-data` fields, or the JSON part of a `multipart/related` upload), `files` (the uploaded parts: `field`, `filename`, `size`, `contentType`), `query.x`, `path.x`, `headers.x`, `raw` (the body as text; a `Content-Encoding: gzip` body arrives decompressed), `state.<collection>`, `data.<table>`, the `let` names (`person.x`), `caller`, `client_cert` and `client_cnpj` (mTLS), `scenario`, `request_path` (the path inside the service); on GraphQL routes `variables` and `operation`; in `send`, `answer` |
 | **Operators** | `==`, `!=`, `<`, `>`, `<=`, `>=`, `+`, `-`, `*`, `/`, `%`, `&&`, `\|\|`, `!`, `in`, `cond ? a : b`, `x[0]`, `x['key']`; lists `[1, 2]` and maps `{'n': 2}` |
 | **Methods** | `.startsWith()`, `.endsWith()`, `.contains()`, `.matches()`, `.size()`, `.upper()`, `.lower()`, `.digits()`, `.mask()`, `.sha256()`, `.base64url()`, `.cpf_ok()`, `.string()`, `.int()` |
-| **Functions** | `size`, `exists` (or `has`), `default`, `string`, `int`, `double`, `upper`, `lower`, `trim`, `replace(s, from, to)`, `split(s, sep)`, `join(list, sep)`, `substring(s, start, end)`, `digits`, `mask`, `cpf_ok`, `sha256`, `base64`, `base64url`, `uuid`, `random_id`, `now`, `now_ms`, `matches(s, regex)`, `json`, `cookie(header, name)`, `lookup(table, field, value)`, `iso(ms, zone)` (a kept time as ISO 8601), `crc16(s)` (CRC16/CCITT, the end of a Pix BR Code), `gzip_base64(text)` and `gunzip_base64(b64)` (documents sent gzipped in base64), `parse_json(text)`, `hmac(alg, key, message, enc)` (`sha256` or `sha1`; a key written `hex:…` is hex bytes; `hex` or `base64` out), `jwt(claims, key)` and `jwks(key)` (an RS256 JWT signed with the plugin's own key of that name, and the JWKS that verifies it) |
+| **Functions** | `size`, `exists` (or `has`), `default`, `string`, `int`, `double`, `upper`, `lower`, `trim`, `replace(s, from, to)`, `split(s, sep)`, `join(list, sep)`, `substring(s, start, end)`, `digits`, `mask`, `cpf_ok`, `sha256`, `base64`, `base64url`, `uuid`, `random_id`, `now`, `now_ms`, `matches(s, regex)`, `xpath(xml, expr)` (the values an XPath finds; `xpath(xml, expr, 'equalTo' | 'contains' | 'matches', v)`: whether one matches), `json`, `cookie(header, name)`, `lookup(table, field, value)`, `iso(ms, zone)` (a kept time as ISO 8601), `crc16(s)` (CRC16/CCITT, the end of a Pix BR Code), `gzip_base64(text)` and `gunzip_base64(b64)` (documents sent gzipped in base64), `parse_json(text)`, `hmac(alg, key, message, enc)` (`sha256` or `sha1`; a key written `hex:…` is hex bytes; `hex` or `base64` out), `jwt(claims, key)` and `jwks(key)` (an RS256 JWT signed with the plugin's own key of that name, and the JWKS that verifies it) |
 | **Template filters** | `{{ value \| default('x') }}`, `mask`, `json`, `round(2)`, `tz('America/New_York')` (a short list of zones, fixed offsets), and any one-argument function (`\| trim`, `\| upper`) |
 
 Templates use `{{ }}` inside answer bodies, sentences, callback URLs, headers and secrets. `split` and `join`
@@ -283,7 +283,7 @@ answer again, with `idempotent-replayed: true`, and sends no webhook. The same k
 ## Scenarios
 
 A service is in one scenario at a time; it starts in `Started`. Rules read it as `scenario`, a `decide` item with
-`scenario:` moves the service after its answer, and `set_scenario` moves it by hand. Imported WireMock scenarios
+`scenario:` moves the service after its answer, and `set_scenario` moves it by hand and `get_scenario` (`GET /api/plugins/{service}/scenario`) reads it. Imported WireMock scenarios
 work this way.
 
 ```yaml

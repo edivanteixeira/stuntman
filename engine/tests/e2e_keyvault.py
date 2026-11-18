@@ -115,7 +115,29 @@ def run():
     call("POST", "/keyvault/secrets/smtp-password/provoke", {"answer": "429", "vault": "acme-kv-stg"})
     st, b, hd = kv("GET", "/secrets/smtp-password", tok=t)
     assert st == 429 and "retry-after" in hd, (st, hd)
+    call("POST", "/keyvault/secrets/smtp-password/provoke", {"answer": "503", "vault": "acme-kv-stg"})
+    st, b, _ = kv("GET", "/secrets/smtp-password", tok=t)
+    assert st == 503 and b["error"]["code"] == "ServiceUnavailable", (st, b)
     call("POST", "/keyvault/secrets/smtp-password/provoke", {"answer": "normal", "vault": "acme-kv-stg"})
+    st, b, _ = kv("GET", "/secrets/smtp-password", tok=t)
+    assert st == 200, b
+
+    # The whole vault down: 503 on every call (the challenge too), held while it lasts, connections closed.
+    v = call("PUT", "/keyvault/vaults/acme-kv-stg", {"reachability": "503"})
+    assert v["reachability"] == "503", v
+    for path, tk in (("/secrets/smtp-password", t), ("/keys", t), ("/secrets/smtp-password", None)):
+        st, b, hd = kv("GET", path, tok=tk)
+        assert st == 503 and b["error"]["code"] == "ServiceUnavailable" and "retry-after" in hd, (path, st, b)
+    call("PUT", "/keyvault/vaults/acme-kv-stg", {"reachability": "timeout", "for": "3s"})
+    t0 = time.time()
+    st, b, _ = kv("GET", "/secrets/smtp-password", tok=t)
+    assert st == 200 and time.time() - t0 >= 2.5, (st, time.time() - t0)
+    call("PUT", "/keyvault/vaults/acme-kv-stg", {"reachability": "refused"})
+    try:
+        kv("GET", "/secrets/smtp-password", tok=t); raise AssertionError("refused")
+    except (ConnectionError, http.client.HTTPException, ssl.SSLError, OSError) as e:
+        assert not isinstance(e, AssertionError)
+    assert call("PUT", "/keyvault/vaults/acme-kv-stg", {"reachability": "normal"})["reachability"] == "normal"
     st, b, _ = kv("GET", "/secrets/smtp-password", tok=t)
     assert st == 200, b
     # A disabled version is refused like Azure does.
@@ -211,6 +233,19 @@ def run():
         assert e.code == 500
     call("POST", "/keyvault/imds/provoke", {"answer": "normal"})
     token("acme-api-mi")
+
+    # App Service managed identity (IDENTITY_ENDPOINT + IDENTITY_HEADER), as Azure.Identity calls it.
+    req = urllib.request.Request(f"http://127.0.0.1:{HTTP}/msi/token?resource=https%3A%2F%2Fvault.azure.net&api-version=2019-08-01&client_id=acme-api-mi", headers={"X-IDENTITY-HEADER": "synthetic-header"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        assert r.headers["Content-Type"].startswith("application/json")
+        b = json.loads(r.read())
+    assert set(b) == {"access_token", "expires_on", "resource", "token_type", "client_id"} and b["client_id"] == "acme-api-mi" and b["expires_on"].isdigit() and b["resource"] == "https://vault.azure.net", b
+    st, _, _ = kv("GET", "/secrets/smtp-password", tok=b["access_token"])
+    assert st == 200, st
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{HTTP}/msi/token?resource=https%3A%2F%2Fvault.azure.net&api-version=2019-08-01", timeout=10); raise AssertionError("no header")
+    except urllib.error.HTTPError as e:
+        assert e.code == 400 and json.loads(e.read())["statusCode"] == 400
 
     # Throttling by the vault block.
     call("PUT", "/keyvault/vaults/acme-kv-stg", {"throttle": "3/10s"})

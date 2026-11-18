@@ -118,6 +118,55 @@ fn is_zero(f: &f64) -> bool {
     *f == 0.0
 }
 
+/// `real_host: a.example.com` or `real_host: [a.example.com, b.example.com]`; one name is written back as a string.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Hosts(pub Vec<String>);
+
+impl Hosts {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub fn first(&self) -> &str {
+        self.0.first().map(String::as_str).unwrap_or("")
+    }
+    pub fn matches(&self, host: &str) -> bool {
+        self.0.iter().any(|h| h.eq_ignore_ascii_case(host))
+    }
+}
+
+impl From<String> for Hosts {
+    fn from(s: String) -> Self {
+        Hosts(s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
+    }
+}
+
+impl From<Vec<String>> for Hosts {
+    fn from(v: Vec<String>) -> Self {
+        Hosts(v.into_iter().filter(|x| !x.is_empty()).collect())
+    }
+}
+
+impl std::fmt::Display for Hosts {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(&self.0.join(", "))
+    }
+}
+
+impl Serialize for Hosts {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        if self.0.len() == 1 { s.serialize_str(&self.0[0]) } else { self.0.serialize(s) }
+    }
+}
+
+impl<'de> Deserialize<'de> for Hosts {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum H { One(String), Many(Vec<String>) }
+        Ok(match H::deserialize(d)? { H::One(s) => s.into(), H::Many(v) => v.into() })
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 pub struct Service {
     pub name: String,
@@ -132,9 +181,9 @@ pub struct Service {
     /// What the provider calls itself (the real base URL), shown and used to recognise its host.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub base_url: String,
-    /// The real host name Stuntman also answers for (with the Stuntman Test CA).
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub real_host: String,
+    /// The real host name(s) Stuntman also answers for (with the Stuntman Test CA): one name or a list.
+    #[serde(default, skip_serializing_if = "Hosts::is_empty")]
+    pub real_host: Hosts,
     #[serde(default)]
     pub auth: Auth,
     #[serde(default)]
@@ -746,7 +795,7 @@ pub struct Plugin {
 }
 
 /// Generic answers every service has (A1 "next calls answer", A3 route `fail`).
-pub const GENERIC: [(&str, &str); 12] = [("session_expired", "MCP: the session is gone (404)"), ("cut", "The stream stops halfway"), ("slow", "2 s between stream parts"), ("429", "429 Too many requests"), ("reset", "Connection reset"), ("empty", "Empty reply"), ("timeout", "Timeout (no answer)"), ("401", "401 Unauthorized, empty body"), ("403", "403 Forbidden, empty body"), ("500", "500 Internal error"), ("503", "503 Unavailable"), ("html", "HTML error page with 200")];
+pub const GENERIC: [(&str, &str); 13] = [("session_expired", "MCP: the session is gone (404)"), ("cut", "The stream stops halfway"), ("slow", "2 s between stream parts"), ("429", "429 Too many requests"), ("reset", "Connection reset"), ("empty", "Empty reply"), ("timeout", "Timeout (no answer)"), ("401", "401 Unauthorized, empty body"), ("403", "403 Forbidden, empty body"), ("500", "500 Internal error"), ("503", "503 Unavailable"), ("html", "HTML error page with 200"), ("503_html", "503 with an HTML page (a proxy in front)")];
 
 pub fn dir(ctx: &Ctx) -> std::path::PathBuf {
     ctx.path("apis")
@@ -846,7 +895,7 @@ pub fn validate(p: &Plugin, t: &str) -> Vec<Value> {
                 err(format!("route “{}”: the path regex: {e}", r.route), &r.route);
             }
         }
-        if !(r.route.is_empty() && (!r.operation.is_empty() || !r.tool.is_empty())) && (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].contains(&m.as_str()) || !(path.starts_with('/') || path.starts_with('~'))) {
+        if !(r.route.is_empty() && (!r.operation.is_empty() || !r.tool.is_empty())) && (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "ANY"].contains(&m.as_str()) || !(path.starts_with('/') || path.starts_with('~'))) {
             err(format!("route “{}”: METHOD /path", r.route), &r.route);
         }
         if !seen.insert(format!("{m} {path} {}", r.graphql)) {

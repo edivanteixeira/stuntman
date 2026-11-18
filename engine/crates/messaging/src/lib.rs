@@ -15,6 +15,8 @@ pub mod mgmt;
 pub mod openwire;
 pub mod rabbit;
 pub mod rabbit_mgmt;
+#[cfg(test)]
+mod rabbit_compat_tests;
 pub mod rules;
 pub mod selector;
 pub mod tools;

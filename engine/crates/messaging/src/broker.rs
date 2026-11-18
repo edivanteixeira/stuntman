@@ -140,6 +140,20 @@ pub async fn note(ctx: &Ctx, seq: i64, what: &str, detail: &str, tone: &str) {
 /// Holders a message published to `entity` lands in (a queue: itself; a topic: its matching
 /// subscriptions or bound queues). Err when the entity does not exist and may not be created.
 pub fn route(n: &config::Namespace, entity: &str, o: &Outgoing) -> Result<Vec<String>, Refusal> {
+    // RabbitMQ publishes say which exchange: "" is the default one (straight to the queue named
+    // by the routing key); queues and exchanges may share a name.
+    if n.kind == config::RABBIT {
+        if let Some(ex) = o.sys.get("exchange").and_then(|v| v.as_str()) {
+            let key = o.sys.get("routingKey").and_then(|v| v.as_str()).unwrap_or("");
+            if ex.is_empty() {
+                return Ok(if n.entities.get(entity).and_then(|e| e.queue.as_ref()).is_some() { vec![entity.to_string()] } else { vec![] });
+            }
+            if n.entities.get(ex).and_then(|e| e.topic.as_ref()).is_none() {
+                return Err(Refusal::NotFound(format!("no exchange '{ex}' in vhost '{}'", n.namespace)));
+            }
+            return Ok(rabbit_route(n, ex, key, &o.props));
+        }
+    }
     // Service Bus clients may address a subscription's dead-letter or a subscription directly.
     if n.holders().iter().any(|h| h == entity) {
         return Ok(vec![entity.to_string()]);
@@ -150,25 +164,55 @@ pub fn route(n: &config::Namespace, entity: &str, o: &Outgoing) -> Result<Vec<St
     if e.queue.is_some() {
         return Ok(vec![entity.to_string()]);
     }
+    if n.kind == config::RABBIT {
+        let key = o.sys.get("routingKey").and_then(|v| v.as_str()).unwrap_or("");
+        return Ok(rabbit_route(n, entity, key, &o.props));
+    }
     let t = e.topic.as_ref().unwrap();
-    let key = o.sys.get("routingKey").and_then(|v| v.as_str()).unwrap_or("");
     let mut out = vec![];
     for (name, s) in &t.subscriptions {
-        let hit = if n.kind == config::RABBIT {
-            match t.kind.as_str() {
-                "fanout" => true,
-                "direct" => s.filter == key,
-                "headers" => true,
-                _ => topic_match(&s.filter, key),
-            }
-        } else {
-            sb_filter(&s.filter, o)
-        };
-        if hit {
-            out.push(if n.kind == config::RABBIT { name.clone() } else { format!("{entity}/subscriptions/{name}") });
+        if sb_filter(&s.filter, o) {
+            out.push(format!("{entity}/subscriptions/{name}"));
         }
     }
     Ok(out)
+}
+
+/// Does a binding of an exchange of this type take the routing key (or the headers)?
+fn binds(kind: &str, s: &config::Subscription, key: &str, headers: &Map<String, Value>) -> bool {
+    match kind {
+        "fanout" => true,
+        "direct" => s.all_keys().iter().any(|k| k == key),
+        // Headers bindings keep their arguments in the filter as "k=v, k2=v2" (x-match all).
+        "headers" => s.filter.split(',').map(str::trim).filter(|p| !p.is_empty() && !p.starts_with("x-match")).all(|p| {
+            let (k, v) = p.split_once('=').unwrap_or((p, ""));
+            headers.get(k.trim()).map(|h| h.as_str().map(String::from).unwrap_or(h.to_string()) == v.trim()).unwrap_or(false)
+        }),
+        _ => s.all_keys().iter().any(|k| topic_match(k, key)),
+    }
+}
+
+/// RabbitMQ routing from one exchange: its queue bindings, then the exchanges it is bound to
+/// (exchange-to-exchange, as MassTransit builds its topology), each queue once.
+pub fn rabbit_route(n: &config::Namespace, exchange: &str, key: &str, headers: &Map<String, Value>) -> Vec<String> {
+    let (mut out, mut seen, mut todo) = (Vec::<String>::new(), std::collections::HashSet::new(), vec![exchange.to_string()]);
+    while let Some(x) = todo.pop() {
+        if !seen.insert(x.clone()) {
+            continue;
+        }
+        let Some(t) = n.entities.get(&x).and_then(|e| e.topic.as_ref()) else { continue };
+        for (q, s) in &t.subscriptions {
+            if binds(&t.kind, s, key, headers) && !out.contains(q) && n.entities.get(q).and_then(|e| e.queue.as_ref()).is_some() {
+                out.push(q.clone());
+            }
+        }
+        for (d, s) in &t.exchanges {
+            if binds(&t.kind, s, key, headers) {
+                todo.push(d.clone());
+            }
+        }
+    }
+    out
 }
 
 /// AMQP 0-9-1 topic exchange matching: words split by ".", "*" one word, "#" zero or more.
@@ -239,7 +283,16 @@ pub async fn publish(ctx: &Ctx, ns: &str, entity: &str, o: Outgoing) -> Result<V
     let now = util::now_ms();
     let trace = trace_of(&o);
     let mut seqs = vec![];
+    let mut rejected = None;
     for h in holders {
+        // RabbitMQ max-length: reject-publish refuses the new message (the publisher gets a nack).
+        let capped = n.rabbit_queue(&h).and_then(|q| q.max_length.map(|m| (m, q.overflow)));
+        if let Some((max, overflow)) = &capped {
+            if overflow.starts_with("reject-publish") && ready(ctx, ns, &h).await >= *max {
+                rejected = Some(h.clone());
+                continue;
+            }
+        }
         let lim = n.limits(&h);
         let ttl = o.sys.get("timeToLive").and_then(|v| v.as_i64()).or(lim.ttl_ms);
         // What this send will do: a rule first, else the holder's "next delivery".
@@ -292,6 +345,20 @@ pub async fn publish(ctx: &Ctx, ns: &str, entity: &str, o: Outgoing) -> Result<V
             seqs.push(seq);
         }
         ring(ctx, ns, &h);
+        // drop-head: past the limit, the oldest ready messages go (dead-lettered when it can).
+        if let Some((max, overflow)) = capped.filter(|(_, o)| o == "drop-head") {
+            let over = ready(ctx, ns, &h).await - max;
+            if over > 0 {
+                let (n2, h2) = (ns.to_string(), h.clone());
+                let old: Vec<i64> = ctx.db.call(move |c| { let mut s = c.prepare("SELECT seq FROM msg_messages WHERE ns=?1 AND holder=?2 AND state='active' ORDER BY seq LIMIT ?3")?; let v = s.query_map(params![n2, h2, over], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>(); v }).await.unwrap_or_default();
+                for seq in old {
+                    rabbit_drop(ctx, ns, seq, "maxlen", &format!("the queue holds at most {max} (overflow {overflow}): the oldest goes")).await;
+                }
+            }
+        }
+    }
+    if let Some(h) = rejected {
+        return Err(Refusal::Quota(format!("queue '{h}' in vhost '{ns}' is full (max-length, overflow reject-publish)")));
     }
     if let (Some(r), false) = (&rule, seqs.is_empty()) {
         rules::hit(ctx, &n.kind, &r.name).await;
@@ -307,6 +374,82 @@ pub async fn publish(ctx: &Ctx, ns: &str, entity: &str, o: Outgoing) -> Result<V
         }
     }
     Ok(seqs)
+}
+
+/// Ready messages of a queue (what RabbitMQ's max-length counts).
+async fn ready(ctx: &Ctx, ns: &str, holder: &str) -> i64 {
+    let (n2, h2) = (ns.to_string(), holder.to_string());
+    ctx.db.call(move |c| c.query_row("SELECT count(*) FROM msg_messages WHERE ns=?1 AND holder=?2 AND state='active'", params![n2, h2], |r| r.get(0))).await.unwrap_or(0)
+}
+
+// ---------------------------------------------------------------- RabbitMQ dead-lettering
+
+/// A RabbitMQ queue lets a message go (max-length, delivery limit): it leaves the queue (the
+/// screen keeps it as dead-lettered) and goes to the queue's dead-letter exchange, if any.
+pub async fn rabbit_drop(ctx: &Ctx, ns: &str, seq: i64, reason: &str, why: &str) {
+    let (r2, now) = (reason.to_string(), util::now_ms());
+    let _ = ctx.db.call(move |c| c.execute("UPDATE msg_messages SET state='dead_letter', lock_token='', locked_by='', locked_until=0, dl_reason=?2, dl_description='', settled_at=?3 WHERE seq=?1", params![seq, r2, now])).await;
+    note(ctx, seq, &format!("Dropped by RabbitMQ ({reason})"), why, "danger").await;
+    rabbit_forward(ctx, ns, seq, reason).await;
+}
+
+/// Publishes a copy of a dead-lettered message to its queue's dead-letter exchange, with the
+/// x-death headers RabbitMQ adds. No dead-letter exchange: nothing (RabbitMQ discards it).
+pub fn rabbit_forward<'a>(ctx: &'a Ctx, ns: &'a str, seq: i64, reason: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+    Box::pin(async move {
+        let Ok(n) = config::get(ctx, ns) else { return };
+        let row: Option<(String, String, String, String, Vec<u8>, String, String)> = ctx.db.call(move |c| c.query_row("SELECT holder, message_id, subject, content_type, body, props, sys FROM msg_messages WHERE seq=?1", [seq], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))).optional()).await.ok().flatten();
+        let Some((holder, message_id, subject, content_type, body, props, sys)) = row else { return };
+        let Some(q) = n.rabbit_queue(&holder) else { return };
+        let Some(dlx) = q.dead_letter_exchange else { return };
+        let mut props: Map<String, Value> = serde_json::from_str(&props).unwrap_or_default();
+        let mut sys: Map<String, Value> = serde_json::from_str(&sys).unwrap_or_default();
+        let (ex, key) = (sys.get("exchange").and_then(|v| v.as_str()).unwrap_or("").to_string(), sys.get("routingKey").and_then(|v| v.as_str()).unwrap_or("").to_string());
+        let mut deaths: Vec<Value> = props.get("x-death").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        match deaths.iter_mut().find(|d| d["queue"] == json!(holder) && d["reason"] == json!(reason)) {
+            Some(d) => d["count"] = json!(d["count"].as_i64().unwrap_or(0) + 1),
+            None => deaths.insert(0, json!({"count": 1, "reason": reason, "queue": holder, "time": util::now_ms() / 1000, "exchange": ex, "routing-keys": [key]})),
+        }
+        props.insert("x-death".into(), Value::Array(deaths));
+        for (k, v) in [("reason", json!(reason)), ("queue", json!(holder)), ("exchange", json!(ex))] {
+            props.entry(format!("x-first-death-{k}")).or_insert(v.clone());
+            props.insert(format!("x-last-death-{k}"), v);
+        }
+        sys.insert("exchange".into(), json!(dlx));
+        sys.insert("routingKey".into(), json!(q.dead_letter_routing_key.unwrap_or(key)));
+        let o = Outgoing { message_id, subject, content_type, body, props, sys, scheduled_at: None, sender: format!("RabbitMQ (dead-lettered from {holder})"), via: "amqp".into() };
+        match publish(ctx, ns, &dlx, o).await {
+            Ok(seqs) => note(ctx, seq, &format!("Dead-lettered to exchange {dlx}"), &format!("{reason}  ·  {} cop{}", seqs.len(), if seqs.len() == 1 { "y" } else { "ies" }), "attn").await,
+            Err(e) => note(ctx, seq, &format!("Dead-letter exchange {dlx} refused it"), e.text(), "danger").await,
+        }
+    })
+}
+
+/// A RabbitMQ unacked message goes back to its queue (the channel closed). Quorum queues count
+/// the return in x-delivery-count and, past their delivery limit, drop or dead-letter it.
+pub async fn rabbit_return(ctx: &Ctx, ns: &str, token: &str, why: &str, limit: Option<i64>) {
+    let t2 = token.to_string();
+    let row: Option<(i64, String, String, String)> = ctx.db.call(move |c| c.query_row("SELECT seq, holder, state, props FROM msg_messages WHERE lock_token=?1", [t2], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional()).await.ok().flatten();
+    let Some((seq, holder, state, props)) = row else { return };
+    if state != "locked" {
+        return;
+    }
+    let mut props: Map<String, Value> = serde_json::from_str(&props).unwrap_or_default();
+    let returns = props.get("x-delivery-count").and_then(|v| v.as_i64()).unwrap_or(0) + 1;
+    if let Some(l) = limit {
+        props.insert("x-delivery-count".into(), json!(returns));
+        let p = Value::Object(props).to_string();
+        let _ = ctx.db.call(move |c| c.execute("UPDATE msg_messages SET props=?2 WHERE seq=?1", params![seq, p])).await;
+        if returns > l {
+            rabbit_drop(ctx, ns, seq, "delivery_limit", &format!("returned {returns} times; the queue's delivery limit is {l}")).await;
+            tl(ctx, &format!("mq:dl:{seq}"), ns, &format!("#{seq} dropped by {holder}: delivery limit"), "failed", &format!("returned {returns} times, limit {l}"), trace_of_seq(ctx, seq).await.as_deref(), "", &link_of(ns, &holder, seq)).await;
+            ring(ctx, ns, &holder);
+            return;
+        }
+    }
+    let _ = ctx.db.call(move |c| c.execute("UPDATE msg_messages SET state='active', lock_token='', locked_by='', locked_until=0 WHERE seq=?1", [seq])).await;
+    note(ctx, seq, "Back to the queue", why, "attn").await;
+    ring(ctx, ns, &holder);
 }
 
 fn refusal_of(refuse: &str, ns: &str, entity: &str) -> Option<Refusal> {
@@ -568,23 +711,6 @@ pub async fn renew(ctx: &Ctx, ns: &str, token: &str) -> Result<i64, Refusal> {
     let nu = util::now_ms() + lock;
     let _ = ctx.db.call(move |c| c.execute("UPDATE msg_messages SET locked_until=?2 WHERE seq=?1", params![seq, nu])).await;
     Ok(nu)
-}
-
-/// A consumer went away: RabbitMQ requeues what it had not acked (redelivered); Service Bus
-/// keeps locks until they expire.
-pub async fn release_all(ctx: &Ctx, ns: &str, consumer: &str, requeue: bool, why: &str) {
-    let (c2, n2) = (consumer.to_string(), ns.to_string());
-    let rows: Vec<(i64, String)> = ctx.db.call(move |c| { let mut s = c.prepare("SELECT seq, holder FROM msg_messages WHERE locked_by=?1 AND state='locked' AND ns=?2")?; let v = s.query_map(params![c2, n2], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>(); v }).await.unwrap_or_default();
-    for (seq, holder) in rows {
-        if requeue {
-            let _ = ctx.db.call(move |c| c.execute("UPDATE msg_messages SET state='active', lock_token='', locked_by='', locked_until=0 WHERE seq=?1", [seq])).await;
-            note(ctx, seq, "Back to the queue", why, "attn").await;
-        } else {
-            let _ = ctx.db.call(move |c| c.execute("UPDATE msg_messages SET locked_until=?2 WHERE seq=?1", params![seq, util::now_ms() - 1])).await;
-            note(ctx, seq, "Lock released", why, "attn").await;
-        }
-        ring(ctx, ns, &holder);
-    }
 }
 
 /// Expires the locks a consumer holds now ("Expire its locks").

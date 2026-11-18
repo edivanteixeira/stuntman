@@ -37,7 +37,9 @@ def main():
         assert st == 500 and b"unknown plate" in b, (st, b)
 
         # Scenarios: switch, then back.
+        assert s.call("GET", "/plugins/acme-tracking/scenario") == {"service": "acme-tracking", "scenario": "Started", "scenarios": ["auth-failure", "network"]}
         s.call("PUT", "/plugins/acme-tracking/scenario", {"scenario": "auth-failure"})
+        assert s.call("GET", "/plugins/acme-tracking/scenario")["scenario"] == "auth-failure"
         st, b, _ = s.api("GET", "/acme-tracking/acme-tracking/v2/positions/ABC1D23", headers={"X-Api-Key": "k"})
         assert st == 403, (st, b)
         s.call("PUT", "/plugins/acme-tracking/scenario", {"scenario": "network"})
@@ -108,6 +110,55 @@ def main():
         time.sleep(0.3)
         assert len(got) == 1, got
         srv.shutdown()
+        shutil.rmtree(d)
+
+        # WireMock template semantics: repeated parameters are lists, the query string as received, no HTML escaping, formData.
+        d = tempfile.mkdtemp()
+        os.makedirs(os.path.join(d, "mappings"))
+        json.dump({"request": {"method": "POST", "urlPath": "/probe/x"}, "response": {"status": 200, "body":
+            "{{request.url}}|{{#each request.query.l}}<{{this}}>{{/each}}|{{request.query.l.[1]}}|{{request.query.h}}|{{#eq request.query.c.[0] '1'}}ONE{{else}}OTHER{{/eq}}|{{formData request.body 'f'}}{{f.k}}"}},
+            open(os.path.join(d, "mappings", "probe.json"), "w"))
+        name = s.call("POST", "/plugins/import", {"source": d, "group_by": "one", "name": "probe"})["services"][0]["service"]
+        st, b, _ = s.api("POST", f"/{name}/probe/x?c=1&l=p&l=q&h=a%26b", b"f=1&k=v", {"Content-Type": "application/x-www-form-urlencoded"})
+        assert st == 200 and b == b"/probe/x?c=1&l=p&l=q&h=a%26b|<p><q>|q|a&b|ONE|v", (st, b)
+        shutil.rmtree(d)
+
+        # WireMock picks the best priority among every mapping that matches (across paths and methods),
+        # the last one read on a tie; ANY is every method; matches is a whole-string regex; matchesXPath is XPath.
+        # Checked against wiremock/wiremock:3.13.1 with the same folder.
+        d = tempfile.mkdtemp()
+        os.makedirs(os.path.join(d, "mappings", "acme-fleet"))
+        soap = lambda op: {"SOAPAction": {"matches": f'"?http://example.com/Svc/{op}"?'}}
+        json.dump({"mappings": [
+            {"priority": 1, "scenarioName": "acme", "requiredScenarioState": "auth-fail", "request": {"method": "ANY", "urlPathPattern": "/acme/.*"}, "response": {"status": 401, "body": "denied"}},
+            {"priority": 5, "request": {"method": "POST", "urlPath": "/acme/trips"}, "response": {"status": 201, "body": "created"}},
+            {"priority": 5, "request": {"method": "ANY", "urlPath": "/acme/any"}, "response": {"status": 200, "body": "any"}},
+            {"priority": 3, "request": {"method": "GET", "urlPath": "/acme/tie"}, "response": {"status": 200, "body": "first"}},
+            {"priority": 3, "request": {"method": "GET", "urlPath": "/acme/tie"}, "response": {"status": 200, "body": "second"}},
+            {"request": {"method": "POST", "urlPath": "/acme/Svc.asmx", "headers": soap("Register")}, "response": {"status": 200, "body": "register"}},
+            {"request": {"method": "POST", "urlPath": "/acme/Svc.asmx", "headers": soap("RegisterDetailed")}, "response": {"status": 200, "body": "detailed"}},
+            {"request": {"method": "POST", "urlPath": "/acme/ws", "bodyPatterns": [{"matchesXPath": "//*[local-name()='request']/*[local-name()='kind' and text()='Quote']"}]}, "response": {"status": 200, "body": "quote"}},
+            {"priority": 6, "request": {"method": "POST", "urlPath": "/acme/ws", "bodyPatterns": [{"matchesXPath": "//*[local-name()='Ping']"}]}, "response": {"status": 200, "body": "pong"}},
+            {"request": {"method": "POST", "urlPath": "/acme/ws2", "bodyPatterns": [{"matchesXPath": {"expression": "//*[local-name()='code']/text()", "equalTo": "42"}}]}, "response": {"status": 200, "body": "code42"}},
+        ]}, open(os.path.join(d, "mappings", "acme-fleet", "fleet.json"), "w"))
+        w = s.call("POST", "/plugins/import", {"source": d})
+        svc = w["services"][0]["service"]
+        assert not w["services"][0].get("gaps"), w
+        def got(m, path, body=None, headers=None):
+            st, b, _ = s.api(m, f"/{svc}{path}", None if body is None else body.encode(), headers or {})
+            return st, (b.decode() if isinstance(b, bytes) else json.dumps(b))
+        env = '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><n:call xmlns:n="urn:acme">{}</n:call></s:Body></s:Envelope>'
+        assert got("POST", "/acme/trips", "{}") == (201, "created")
+        assert got("PUT", "/acme/any", "x") == (200, "any") and got("DELETE", "/acme/any") == (200, "any")
+        assert got("GET", "/acme/tie") == (200, "second")
+        assert got("POST", "/acme/Svc.asmx", "<x/>", {"SOAPAction": '"http://example.com/Svc/RegisterDetailed"'}) == (200, "detailed")
+        assert got("POST", "/acme/Svc.asmx", "<x/>", {"SOAPAction": '"http://example.com/Svc/Register"'}) == (200, "register")
+        assert got("POST", "/acme/ws", env.format('<request xmlns=""><kind>Quote</kind><items>1</items></request>')) == (200, "quote")
+        assert got("POST", "/acme/ws", env.format('<a:Ping xmlns:a="urn:acme"/>')) == (200, "pong")
+        assert got("POST", "/acme/ws", "<r><request><kind>Other</kind></request></r>")[0] == 404
+        assert got("POST", "/acme/ws2", "<r><code>42</code></r>") == (200, "code42") and got("POST", "/acme/ws2", "<r><code>43</code></r>")[0] == 404
+        s.call("PUT", f"/plugins/{svc}/scenario", {"scenario": "auth-fail"})
+        assert got("POST", "/acme/trips", "{}") == (401, "denied") and got("PUT", "/acme/trips", "x") == (401, "denied") and got("GET", "/acme/tie") == (401, "denied")
         shutil.rmtree(d)
     print("A11 e2e: ok")
 

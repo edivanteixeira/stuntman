@@ -811,7 +811,7 @@ pub async fn import(http: &reqwest::Client, service: &str, source: &str, text: O
         title.push(if c == '_' || c == '-' { ' ' } else { c });
     }
     let p = Plugin {
-        service: plugin::Service { name: service.into(), title, origin: "yours".into(), base_url: if host.is_empty() { String::new() } else { format!("https://{host}") }, real_host: host, ..Default::default() },
+        service: plugin::Service { name: service.into(), title, origin: "yours".into(), base_url: if host.is_empty() { String::new() } else { format!("https://{host}") }, real_host: host.into(), ..Default::default() },
         soap: Some(Soap { version: version.into(), endpoint, wsdl: wname, source: if source.contains("://") { source.into() } else { String::new() }, validate: true, types: keep, namespace: tns, ..Default::default() }),
         operations: ops,
         answers,
@@ -898,7 +898,7 @@ pub fn tools() -> Vec<Tool> {
                 im.plugin.service.title = t;
             }
             if let Some(h) = a.str("real_host") {
-                im.plugin.service.real_host = h;
+                im.plugin.service.real_host = h.into();
             }
             save(&ctx, im, None)
         })
@@ -1026,7 +1026,7 @@ mod t {
         let im = import(&reqwest::Client::new(), "example-insurance", "PolicyService.wsdl", Some(WSDL.into())).await.unwrap();
         let p = &im.plugin;
         let sp = p.soap.as_ref().unwrap();
-        assert_eq!((sp.version.as_str(), sp.endpoint.as_str(), p.service.real_host.as_str()), ("1.2", "/PolicyService", "insurance.example.com"));
+        assert_eq!((sp.version.as_str(), sp.endpoint.as_str(), p.service.real_host.first()), ("1.2", "/PolicyService", "insurance.example.com"));
         let op = &p.operations[0];
         assert_eq!((op.operation.as_str(), op.action.as_str(), op.input.as_str()), ("RegisterShipment", "urn:example:insurance/RegisterShipment", "RegisterShipmentRequest"));
         assert_eq!(sp.types["RegisterShipmentRequest"]["cargoValue"], "decimal");

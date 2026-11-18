@@ -1,5 +1,5 @@
-//! FTP and explicit FTPS (AUTH TLS, PROT P), passive mode (PASV, EPSV). The commands EDI clients
-//! use: USER PASS SYST FEAT OPTS PWD CWD CDUP TYPE MODE STRU PASV EPSV LIST NLST MLSD RETR STOR APPE
+//! FTP and explicit FTPS (AUTH TLS, PROT P), passive (PASV, EPSV) and active mode (PORT, EPRT). The commands EDI clients
+//! use: USER PASS SYST FEAT OPTS PWD CWD CDUP TYPE MODE STRU PASV EPSV PORT EPRT LIST NLST MLSD RETR STOR APPE
 //! DELE MKD RMD RNFR RNTO SIZE MDTM REST NOOP QUIT AUTH PBSZ PROT. One port for every environment:
 //! logins go to the default one.
 
@@ -39,6 +39,8 @@ struct S {
     logged: bool,
     cwd: String,
     pasv: Option<TcpListener>,
+    /// Active mode: the address PORT/EPRT gave, connected to on the next transfer.
+    port: Option<std::net::SocketAddr>,
     rest: u64,
     rnfr: Option<String>,
     prot_p: bool,
@@ -107,8 +109,11 @@ mod chrono_like {
 }
 
 async fn data_conn(s: &mut S) -> Option<BoxIo> {
-    let l = s.pasv.take()?;
-    let (sock, _) = tokio::time::timeout(Duration::from_secs(15), l.accept()).await.ok()?.ok()?;
+    let sock = match (s.pasv.take(), s.port.take()) {
+        (Some(l), _) => tokio::time::timeout(Duration::from_secs(15), l.accept()).await.ok()?.ok()?.0,
+        (None, Some(a)) => tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(a)).await.ok()?.ok()?,
+        _ => return None,
+    };
     if s.prot_p {
         let a = acceptor()?;
         return a.accept(sock).await.ok().map(|t| Box::new(t) as BoxIo);
@@ -138,10 +143,25 @@ async fn copy(mut from: impl AsyncRead + Unpin, mut to: impl AsyncWrite + Unpin,
     (n, true)
 }
 
+/// PORT h1,h2,h3,h4,p1,p2 or EPRT |1|ip|port| (|2| for IPv6).
+fn active_addr(cmd: &str, arg: &str) -> Option<std::net::SocketAddr> {
+    if cmd == "PORT" {
+        let n: Vec<u8> = arg.trim().split(',').map(|x| x.trim().parse().ok()).collect::<Option<_>>()?;
+        let [a, b, c, d, p1, p2] = n[..] else { return None };
+        return Some(std::net::SocketAddr::from(([a, b, c, d], u16::from(p1) << 8 | u16::from(p2))));
+    }
+    let arg = arg.trim();
+    let d = arg.chars().next()?;
+    let parts: Vec<&str> = arg.trim_matches(d).split(d).collect();
+    let [_, ip, port] = parts[..] else { return None };
+    Some(std::net::SocketAddr::new(ip.parse().ok()?, port.parse().ok()?))
+}
+
 async fn conn(ctx: Ctx, sock: TcpStream) {
+    let peer_ip = sock.peer_addr().map(|a| a.ip()).ok();
     let local_ip = sock.local_addr().map(|a| a.ip()).unwrap_or(std::net::IpAddr::from([127, 0, 0, 1]));
     let mut c = BufReader::new(Box::new(sock) as BoxIo);
-    let mut s = S { ctx: ctx.clone(), user: String::new(), server: None, acct: None, logged: false, cwd: "/".into(), pasv: None, rest: 0, rnfr: None, prot_p: false, tls: false };
+    let mut s = S { ctx: ctx.clone(), user: String::new(), server: None, acct: None, logged: false, cwd: "/".into(), pasv: None, port: None, rest: 0, rnfr: None, prot_p: false, tls: false };
     if reply(&mut c, "220 Stuntman FTP (simulated partner server)").await.is_err() {
         return;
     }
@@ -231,7 +251,16 @@ async fn conn(ctx: Ctx, sock: TcpStream) {
                 }
                 Err(_) => "425 Cannot open a data connection".into(),
             },
-            "PORT" | "EPRT" => "502 Active mode is not offered: use passive (PASV/EPSV)".into(),
+            "PORT" | "EPRT" => match active_addr(&cmd, &arg) {
+                // As vsftpd (port_promiscuous=NO): the data connection goes back to the client only, no FTP bounce.
+                Some(a) if Some(a.ip().to_canonical()) == peer_ip.map(|p| p.to_canonical()) => {
+                    s.pasv = None;
+                    s.port = Some(a);
+                    format!("200 {cmd} command successful. Consider using PASV.")
+                }
+                Some(_) => "500 Illegal PORT command.".into(),
+                None => format!("501 Syntax error in {cmd}"),
+            },
             "REST" => {
                 s.rest = arg.trim().parse().unwrap_or(0);
                 format!("350 Restarting at {}", s.rest)
@@ -263,7 +292,7 @@ async fn conn(ctx: Ctx, sock: TcpStream) {
                             let _ = d.shutdown().await;
                             "226 Listing sent".into()
                         }
-                        None => "425 No data connection (use PASV first)".into(),
+                        None => "425 Can't open data connection.".into(),
                     }
                 }
             }
@@ -293,7 +322,7 @@ async fn conn(ctx: Ctx, sock: TcpStream) {
                             store::log(&ctx, &s.srv(), &s.user, s.proto(), "get", &p, n, done, if done { "downloaded" } else { "426 dropped mid-transfer (provoked)" }).await;
                             if done { "226 Transfer complete".into() } else { "426 Connection closed; transfer aborted".into() }
                         }
-                        _ => "425 No data connection".into(),
+                        _ => "425 Can't open data connection.".into(),
                     }
                 }
             }
@@ -308,14 +337,20 @@ async fn conn(ctx: Ctx, sock: TcpStream) {
                 } else if prov == "disk_full" {
                     store::log(&ctx, &s.srv(), &s.user, s.proto(), "put", &p, 0, false, "552 disk full (provoked)").await;
                     "552 Requested file action aborted: exceeded storage allocation".into()
+                } else if !f.parent().map(|d| d.is_dir()).unwrap_or(false) {
+                    // Folders exist only when set_file_server declares them or MKD makes them (vsftpd's answer).
+                    store::log(&ctx, &s.srv(), &s.user, s.proto(), "put", &p, 0, false, "553 no such folder").await;
+                    "553 Could not create file.".into()
                 } else {
-                    if let Some(parent) = f.parent() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
                     let _ = reply(&mut c, "150 Ok to send data").await;
-                    let file = if cmd == "APPE" || s.rest > 0 { tokio::fs::OpenOptions::new().create(true).append(true).open(&f).await } else { tokio::fs::File::create(&f).await };
+                    let data = data_conn(&mut s).await;
+                    let file = match &data {
+                        None => Err(std::io::Error::other("no data connection")),
+                        Some(_) if cmd == "APPE" || s.rest > 0 => tokio::fs::OpenOptions::new().create(true).append(true).open(&f).await,
+                        Some(_) => tokio::fs::File::create(&f).await,
+                    };
                     s.rest = 0;
-                    match (data_conn(&mut s).await, file) {
+                    match (data, file) {
                         (Some(mut d), Ok(mut file)) => {
                             let (n, done) = copy(&mut d, &mut file, &prov).await;
                             let _ = file.flush().await;
@@ -327,7 +362,7 @@ async fn conn(ctx: Ctx, sock: TcpStream) {
                             store::log(&ctx, &s.srv(), &s.user, s.proto(), "put", &p, n, done, if done { "uploaded" } else { "426 dropped mid-transfer (provoked); the partial file stays" }).await;
                             if done { "226 Transfer complete".into() } else { "426 Connection closed; transfer aborted".into() }
                         }
-                        _ => "425 No data connection".into(),
+                        _ => "425 Can't open data connection.".into(),
                     }
                 }
             }

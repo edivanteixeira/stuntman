@@ -37,14 +37,19 @@ fn matcher(target: &str, m: &Value) -> Option<String> {
             "equalTo" => format!("{target} == {}", q(&s)),
             "contains" => format!("string({target}).contains({})", q(&s)),
             "doesNotContain" => format!("!string({target}).contains({})", q(&s)),
-            "matches" => format!("matches(string({target}), {})", q(&s)),
-            "doesNotMatch" => format!("!matches(string({target}), {})", q(&s)),
+            "matches" => format!("matches(string({target}), {})", q(&whole(&s))),
+            "doesNotMatch" => format!("!matches(string({target}), {})", q(&whole(&s))),
             "absent" => if v.as_bool() == Some(true) { format!("{target} == null") } else { format!("{target} != null") },
             "caseInsensitive" | "ignoreArrayOrder" | "ignoreExtraElements" => continue,
             _ => return None,
         });
     }
     if out.is_empty() { None } else { Some(out.join(" && ")) }
+}
+
+/// WireMock's matches is Java's String.matches: the whole value.
+fn whole(re: &str) -> String {
+    format!("^(?:{re})$")
 }
 
 /// "$.a.b" / "$.a[0]" / "$[?(@.x == 'y')]" → a condition on body.
@@ -62,19 +67,28 @@ fn json_path(p: &str) -> Option<String> {
     None
 }
 
-/// XPath forms the mocks use: //*[local-name()='x' and text()='y'], //x, //x[text()='y'].
-fn xpath(p: &str) -> Option<String> {
-    let re_ln = regex::Regex::new(r#"local-name\(\)\s*=\s*['"]([\w.-]+)['"]"#).unwrap();
-    let re_txt = regex::Regex::new(r#"text\(\)\s*=\s*['"]([^'"]*)['"]"#).unwrap();
-    let name = re_ln.captures(p).map(|c| c[1].to_string()).or_else(|| {
-        let last = p.trim_start_matches('/').split('/').last()?.split('[').next()?.to_string();
-        let last = last.split(':').last()?.to_string();
-        (!last.is_empty() && last.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.')).then_some(last)
-    })?;
-    let el = format!("<([\\w.-]+:)?{}[\\s/>]", regex::escape(&name));
-    Some(match re_txt.captures(p) {
-        Some(t) => format!("matches(raw, {})", q(&format!("(?s)<([\\w.-]+:)?{}[^>]*>\\s*{}\\s*</", regex::escape(&name), regex::escape(&t[1])))),
-        None => format!("matches(raw, {})", q(&el)),
+/// matchesXPath → xpath(raw, …), evaluated on the body (the subset hbs::xpath_select reads); with an
+/// equalTo / contains / matches sub-matcher, one of the values found must match. None: not that subset.
+fn xpath(v: &Value) -> Option<String> {
+    let (e, sub) = match v {
+        Value::String(e) => (e.clone(), None),
+        Value::Object(o) => {
+            let e = o.get("expression")?.as_str()?.to_string();
+            let sub = o.iter().find(|(k, _)| *k != "expression" && *k != "xPathNamespaces").map(|(k, v)| (k.clone(), v.as_str().map(String::from)));
+            match sub {
+                None => (e, None),
+                Some((k, Some(v))) if ["equalTo", "contains", "matches"].contains(&k.as_str()) => (e, Some((k, v))),
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    if !crate::hbs::xpath_supported(&e) {
+        return None;
+    }
+    Some(match sub {
+        None => format!("size(xpath(raw, {})) > 0", q(&e)),
+        Some((k, v)) => format!("xpath(raw, {}, {}, {})", q(&e), q(&k), q(&v)),
     })
 }
 
@@ -90,7 +104,7 @@ struct Want {
 fn want(rq: &Value) -> Want {
     let mut w = Want { methods: vec![], path: String::new(), conds: vec![], gaps: vec![], host: String::new() };
     let m = rq["method"].as_str().unwrap_or("ANY").to_uppercase();
-    w.methods = if m == "ANY" { vec!["GET".into(), "POST".into()] } else { vec![m] };
+    w.methods = vec![m];
     let is_plain = |s: &str| !s.chars().any(|c| "()[]{}*+?|^$\\".contains(c)) && !s.contains(".*");
     if let Some(u) = rq["urlPath"].as_str() {
         w.path = u.to_string();
@@ -135,8 +149,8 @@ fn want(rq: &Value) -> Want {
         let c = match k.as_str() {
             "contains" => Some(format!("raw.contains({})", q(&s))),
             "doesNotContain" => Some(format!("!raw.contains({})", q(&s))),
-            "matches" => Some(format!("matches(raw, {})", q(&s))),
-            "doesNotMatch" => Some(format!("!matches(raw, {})", q(&s))),
+            "matches" => Some(format!("matches(raw, {})", q(&whole(&s)))),
+            "doesNotMatch" => Some(format!("!matches(raw, {})", q(&whole(&s)))),
             "equalTo" => Some(format!("raw == {}", q(&s))),
             "equalToJson" => {
                 let j: Value = if v.is_string() { serde_json::from_str(&s).unwrap_or(Value::Null) } else { v.clone() };
@@ -148,7 +162,7 @@ fn want(rq: &Value) -> Want {
                 Some(cs.join(" && ")).filter(|c| !c.is_empty())
             }
             "matchesJsonPath" => if v.is_string() { json_path(&s) } else { None },
-            "matchesXPath" | "equalToXml" => if v.is_string() && k == "matchesXPath" { xpath(&s) } else { None },
+            "matchesXPath" => xpath(&v),
             _ => None,
         };
         match c {
@@ -212,6 +226,35 @@ fn slug(s: &str) -> String {
     out.trim_matches('_').chars().take(40).collect()
 }
 
+/// One mapping as a rule: its WireMock priority, the order it was read, its method and path.
+struct Rule {
+    prio: i64,
+    order: usize,
+    method: String,
+    path: String,
+    d: Decide,
+}
+
+/// A route path that is a pattern (~regex or a /{param} template), not one fixed path.
+fn is_pattern(p: &str) -> bool {
+    p.starts_with('~') || p.contains('{')
+}
+
+/// The regex of a route path: ~re as is, a template's {x} as one segment, {*} as the rest.
+fn path_regex(p: &str) -> String {
+    match p.strip_prefix('~') {
+        Some(re) => re.to_string(),
+        None => regex::Regex::new(r"\{[^}]*\}").unwrap().replace_all(&regex::escape(p).replace("\\{", "{").replace("\\}", "}"), |c: &regex::Captures| if &c[0] == "{*}" { ".*".to_string() } else { "[^/]+".to_string() }).into_owned(),
+    }
+}
+
+/// Two patterns may take the same path: neither literal prefix rules the other out.
+fn overlap(a: &str, b: &str) -> bool {
+    let lit = |p: &str| -> String { let r = path_regex(p); r.chars().take_while(|c| !".[](){}*+?|^$\\".contains(*c)).collect() };
+    let (x, y) = (lit(a), lit(b));
+    x.starts_with(&y) || y.starts_with(&x)
+}
+
 pub struct Group {
     pub name: String,
     pub maps: Vec<(PathBuf, Value)>,
@@ -223,13 +266,11 @@ pub fn plugin_of(g: &Group, files_root: &Path) -> (Plugin, Vec<(String, Vec<u8>)
     let mut files = vec![];
     let mut gaps = vec![];
     let mut hosts = std::collections::BTreeSet::new();
-    // route → [(priority, specific, Decide)]
-    let mut routes: BTreeMap<String, Vec<(i64, bool, Decide)>> = BTreeMap::new();
+    let mut rules: Vec<Rule> = vec![];
     let mut names = std::collections::HashSet::new();
     let mut route_sends: BTreeMap<Vec<String>, Vec<plugin::Send>> = BTreeMap::new();
-    let mut maps = g.maps.clone();
-    maps.sort_by_key(|(_, m)| m["priority"].as_i64().unwrap_or(5));
-    for (file, m) in &maps {
+    // In the order they were read: for equal priorities WireMock prefers the one added last.
+    for (file, m) in &g.maps {
         let rq = &m["request"];
         let rs = &m["response"];
         let w = want(rq);
@@ -295,6 +336,11 @@ pub fn plugin_of(g: &Group, files_root: &Path) -> (Plugin, Vec<(String, Vec<u8>)
                         Err(_) => gaps.push(format!("{}: __files/{f} not found", file.display())),
                     }
                 }
+                // A template only in a header (Location: http://localhost:{{request.port}}/x) makes the answer a template too.
+                if a.file.is_empty() && (a.headers.values().any(|v| v.contains("{{")) || tpl("")) {
+                    a.template = "handlebars".into();
+                    a.raw = false;
+                }
                 if let Some(d) = rs["fixedDelayMilliseconds"].as_u64() {
                     a.latency = format!("{d}ms");
                 } else if let Some(d) = rs["delayDistribution"]["median"].as_u64() {
@@ -332,21 +378,44 @@ pub fn plugin_of(g: &Group, files_root: &Path) -> (Plugin, Vec<(String, Vec<u8>)
             }
         }
         let mut conds = w.conds.clone();
-        let specific = !state.is_empty() && state != "Started";
-        if specific {
+        if !state.is_empty() && state != "Started" {
             conds.insert(0, format!("scenario == {}", q(state)));
         }
         let d = Decide { when: if conds.is_empty() { None } else { Some(conds.join(" && ")) }, answer: answer_name, scenario: m["newScenarioState"].as_str().unwrap_or("").to_string() };
-        let prio = m["priority"].as_i64().unwrap_or(5);
-        for meth in &w.methods {
-            routes.entry(format!("{meth} {}", w.path)).or_default().push((prio, specific, d.clone()));
-        }
+        rules.push(Rule { prio: m["priority"].as_i64().unwrap_or(5), order: rules.len(), method: w.methods[0].clone(), path: w.path.clone(), d });
     }
+    // WireMock picks, among every mapping that matches, the best priority, and for a tie the one added
+    // last. Each route gets every rule that can match its requests, in that order: its own, those whose
+    // path pattern takes its path, and (on a pattern route) higher-ranked patterns that may overlap,
+    // guarded by request_path. ANY rules go into every method's route; an ANY route only takes ANY rules.
+    let keys: Vec<(String, String)> = rules.iter().map(|r| (r.method.clone(), r.path.clone())).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
     let mut prio: Vec<i64> = vec![];
-    for (r, mut ds) in routes {
+    for (meth, path) in keys {
+        let own_worst = rules.iter().filter(|r| r.method == meth && r.path == path).map(|r| r.prio).max().unwrap_or(5);
+        let mut ds: Vec<(i64, usize, Decide)> = vec![];
+        for r in &rules {
+            if !(r.method == meth || r.method == "ANY") {
+                continue;
+            }
+            let guard = if r.path == path {
+                None
+            } else if !is_pattern(&path) {
+                // A plain route: rules whose pattern takes this very path.
+                if is_pattern(&r.path) && crate::engine::match_path(&r.path, &path).is_some() { None } else { continue }
+            } else if is_pattern(&r.path) && r.prio <= own_worst && overlap(&r.path, &path) {
+                Some(format!("matches(request_path, {})", q(&whole(&path_regex(&r.path)))))
+            } else {
+                continue;
+            };
+            let mut d = r.d.clone();
+            if let Some(g) = guard {
+                d.when = Some(match d.when { Some(w) => format!("{g} && {w}"), None => g });
+            }
+            ds.push((r.prio, r.order, d));
+        }
+        // Best priority first; for a tie the mapping read last wins.
+        ds.sort_by_key(|(prio, order, _)| (*prio, std::cmp::Reverse(*order)));
         let min_prio = ds.iter().map(|d| d.0).min().unwrap_or(5);
-        // Scenario-specific rules first, then by priority; the first rule with no condition ends the list.
-        ds.sort_by_key(|(prio, specific, d)| (!*specific, d.when.is_none(), *prio));
         let mut decide: Vec<Decide> = vec![];
         for (_, _, d) in ds {
             let last = d.when.is_none();
@@ -362,16 +431,18 @@ pub fn plugin_of(g: &Group, files_root: &Path) -> (Plugin, Vec<(String, Vec<u8>)
                 p.answers.push(Answer { name: "not_matched".into(), status: 404, headers: [("content-type".to_string(), "text/plain".to_string())].into(), body: "Request was not matched".into(), raw: true, note: "no mapping matched (as WireMock)".into(), ..Default::default() });
             }
         }
-        let send = route_sends.iter().filter(|(k, _)| k.contains(&r)).flat_map(|(_, v)| v.clone()).collect();
+        let r = format!("{meth} {path}");
+        // The webhooks of every answer this route can give (rules copied from other mappings too).
+        let send = route_sends.values().flatten().filter(|s| decide.iter().any(|d| s.when == format!("answer == {}", q(&d.answer)))).cloned().collect();
         p.routes.push(Route { route: r, decide, send, fallthrough: true, ..Default::default() });
         prio.push(min_prio);
     }
     // Plain paths before regexes (/a/b before /a/.*), then by WireMock priority.
     let mut idx: Vec<usize> = (0..p.routes.len()).collect();
-    idx.sort_by_key(|i| (p.routes[*i].method_path().1.starts_with('~'), prio[*i]));
+    idx.sort_by_key(|i| { let (m, path) = p.routes[*i].method_path(); (is_pattern(&path), m == "ANY", prio[*i]) });
     p.routes = idx.into_iter().map(|i| p.routes[i].clone()).collect();
     if hosts.len() == 1 {
-        p.service.real_host = hosts.into_iter().next().unwrap_or_default();
+        p.service.real_host = hosts.into_iter().next().unwrap_or_default().into();
     }
     (p, files, gaps)
 }
@@ -386,8 +457,9 @@ pub fn read_folder(root: &Path, group_by: &str, one_name: &str) -> Result<(Vec<G
     let mut all: Vec<(PathBuf, Value)> = vec![];
     let mut stack = vec![maps_dir.clone()];
     while let Some(d) = stack.pop() {
-        for e in std::fs::read_dir(&d).map_err(|e| ApiError::bad(format!("{}: {e}", d.display())))?.flatten() {
-            let p = e.path();
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(&d).map_err(|e| ApiError::bad(format!("{}: {e}", d.display())))?.flatten().map(|e| e.path()).collect();
+        entries.sort();
+        for p in entries {
             if p.is_dir() {
                 if p.file_name().map(|n| n != "__files").unwrap_or(true) {
                     stack.push(p);
@@ -471,7 +543,7 @@ pub fn tools() -> Vec<Tool> {
                 total.0 += g.maps.len();
                 total.1 += p.routes.len();
                 let mut row = json!({"service": p.service.name, "mappings": g.maps.len(), "routes": p.routes.len(), "answers": p.answers.len(),
-                    "faults": p.routes.iter().flat_map(|r| r.decide.iter()).filter(|d| ["reset", "empty"].contains(&d.answer.as_str())).count(),
+                    "faults": p.routes.iter().flat_map(|r| r.decide.iter()).filter(|d| ["reset", "empty"].contains(&d.answer.as_str())).map(|d| (d.answer.clone(), d.when.clone().unwrap_or_default().split(") && ").last().unwrap_or("").to_string())).collect::<std::collections::HashSet<_>>().len(),
                     "scenarios": scenarios(&p),
                     "files": files.len(), "gaps": gaps});
                 if existing.contains(&p.service.name) && !replace {
@@ -509,6 +581,15 @@ pub fn tools() -> Vec<Tool> {
         })
         .req("service", "plugin").param("scenario", "the scenario's name (Started: normal)")
         .route("PUT", "/plugins/{service}/scenario"),
+        Tool::new("get_scenario", "The scenario a service is in now (Started is the normal one) and the scenarios its rules name.", |ctx, a| async move {
+            let s = a.need("service")?;
+            let p = plugin::get(&ctx, &s)?;
+            let st = crate::store::state(&ctx, &s).await?;
+            let name = st.pointer("/__scenario/state/name").cloned().unwrap_or(json!("Started"));
+            Ok(json!({"service": s, "scenario": name, "scenarios": scenarios(&p)}))
+        })
+        .req("service", "plugin")
+        .route("GET", "/plugins/{service}/scenario"),
     ]
 }
 
@@ -536,9 +617,26 @@ mod t {
             "bodyPatterns": [{"matchesXPath": "//*[local-name()='cUF' and text()='35']"}, {"matchesJsonPath": "$.img"}, {"contains": "abc"}]}));
         assert_eq!(w.path, "~(?i)(/acme)?/ws/track\\.asmx");
         assert_eq!(w.conds[0], "string(headers['soapaction']).contains('/Track')");
-        assert!(w.conds[1].starts_with("matches(raw, '(?s)<([\\\\w.-]+:)?cUF"), "{}", w.conds[1]);
+        assert_eq!(w.conds[1], "size(xpath(raw, '//*[local-name()=\\'cUF\\' and text()=\\'35\\']')) > 0");
         assert_eq!(w.conds[2], "body.img != null");
         assert_eq!(w.conds[3], "raw.contains('abc')");
+        // WireMock's matches is a whole-value match; XPath outside the subset is a gap, not an approximation.
+        let w = want(&json!({"method": "POST", "urlPath": "/s", "headers": {"SOAPAction": {"matches": "\"?urn:acme/Register\"?"}}, "bodyPatterns": [{"matchesXPath": "count(//x) > 1"}]}));
+        assert_eq!(w.conds[0], "matches(string(headers['soapaction']), '^(?:\"?urn:acme/Register\"?)$')");
+        assert!(w.gaps[0].starts_with("body matchesXPath"), "{:?}", w.gaps);
+    }
+
+    #[test]
+    fn template_in_a_header() {
+        let g = Group { name: "acme".into(), maps: vec![(PathBuf::from("go.json"), json!({"request": {"urlPath": "/acme/go"}, "response": {"status": 308, "headers": {"Location": "http://localhost:{{request.port}}/acme/x"}}})),
+            (PathBuf::from("plain.json"), json!({"request": {"urlPath": "/acme/plain"}, "response": {"status": 204, "headers": {"X-Id": "a1"}}}))] };
+        let (p, _, _) = plugin_of(&g, Path::new("/nonexistent"));
+        let a = p.answers.iter().find(|a| a.status == 308).unwrap();
+        assert_eq!((a.template.as_str(), a.raw), ("handlebars", false));
+        let mut sc = serde_json::Map::new();
+        sc.insert("headers".into(), json!({"host": "localhost:18084"}));
+        assert_eq!(crate::engine::render_answer(a, &sc).1.iter().find(|h| h.0 == "location").map(|h| h.1.clone()), Some("http://localhost:18084/acme/x".to_string()));
+        assert_eq!(p.answers.iter().find(|a| a.status == 204).unwrap().template, "");
         let w = want(&json!({"method": "GET", "url": "/v1/x?a=1&b=2"}));
         assert_eq!((w.path.as_str(), w.conds.len()), ("/v1/x", 2));
         let w = want(&json!({"method": "POST", "urlPath": "/o", "basicAuthCredentials": {"username": "acme", "password": "pw"}, "cookies": {"sid": {"equalTo": "s1"}},

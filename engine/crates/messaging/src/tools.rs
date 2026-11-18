@@ -338,7 +338,7 @@ fn queues() -> Vec<Tool> {
         })
         .req("namespace", "namespace").req("id", "consumer id")
         .route("POST", "/messaging/{namespace}/consumers/{id}/expire-locks"),
-        Tool::new("set_namespace_reachability", "The whole namespace: ok | refuse (connection refused) | timeout (no answer) | 401 (key rejected) | busy (ServerBusy / connection.blocked).", |ctx, a| async move {
+        Tool::new("set_namespace_reachability", "The whole namespace: ok | refuse (new connections refused) | timeout (no answer) | 401 (key rejected) | busy (ServerBusy / connection.blocked) | down (a dead broker: open connections drop without a word, new ones are refused, management answers 503) | close (the same, but open connections get a forced close first).", |ctx, a| async move {
             let ns = ns_of(&a)?;
             let mode = a.need("mode")?;
             if !config::REACH.contains(&mode.as_str()) {
@@ -350,7 +350,7 @@ fn queues() -> Vec<Tool> {
             })?;
             Ok(json!({"namespace": ns, "reachability": n.behaviour.reachability}))
         })
-        .req("namespace", "namespace").req("mode", "ok | refuse | timeout | 401 | busy")
+        .req("namespace", "namespace").req("mode", "ok | refuse | timeout | 401 | busy | down | close")
         .route("PUT", "/messaging/{namespace}/reachability"),
     ]
 }

@@ -37,6 +37,7 @@ default; most setups change nothing.
 | `STUNTMAN_FTP_PASSIVE_PORTS` | any free port (`30000-30009` in Docker) | the range FTP passive data connections use |
 | `STUNTMAN_FTP_PASSIVE_HOST` | the address the client connected to (`127.0.0.1` in Docker) | the IP address passive replies (PASV) give; a host name is ignored |
 | `STUNTMAN_SFTP_PORT` | `2222` | SFTP |
+| `STUNTMAN_IDENTITY_HEADER` | not set | when set, the App Service managed identity endpoint (`/msi/token`) refuses an `X-IDENTITY-HEADER` with another value |
 | `STUNTMAN_IMAP_PORT` | `1143` | IMAP mailboxes |
 | `STUNTMAN_POP3_PORT` | `1110` | POP3 mailboxes |
 | `STUNTMAN_KAFKA_PORT` | `9092` | Kafka broker |

@@ -47,10 +47,16 @@ pub async fn serve(port: u16, envs: Envs) {
                     let body = body.collect().await.map(|b| b.to_bytes()).unwrap_or_default();
                     let host = parts.headers.get("host").and_then(|h| h.to_str().ok()).unwrap_or(&sni).to_string();
                     let resp = match envs.by_host(Some(&host)).or_else(|| envs.by_host(Some(&sni))) {
-                        Some(ctx) => crate::azure::handle(ctx, host, parts.method, parts.uri.path().to_string(), parts.uri.query().unwrap_or("").to_string(), parts.headers, body).await,
+                        Some(ctx) => {
+                            // set_vault reachability=refused: the connection closes with no answer.
+                            if crate::azure::reachability(&ctx, host.split('.').next().unwrap_or("")).await.as_deref() == Some("refused") {
+                                return Err(std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "vault unreachable (provoked)"));
+                            }
+                            crate::azure::handle(ctx, host, parts.method, parts.uri.path().to_string(), parts.uri.query().unwrap_or("").to_string(), parts.headers, body).await
+                        }
                         None => axum::response::IntoResponse::into_response((axum::http::StatusCode::NOT_FOUND, "no environment for this host")),
                     };
-                    Ok::<_, std::convert::Infallible>(resp)
+                    Ok::<_, std::io::Error>(resp)
                 }
             });
             let _ = hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(tls), svc).await;

@@ -1,6 +1,6 @@
 //! Secrets (Azure Key Vault first): a provider-neutral core (vault.rs, store.rs) with the Azure Key
-//! Vault REST adapter (azure.rs) on its own HTTPS port, a managed identity endpoint (IMDS shape) on
-//! the main port, and the K1–K5 tools.
+//! Vault REST adapter (azure.rs) on its own HTTPS port, managed identity endpoints (IMDS and App
+//! Service shapes) on the main port, and the K1–K5 tools.
 
 pub mod azure;
 pub mod config;
@@ -26,9 +26,19 @@ pub struct KeyVault {
     pub port: u16,
 }
 
-/// IMDS / App Service managed identity endpoint: the identity is client_id, mi_res_id, object_id,
-/// or the X-IDENTITY-HEADER value (set IDENTITY_HEADER=<identity> next to IDENTITY_ENDPOINT).
+/// IMDS managed identity endpoint: the identity is client_id, mi_res_id, object_id, or the
+/// X-IDENTITY-HEADER value (set IDENTITY_HEADER=<identity> next to IDENTITY_ENDPOINT).
 async fn imds(State(ctx): State<Ctx>, Query(q): Query<std::collections::HashMap<String, String>>, h: HeaderMap) -> Response {
+    token(ctx, q, h, false).await
+}
+
+/// App Service managed identity endpoint (api-version 2019-08-01), what Azure.Identity calls when
+/// IDENTITY_ENDPOINT=http://<stuntman>:8025/msi/token and IDENTITY_HEADER are set.
+async fn app_service(State(ctx): State<Ctx>, Query(q): Query<std::collections::HashMap<String, String>>, h: HeaderMap) -> Response {
+    token(ctx, q, h, true).await
+}
+
+async fn token(ctx: Ctx, q: std::collections::HashMap<String, String>, h: HeaderMap, app_service: bool) -> Response {
     let prov = store::provoked(&ctx, "*", "imds", "").await.ok().flatten().map(|p| p.0);
     match prov.as_deref() {
         Some("500") => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "internal_error", "error_description": "IMDS is unavailable (provoked in Stuntman)"}))).into_response(),
@@ -36,13 +46,22 @@ async fn imds(State(ctx): State<Ctx>, Query(q): Query<std::collections::HashMap<
         Some("no_identity") => return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid_request", "error_description": "Identity not found"}))).into_response(),
         _ => {}
     }
-    if h.get("metadata").is_none() && h.get("x-identity-header").is_none() {
+    let header = h.get("x-identity-header").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    // App Service refuses a call without the header (SSRF guard); with STUNTMAN_IDENTITY_HEADER set, the value must match.
+    let want = std::env::var("STUNTMAN_IDENTITY_HEADER").unwrap_or_default();
+    if app_service && (header.is_empty() || (!want.is_empty() && header != want)) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"statusCode": 400, "message": "The X-IDENTITY-HEADER header is missing or does not match IDENTITY_HEADER.", "correlationId": stuntman_core::util::uuid()}))).into_response();
+    }
+    if !app_service && h.get("metadata").is_none() && h.get("x-identity-header").is_none() {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid_request", "error_description": "Required metadata header not specified"}))).into_response();
     }
     let id = ["client_id", "mi_res_id", "object_id", "principal_id"].iter().find_map(|k| q.get(*k).cloned())
-        .or_else(|| h.get("x-identity-header").and_then(|v| v.to_str().ok()).map(String::from)).unwrap_or("app-mi".into());
+        .or_else(|| Some(header.clone()).filter(|x| !x.is_empty() && want.is_empty())).unwrap_or("app-mi".into());
     let resource = q.get("resource").cloned().unwrap_or("https://vault.azure.net".into());
     let (token, exp) = vault::mint(&id, &resource);
+    if app_service {
+        return Json(json!({"access_token": token, "expires_on": exp.to_string(), "resource": resource, "token_type": "Bearer", "client_id": id})).into_response();
+    }
     Json(json!({"access_token": token, "client_id": id, "expires_in": "86399", "expires_on": exp.to_string(), "ext_expires_in": "86399", "not_before": (exp - 86_399).to_string(),
         "resource": resource, "token_type": "Bearer"})).into_response()
 }
@@ -69,7 +88,7 @@ impl Module for KeyVault {
         tools::all()
     }
     fn extra_routes(&self) -> Router<Ctx> {
-        Router::new().route("/metadata/identity/oauth2/token", get(imds)).route("/api/keyvault/certificates/{name}/download", get(download)).route("/api/keyvault/vaults/{name}/yaml", get(|State(ctx): State<Ctx>, axum::extract::Path(n): axum::extract::Path<String>| async move {
+        Router::new().route("/metadata/identity/oauth2/token", get(imds)).route("/msi/token", get(app_service)).route("/MSI/token", get(app_service)).route("/api/keyvault/certificates/{name}/download", get(download)).route("/api/keyvault/vaults/{name}/yaml", get(|State(ctx): State<Ctx>, axum::extract::Path(n): axum::extract::Path<String>| async move {
             ([(axum::http::header::CONTENT_TYPE, "application/yaml")], config::text(&ctx, &n)).into_response()
         }))
     }

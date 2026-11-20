@@ -201,24 +201,68 @@ fn binds(kind: &str, s: &config::Subscription, key: &str, headers: &Map<String, 
 /// RabbitMQ routing from one exchange: its queue bindings, then the exchanges it is bound to
 /// (exchange-to-exchange, as MassTransit builds its topology), each queue once.
 pub fn rabbit_route(n: &config::Namespace, exchange: &str, key: &str, headers: &Map<String, Value>) -> Vec<String> {
+    rabbit_trace(n, exchange, key, headers, None)
+}
+
+/// rabbit_route that also writes down each binding it looked at: source, destination, its type,
+/// its keys and whether the message took it.
+pub fn rabbit_trace(n: &config::Namespace, exchange: &str, key: &str, headers: &Map<String, Value>, mut hops: Option<&mut Vec<Value>>) -> Vec<String> {
     let (mut out, mut seen, mut todo) = (Vec::<String>::new(), std::collections::HashSet::new(), vec![exchange.to_string()]);
     while let Some(x) = todo.pop() {
         if !seen.insert(x.clone()) {
             continue;
         }
         let Some(t) = n.entities.get(&x).and_then(|e| e.topic.as_ref()) else { continue };
-        for (q, s) in &t.subscriptions {
-            if binds(&t.kind, s, key, headers) && !out.contains(q) && n.entities.get(q).and_then(|e| e.queue.as_ref()).is_some() {
-                out.push(q.clone());
-            }
-        }
-        for (d, s) in &t.exchanges {
-            if binds(&t.kind, s, key, headers) {
-                todo.push(d.clone());
+        for (dtype, map) in [("queue", &t.subscriptions), ("exchange", &t.exchanges)] {
+            for (d, s) in map {
+                let took = binds(&t.kind, s, key, headers);
+                if let Some(h) = hops.as_deref_mut() {
+                    let keys = if t.kind == "headers" { vec![s.filter.clone()] } else { s.all_keys() };
+                    h.push(json!({"source": x, "sourceType": t.kind, "destination": d, "destinationType": dtype, "bindingKeys": keys, "matches": took}));
+                }
+                if !took {
+                    continue;
+                }
+                if dtype == "exchange" {
+                    todo.push(d.clone());
+                } else if !out.contains(d) && n.entities.get(d).and_then(|e| e.queue.as_ref()).is_some() {
+                    out.push(d.clone());
+                }
             }
         }
     }
     out
+}
+
+type Unrouted = HashMap<(String, String, String, String), (u64, i64, String)>;
+
+/// Messages published that reached no queue: (environment, namespace, exchange, routing key) → (count,
+/// last time, last sender). Kept in memory; the warning goes when a binding now takes that key.
+fn unrouted() -> &'static Mutex<Unrouted> {
+    static U: OnceLock<Mutex<Unrouted>> = OnceLock::new();
+    U.get_or_init(Default::default)
+}
+
+pub fn note_unrouted(ctx: &Ctx, ns: &str, exchange: &str, key: &str, sender: &str) {
+    let mut u = unrouted().lock().unwrap();
+    // ponytail: at most 500 distinct (exchange, key) pairs per process; a flood of random keys stops being counted.
+    if u.len() >= 500 && !u.contains_key(&(ctx.env.to_string(), ns.into(), exchange.into(), key.into())) {
+        return;
+    }
+    let e = u.entry((ctx.env.to_string(), ns.into(), exchange.into(), key.into())).or_insert((0, 0, String::new()));
+    *e = (e.0 + 1, util::now_ms(), sender.to_string());
+}
+
+/// (exchange, routing key, count, last time, last sender) of this namespace.
+pub fn unrouted_of(ctx: &Ctx, ns: &str) -> Vec<(String, String, u64, i64, String)> {
+    let u = unrouted().lock().unwrap();
+    let mut v: Vec<_> = u.iter().filter(|(k, _)| k.0 == *ctx.env && k.1 == ns).map(|(k, v)| (k.2.clone(), k.3.clone(), v.0, v.1, v.2.clone())).collect();
+    v.sort_by_key(|x| std::cmp::Reverse(x.3));
+    v
+}
+
+pub fn forget_unrouted(ctx: &Ctx) {
+    unrouted().lock().unwrap().retain(|k, _| k.0 != *ctx.env);
 }
 
 /// AMQP 0-9-1 topic exchange matching: words split by ".", "*" one word, "#" zero or more.
@@ -286,6 +330,10 @@ pub async fn publish(ctx: &Ctx, ns: &str, entity: &str, o: Outgoing) -> Result<V
         }
     }
     let holders = route(&n, entity, &o)?;
+    if holders.is_empty() && n.kind == config::RABBIT {
+        let ex = o.sys.get("exchange").and_then(|v| v.as_str()).unwrap_or(entity);
+        note_unrouted(ctx, ns, ex, o.sys.get("routingKey").and_then(|v| v.as_str()).unwrap_or(""), &o.sender);
+    }
     let now = util::now_ms();
     let trace = trace_of(&o);
     let mut seqs = vec![];

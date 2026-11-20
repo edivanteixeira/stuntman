@@ -10,7 +10,7 @@ use amq_protocol::{
     protocol::{basic, channel, connection, exchange, queue, AMQPClass},
     types::{FieldTable, LongString},
 };
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use stuntman_core::{
     callback::Signer,
     env::{EnvFile, EnvState, Envs},
@@ -20,7 +20,7 @@ use stuntman_core::{
 };
 use tokio::io::{AsyncWriteExt, DuplexStream};
 
-use crate::{broker, rabbit, rabbit_mgmt};
+use crate::{broker, config, rabbit, rabbit_mgmt};
 
 fn envs() -> (Envs, Ctx) {
     let dir = std::env::temp_dir().join(util::id("rabbit-compat"));
@@ -247,7 +247,7 @@ async fn declared_user_is_restricted_to_its_vhost() {
 /// which has the same name as the endpoint's queue; direct exchanges with several keys.
 #[tokio::test]
 async fn masstransit_topology_routes_through_exchange_bindings() {
-    let (envs, _) = envs();
+    let (envs, ctx) = envs();
     let h = Http { c: reqwest::Client::new(), base: mgmt(&envs).await, auth: ("guest".into(), "guest".into()) };
     h.st("PUT", "vhosts/acme-bus", Some(json!({"default_queue_type": "quorum"}))).await;
     let mut c = Amqp::open(&envs, "guest", "guest", "acme-bus").await.unwrap();
@@ -270,13 +270,27 @@ async fn masstransit_topology_routes_through_exchange_bindings() {
     assert_eq!(c.drain("acme-ping").await.into_iter().map(|m| m.0).collect::<Vec<_>>(), ["ping"]);
     assert_eq!(c.drain("acme-routed").await.into_iter().map(|m| m.0).collect::<Vec<_>>(), ["tenant-a", "tenant-b"]);
 
+    // tenant-c reached no queue: a warning with the exchange and the key; the trace shows why.
+    let n = config::get(&ctx, "acme-bus").unwrap();
+    let w = crate::tools::warnings(&ctx, &n).await;
+    let un: Vec<(String, String, u64)> = w.iter().filter(|x| x["kind"] == "unrouted").map(|x| (x["exchange"].as_str().unwrap().into(), x["routingKey"].as_str().unwrap().into(), x["count"].as_u64().unwrap())).collect();
+    assert_eq!(un, [("Acme.Contracts:Routed".to_string(), "tenant-c".to_string(), 1)]);
+    let mut hops = vec![];
+    assert_eq!(broker::rabbit_trace(&n, "Acme.Contracts:Routed", "tenant-a", &Map::new(), Some(&mut hops)), ["acme-routed"]);
+    let seen: Vec<String> = hops.iter().map(|h| format!("{}->{}:{}={}", h["source"].as_str().unwrap(), h["destinationType"].as_str().unwrap(), h["destination"].as_str().unwrap(), h["matches"])).collect();
+    assert_eq!(seen, ["Acme.Contracts:Routed->exchange:acme-routed=true", "acme-routed->queue:acme-routed=true"]);
+    // A binding for tenant-c made later: the warning goes.
+    c.bind_exchange("acme-routed", "Acme.Contracts:Routed", "tenant-c").await;
+    let n = config::get(&ctx, "acme-bus").unwrap();
+    assert!(!crate::tools::warnings(&ctx, &n).await.iter().any(|x| x["kind"] == "unrouted"));
+
     // The vhost's default type makes them quorum queues; an explicit other type is refused.
     let (_, q) = h.call("GET", "queues/acme-bus/acme-ping", None).await;
     assert_eq!((q["type"].clone(), q["arguments"]["x-queue-type"].clone()), (json!("quorum"), json!("quorum")));
     assert_eq!(c.queue("acme-ping", json!({"x-queue-type": "classic"})).await.err().unwrap().0, 406);
     let (_, b) = h.call("GET", "bindings/acme-bus", None).await;
     let rows: Vec<String> = b.as_array().unwrap().iter().filter(|b| b["source"] != "").map(|b| format!("{}->{}:{}[{}]", b["source"].as_str().unwrap(), b["destination_type"].as_str().unwrap(), b["destination"].as_str().unwrap(), b["routing_key"].as_str().unwrap())).collect();
-    assert_eq!(rows, ["Acme.Contracts:Ping->exchange:acme-ping[]", "Acme.Contracts:Routed->exchange:acme-routed[tenant-a]", "Acme.Contracts:Routed->exchange:acme-routed[tenant-b]", "acme-ping->queue:acme-ping[]", "acme-routed->queue:acme-routed[]"]);
+    assert_eq!(rows, ["Acme.Contracts:Ping->exchange:acme-ping[]", "Acme.Contracts:Routed->exchange:acme-routed[tenant-a]", "Acme.Contracts:Routed->exchange:acme-routed[tenant-b]", "Acme.Contracts:Routed->exchange:acme-routed[tenant-c]", "acme-ping->queue:acme-ping[]", "acme-routed->queue:acme-routed[]"]);
 
     // Deleting the queue keeps the exchange of the same name (and the other way round).
     assert_eq!(h.st("DELETE", "queues/acme-bus/acme-ping?if-unused=true&if-empty=true", None).await, 400, "quorum queues refuse if-unused");

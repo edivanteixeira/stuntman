@@ -172,10 +172,49 @@ pub async fn unmatched_add(ctx: &Ctx, method: &str, path: &str, host: &str, serv
     let id = util::id("unm");
     let (i, m, p, h, s, c) = (id.clone(), method.to_string(), path.to_string(), host.to_string(), service.to_string(), caller.to_string());
     ctx.db
-        .call(move |cn| cn.execute("INSERT INTO api_unmatched VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,0)", params![i, util::now_ms(), m, p, h, s, c, request.to_string(), closest.to_string()]).map(|_| ()))
+        .call(move |cn| {
+            // The next number of api_calls' sequence: answered and unmatched calls share one cursor (traffic).
+            if cn.query_row("SELECT 1 FROM sqlite_sequence WHERE name='api_calls'", [], |_| Ok(())).optional()?.is_none() {
+                cn.execute("INSERT INTO sqlite_sequence(name, seq) VALUES('api_calls', 0)", [])?;
+            }
+            let seq: i64 = cn.query_row("UPDATE sqlite_sequence SET seq=seq+1 WHERE name='api_calls' RETURNING seq", [], |r| r.get(0))?;
+            cn.execute("INSERT INTO api_unmatched(id, at, method, path, host, service, caller, request, closest, ignored, seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,0,?10)",
+                params![i, util::now_ms(), m, p, h, s, c, request.to_string(), closest.to_string(), seq]).map(|_| ())
+        })
         .await?;
     ctx.live.send("apis.unmatched", &id, "created");
     Ok(id)
+}
+
+/// Older data folders: the unmatched calls' place in the shared sequence.
+pub fn upgrade(ctx: &Ctx) {
+    let _ = ctx.db.migrate("ALTER TABLE api_unmatched ADD COLUMN seq INTEGER");
+}
+
+/// Answered and unmatched calls after `after` (a seq), oldest first: one cursor for both.
+/// Each row has `seq` and `matched`; unmatched ones carry their request and closest route.
+pub async fn traffic(ctx: &Ctx, after: i64, limit: i64) -> Result<Vec<Value>, ApiError> {
+    ctx.db
+        .call(move |cn| {
+            let mut s = cn.prepare(&format!("SELECT {COLS}, seq FROM api_calls WHERE seq>?1 ORDER BY seq LIMIT ?2"))?;
+            let mut v = s.query_map(params![after, limit], |r| {
+                let mut c = call_json(r, false)?;
+                c["seq"] = json!(r.get::<_, i64>(20)?);
+                c["matched"] = json!(true);
+                Ok(c)
+            })?.collect::<Result<Vec<_>, _>>()?;
+            let mut s = cn.prepare("SELECT id, at, method, path, host, service, caller, request, closest, seq FROM api_unmatched WHERE seq>?1 ORDER BY seq LIMIT ?2")?;
+            v.extend(s.query_map(params![after, limit], |r| {
+                Ok(json!({"seq": r.get::<_, i64>(9)?, "matched": false, "id": r.get::<_, String>(0)?, "at": r.get::<_, i64>(1)?, "method": r.get::<_, String>(2)?,
+                    "path": r.get::<_, String>(3)?, "host": r.get::<_, String>(4)?, "service": r.get::<_, String>(5)?, "caller": r.get::<_, String>(6)?, "status": 404,
+                    "request": serde_json::from_str::<Value>(&r.get::<_, String>(7)?).unwrap_or(Value::Null),
+                    "closest": serde_json::from_str::<Value>(&r.get::<_, String>(8)?).unwrap_or(Value::Null)}))
+            })?.collect::<Result<Vec<_>, _>>()?);
+            v.sort_by_key(|c| c["seq"].as_i64().unwrap_or(0));
+            v.truncate(limit as usize);
+            Ok(v)
+        })
+        .await
 }
 
 pub async fn unmatched(ctx: &Ctx, since: i64, ignored: bool) -> Result<Vec<Value>, ApiError> {

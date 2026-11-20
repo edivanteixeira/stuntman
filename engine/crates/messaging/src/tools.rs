@@ -102,6 +102,16 @@ pub async fn warnings(ctx: &Ctx, n: &config::Namespace) -> Vec<Value> {
             }
         }
     }
+    for (ex, key, count, last, by) in broker::unrouted_of(ctx, &n.namespace) {
+        // A binding (or the queue) added since takes that key now: nothing to warn about.
+        let routed = if ex.is_empty() { n.entities.get(&key).and_then(|e| e.queue.as_ref()).is_some() } else { !broker::rabbit_route(n, &ex, &key, &Map::new()).is_empty() };
+        if routed {
+            continue;
+        }
+        let shown = if ex.is_empty() { "the default exchange".to_string() } else { format!("exchange '{ex}'") };
+        out.push(json!({"kind": "unrouted", "namespace": n.namespace, "entity": ex, "exchange": ex, "routingKey": key, "count": count, "last": last, "by": by,
+            "message": format!("{count} message(s) published to {shown} with routing key '{key}' reached no queue and were dropped (RabbitMQ does the same; with mandatory the publisher gets them back). No binding takes that key: see GET /api/messaging/route?namespace={}&exchange={ex}&key={key}.", n.namespace)}));
+    }
     for (holder, clients) in broker::shared_receivers(ctx, &n.namespace).await {
         out.push(json!({"kind": "several_receivers", "namespace": n.namespace, "entity": holder, "clients": clients,
             "message": format!("{} connections receive from {holder}: each gets part of the messages. If only one app should consume it, stop the others ({}).", clients.len(), clients.join("; "))}));
@@ -205,7 +215,32 @@ fn queues() -> Vec<Tool> {
         })
         .param("summary", "true: ports, connection strings and counts only")
         .route("GET", "/messaging/namespaces"),
-        Tool::new("list_messaging_warnings", "What works here but would break on the real provider, or hides a bug: Service Bus entities the app created on first use (auto create; Azure answers MessagingEntityNotFound), and queues or subscriptions that more than one connection receives from (each gets part of the messages).", |ctx, _a| async move {
+        Tool::new("trace_message_route", "Where a RabbitMQ message would go, without publishing it: every binding on the way (exchange to exchange, exchange to queue), whether its key matches, and the queues it reaches.", |ctx, a| async move {
+            let ns = a.str("vhost").map(Ok).unwrap_or_else(|| ns_of(&a))?;
+            let n = config::get(&ctx, &ns)?;
+            if n.kind != config::RABBIT {
+                return Err(ApiError::bad(format!("{ns} is not a RabbitMQ namespace")));
+            }
+            let (ex, key) = (a.str("exchange").unwrap_or_default(), a.str("key").unwrap_or_default());
+            let headers: Map<String, Value> = match a.get("headers") {
+                Some(Value::Object(o)) => o.clone(),
+                Some(Value::String(t)) => serde_json::from_str(t).map_err(|_| ApiError::bad("headers: a JSON object"))?,
+                _ => Map::new(),
+            };
+            if ex.is_empty() {
+                let q = n.entities.get(&key).and_then(|e| e.queue.as_ref()).map(|_| vec![key.clone()]).unwrap_or_default();
+                return Ok(json!({"namespace": ns, "exchange": "", "key": key, "queues": q, "hops": [], "note": "The default exchange sends to the queue named by the routing key."}));
+            }
+            if n.entities.get(&ex).and_then(|e| e.topic.as_ref()).is_none() {
+                return Err(ApiError::not_found(format!("NOT_FOUND - no exchange '{ex}' in vhost '{ns}'")));
+            }
+            let mut hops = vec![];
+            let queues = broker::rabbit_trace(&n, &ex, &key, &headers, Some(&mut hops));
+            Ok(json!({"namespace": ns, "exchange": ex, "key": key, "queues": queues, "hops": hops}))
+        })
+        .param("namespace", "the vhost").param("vhost", "the same as namespace").param("exchange", "exchange the app publishes to (empty: the default exchange)").param("key", "routing key").param("headers", "message headers, for headers exchanges (JSON object)")
+        .route("GET", "/messaging/route"),
+        Tool::new("list_messaging_warnings", "What works here but would break on the real provider, or hides a bug: Service Bus entities the app created on first use (auto create; Azure answers MessagingEntityNotFound), queues or subscriptions that more than one connection receives from (each gets part of the messages), and RabbitMQ messages that reached no queue (unrouted: exchange and routing key).", |ctx, _a| async move {
             let mut out = vec![];
             for n in config::list(&ctx) {
                 out.extend(warnings(&ctx, &n).await);

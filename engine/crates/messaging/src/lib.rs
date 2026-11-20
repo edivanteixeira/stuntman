@@ -103,6 +103,7 @@ impl Module for Messaging {
     }
 
     fn reset(&self, ctx: &Ctx) {
+        broker::forget_unrouted(ctx);
         tools::seed_if_empty(ctx);
     }
 }

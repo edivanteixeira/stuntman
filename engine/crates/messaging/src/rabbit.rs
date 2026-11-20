@@ -892,6 +892,7 @@ async fn finish_publish(conn: &Arc<Conn>, ch: u16) {
     let ns = config::get(&conn.ctx, &conn.ns.namespace).unwrap_or(conn.ns.clone());
     // The default exchange routes by queue name; publishing there to a missing queue drops it.
     if ex.is_empty() && ns.entities.get(&key).and_then(|e| e.queue.as_ref()).is_none() {
+        broker::note_unrouted(&conn.ctx, &ns.namespace, "", &key, &o.sender);
         if p.mandatory {
             send_return(conn, ch, 312, "NO_ROUTE", &ex, &key, &props, &o.body);
         }

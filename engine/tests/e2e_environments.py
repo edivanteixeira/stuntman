@@ -258,6 +258,9 @@ def main():
     threading.Thread(target=recv.serve_forever, daemon=True).start()
     env = dict(os.environ, STUNTMAN_ENV=os.environ.get("STUNTMAN_ENV", "stg-a"), STUNTMAN_DATA=data, STUNTMAN_PORT=str(HTTP), STUNTMAN_HOOKS_PORT=str(HOOKS), STUNTMAN_SMTP_PORT=str(SMTP),
                STUNTMAN_OTLP_HTTP_PORT=str(OTLP), STUNTMAN_OTLP_GRPC_PORT=str(OTLP_G), STUNTMAN_WEB="/nonexistent")
+    # Every other port too: the defaults (5673, 10000, …) may belong to a Stuntman already running.
+    import harness
+    env.update({f"STUNTMAN_{k}": str(free_port()) for k in harness.PORTS if f"STUNTMAN_{k}" not in env})
     srv = subprocess.Popen([BIN], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     try:
         def up():

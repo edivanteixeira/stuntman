@@ -5,9 +5,9 @@ Every action in Stuntman is one tool. Each tool is an **MCP tool** (same name) a
 
 _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit by hand._
 
-**400 tools** in 17 areas.
+**402 tools** in 17 areas.
 
-- [Environments, timeline and access](#environments-timeline-and-access) · 21 tools
+- [Environments, timeline and access](#environments-timeline-and-access) · 22 tools
 - [Email and mailboxes](#email-and-mailboxes) · 39 tools
 - [SMS](#sms) · 17 tools
 - [WhatsApp](#whatsapp) · 28 tools
@@ -15,7 +15,7 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 - [AI models](#ai-models) · 9 tools
 - [Product events](#product-events) · 8 tools
 - [Storage (Azure Blob, S3)](#storage-azure-blob-s3) · 45 tools
-- [Messaging (Service Bus, RabbitMQ, ActiveMQ, Event Hubs)](#messaging-service-bus-rabbitmq-activemq-event-hubs) · 31 tools
+- [Messaging (Service Bus, RabbitMQ, ActiveMQ, Event Hubs)](#messaging-service-bus-rabbitmq-activemq-event-hubs) · 32 tools
 - [Identity (OIDC, OAuth2, SAML, LDAP, Bot Framework)](#identity-oidc-oauth2-saml-ldap-bot-framework) · 28 tools
 - [Files (FTP, SFTP)](#files-ftp-sftp) · 8 tools
 - [Streams (Kafka, Schema Registry)](#streams-kafka-schema-registry) · 10 tools
@@ -32,13 +32,14 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `list_environments` | `GET /api/environments` | — | — | Environments on this Stuntman: name, state, lifetime, services, addresses. |
 | `get_environment` | `GET /api/environments/{name}` | name | — | One environment: addresses, callbacks, real hosts, lifetime, paused, environment.yaml. |
 | `create_environment` | `POST /api/environments` | name | from, vars, base_domain, public_url, allowed_email_domains, copy, expires, callbacks | Make an environment: from another one (a copy), "empty", or a folder; returns its addresses. copy picks what a copy takes: services, state, scenarios, inboxes, secrets (default: all but state). |
-| `set_environment` | `PUT /api/environments/{name}` | name | callbacks, lifetime, paused, base_domain, real_hosts, public_url, allowed_email_domains, expires, version | Change callbacks, lifetime, paused, base_domain or real_hosts (same keys as environment.yaml). |
+| `set_environment` | `PUT /api/environments/{name}` | name | callbacks, lifetime, paused, base_domain, real_hosts, public_url, allowed_email_domains, apps, expires, version | Change callbacks, lifetime, paused, base_domain or real_hosts (same keys as environment.yaml). |
 | `pause_environment` | `POST /api/environments/{name}/pause` | name | paused | Pause (every service answers 503, nothing is stored, state kept) or resume. |
 | `extend_environment` | `POST /api/environments/{name}/extend` | name | by | Push an expiring environment's expiry (default 24 h from its current expiry or now). |
 | `reset_environment` | `POST /api/environments/{name}/reset` | name | — | Every service back to its seeds: traffic, deliveries, telemetry and temporary inboxes go; files and kept inboxes stay. |
 | `delete_environment` | `DELETE /api/environments/{name}` | name | — | Delete an environment: services, state and history. Irreversible. |
 | `list_environment_templates` | `GET /api/environments/templates` | — | — | Templates on this Stuntman (folders in templates/) and the ${…} values each one uses. |
 | `get_connections` | `GET /api/environments/{name}/connections` | name | base | What the app under test sets to reach this environment: connection strings and URLs, also as .env lines. |
+| `get_app_env` | `GET /api/environments/{name}/apps/{app}` | name, app | — | One app's variables, ready: environment.yaml apps.<app> with ${KEY} from get_connections and ${secret:[vault/]name} from Key Vault. Also GET /api/env/<app> (KEY=VALUE lines). |
 | `get_environment_hosts` | `GET /api/environments/{name}/hosts` | name | — | Lines for /etc/hosts (or a DNS zone) so the environment's host names reach this Stuntman. |
 | `timeline` | `GET /api/timeline` | — | range, to, from, sel_from, sel_to, service, who, show, q, limit, buckets | Everything that reached this environment's services in a window: rows (newest first), counts per service and per actor, activity lanes, and offline gaps. |
 | `get_timeline_row` | `GET /api/timeline/{id}` | id | — | One Timeline row and the rest of its journey (rows with the same trace id). |
@@ -305,7 +306,8 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 
 | Tool | HTTP | Required | Optional | What it does |
 |---|---|---|---|---|
-| `list_namespaces` | `GET /api/messaging/namespaces` | — | — | Namespaces with kind (azure-service-bus, rabbitmq), entities (queues, topics and their subscriptions or bindings), counters per state and the connection string. |
+| `list_namespaces` | `GET /api/messaging/namespaces` | — | summary | Namespaces with kind (azure-service-bus, rabbitmq), entities (queues, topics and their subscriptions or bindings), counters per state and the connection string. summary=true: only ports, connection strings and counts. |
+| `list_messaging_warnings` | `GET /api/messaging/warnings` | — | — | What works here but would break on the real provider, or hides a bug: Service Bus entities the app created on first use (auto create; Azure answers MessagingEntityNotFound), and queues or subscriptions that more than one connection receives from (each gets part of the messages). |
 | `list_queue_messages` | `GET /api/messaging/{namespace}/{entity}/messages` | namespace, entity | state, q, last | Messages of a queue, topic or subscription, newest first; state = active \| scheduled \| locked \| dead_letter \| completed. |
 | `get_queue_message` | `GET /api/messaging/{namespace}/{entity}/messages/{seq}` | namespace, seq | entity | One message: properties, body and the delivery history (published, delivered, abandoned, completed, dead-lettered…). |
 | `publish` | `POST /api/messaging/{namespace}/{entity}/messages` | namespace, entity | body, subject, properties, schedule_at, correlation_id, session_id, routing_key, message_id | Publishes a message as a test (recorded as sent by you or the agent, never as the app). Topics fan out to their subscriptions. |

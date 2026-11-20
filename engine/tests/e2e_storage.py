@@ -167,6 +167,19 @@ def run(data, tmp):
     # Conditional upload (If-Match) → 412, like an encryption worker expects
     st, _, b = raw("PUT", f"http://127.0.0.1:{BLOB}/acme-docs-stg/documents/y.pdf", b"new", {"x-ms-blob-type": "BlockBlob", "If-Match": "\"0xNOTIT\"", "Authorization": "SharedKey acme-docs-stg:x"})
     assert st == 412 and b"ConditionNotMet" in b, (st, b)
+    # "\" in a blob name is "/", as in Azure: written with "\", read, listed and deleted with "/"
+    sk = {"Authorization": "SharedKey acme-docs-stg:x"}
+    base = f"http://127.0.0.1:{BLOB}/acme-docs-stg/documents/"
+    assert raw("PUT", base + "inbound%5Corders%5Cn1.txt", b"order-1", {"x-ms-blob-type": "BlockBlob", **sk})[0] == 201
+    assert raw("PUT", base + "inbound\\orders\\n2.txt", b"order-2", {"x-ms-blob-type": "BlockBlob", **sk})[0] == 201
+    st, _, b = raw("GET", base + "inbound/orders/n1.txt", headers=sk)
+    assert st == 200 and b == b"order-1", (st, b)
+    assert raw("HEAD", base + "inbound/orders/n2.txt", headers=sk)[0] == 200
+    st, _, b = raw("GET", f"http://127.0.0.1:{BLOB}/acme-docs-stg/documents?restype=container&comp=list&prefix=inbound%5Corders%5C", headers=sk)
+    assert b"<Name>inbound/orders/n1.txt</Name>" in b and b"<Name>inbound/orders/n2.txt</Name>" in b and b"\\" not in b, b
+    assert raw("DELETE", base + "inbound%5Corders%5Cn1.txt", headers=sk)[0] == 202
+    assert raw("GET", base + "inbound/orders/n1.txt", headers=sk)[0] == 404
+    assert raw("DELETE", base + "inbound/orders/n2.txt", headers=sk)[0] == 202
     # A large file goes up in blocks (Put Block + Put Block List)
     big = os.path.join(tmp, "big.bin")
     with open(big, "wb") as f:

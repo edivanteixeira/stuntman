@@ -191,6 +191,21 @@ Tools: `list_file_servers`, `set_file_server`, `list_files`, `get_file`, `put_fi
 | **It keeps** | namespaces, queues, topics, subscriptions, every message with its deliveries, consumers and their locks |
 | **You can provoke** | lost locks, duplicates, held, dropped, dead-lettered or out-of-order messages; a namespace that refuses, times out, rejects the key, is busy, or goes down (`down`, `close`: open connections drop) |
 
+**Who is receiving.** The Consumers tab of a queue or subscription lists every connection receiving from it: name,
+address, since when, locks held and messages done today. When more than one connection receives, it says so (each gets
+part of the messages: an old build or another worktree's copy handles some of them). Name the connection to tell copies
+apart: RabbitMQ `ConnectionFactory.ClientProvidedName`, Service Bus `ServiceBusClientOptions.Identifier` (sent as the
+AMQP container id), e.g. `$"api pid {Environment.ProcessId} {Environment.CurrentDirectory}"`.
+
+**What would break in Azure.** With `auto_create` on (the default), a queue the code never created works here on first
+use; Azure Service Bus does not create entities and answers `MessagingEntityNotFound`. Settings marks such an entity
+"created on first use"; `list_messaging_warnings` (`GET /api/messaging/warnings`) lists them with the queues and
+subscriptions that several connections receive from. Create the entity in the infrastructure and press "Keep it in the
+YAML" (or `add_entity`), or turn `auto_create` off to test the missing entity.
+
+`GET /api/messaging/namespaces?summary=true` answers the ports, connection strings and counts only, for scripts and
+agents; without it each namespace comes with its entities, settings and YAML.
+
 **RabbitMQ management API.** Tools and libraries that create vhosts, queues, exchanges and bindings over HTTP
 before they connect (MassTransit setups, provisioning scripts, `rabbitmqadmin` v2) find it on `:15672`
 (`STUNTMAN_RABBITMQ_MGMT_PORT`). Its vhosts are the RabbitMQ namespaces of the default environment, so what a
@@ -627,6 +642,26 @@ in the app, and Azure.Identity's `ManagedIdentityCredential` calls `GET /msi/tok
 `X-IDENTITY-HEADER`. The answer is `{access_token, expires_on, resource, token_type, client_id}`. A call without the
 header gets 400 (`{"statusCode": 400, "message": …}`); set `STUNTMAN_IDENTITY_HEADER` to also refuse a wrong value.
 `provoke_imds` applies to both endpoints.
+
+**One identity per app.** Give each app its own identity, as in production, so a missing permission fails here and
+not only in Azure. Turn `any_token` off and list who may do what (roles as in Azure RBAC, `scope` limits item names):
+
+```yaml
+access:
+  any_token: false
+  identities:
+    - id: api-mi
+      roles: [secrets-user]
+      scope: [smtp-*, storage-*]
+    - id: worker-mi
+      roles: [secrets-user, crypto-user, certificate-user]
+      scope: [signing-*]
+```
+
+Each app then asks for its own token: `IDENTITY_HEADER=worker-mi` (App Service form), or `client_id=worker-mi` (IMDS,
+`ManagedIdentityCredential("worker-mi")`). A read outside the identity's roles or scope answers 403 `Forbidden` as Azure
+does, and the access log names the identity. `apps` in `environment.yaml` (see Environments) keeps each app's
+`IDENTITY_HEADER` with its other variables.
 
 A disabled version answers as Azure does: 403 `Forbidden` (inner `KeyDisabled` / `SecretDisabled`), "Operation get is
 not allowed on a disabled key." (or secret; sign, encrypt, wrap… likewise). Properties update per version or for the

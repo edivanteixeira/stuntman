@@ -49,6 +49,8 @@ pub fn Consumers() -> impl IntoView {
                     <div style="font:600 16px var(--sans);margin-top:10px">{move || { let l = list.get(); let r = l.iter().filter(|c| c["state"] == "receiving").count(); let d = l.len() - r;
                         if l.is_empty() { "Nobody is receiving".to_string() } else { format!("{r} receiving{}", if d > 0 { format!("  ·  {d} disconnected") } else { String::new() }) } }}</div>
                 </div>
+                {move || { let l = list.get(); let r: Vec<String> = l.iter().filter(|c| c["state"] == "receiving").map(|c| format!("{} from {}", s(c, "client"), s(c, "remote"))).collect();
+                    (r.len() > 1).then(|| view! { <div class="callout attn small" style="margin:0 24px 12px">{format!("{} connections receive from here: each gets part of the messages. If only one app should consume it, stop the others.", r.len())}</div> }) }}
                 <div class="mtable">
                     <div class="mhead"><span class="grow">"CONSUMER"</span><span style="width:170px">"STATE"</span><span style="width:70px">"LOCKS"</span><span style="width:90px">"DONE TODAY"</span></div>
                     {move || list.get().into_iter().map(|c| {
@@ -60,7 +62,7 @@ pub fn Consumers() -> impl IntoView {
                         view! {
                             <div class="mrow" class:on=move || s(&picked.get()["consumer"], "id") == i2 on:click=move |_| nav(&href("consumers", &ns, &e, &format!("&consumer={}", enc(&id))), Default::default())>
                                 <span class="grow" style="min-width:0"><div class="mono">{s(&c, "client")}</div>
-                                    <div class="small cap ell">{if receiving { format!("prefetch {}  ·  {}", api::n(&c, "prefetch"), s(&c, "mode")) } else { s(&c, "reason") }}</div></span>
+                                    <div class="small cap ell">{if receiving { format!("prefetch {}  ·  {}  ·  from {}  ·  since {}", api::n(&c, "prefetch"), s(&c, "mode"), s(&c, "remote"), c["since"].as_i64().map(api::hm).unwrap_or_default()) } else { s(&c, "reason") }}</div></span>
                                 <span style="width:170px" class=if receiving { "small ok" } else { "small cap" }>{if receiving { "receiving".to_string() } else { format!("disconnected {}", c["until"].as_i64().map(api::hm).unwrap_or_default()) }}</span>
                                 <span class="mono small" style="width:70px">{if receiving { api::n(&c, "locks").to_string() } else { "—".into() }}</span>
                                 <span class="mono small" style="width:90px">{api::n(&c, "doneToday")}</span>
@@ -68,7 +70,7 @@ pub fn Consumers() -> impl IntoView {
                         }
                     }).collect_view()}
                 </div>
-                <div class="small cap" style="padding:14px 24px;max-width:640px">"A consumer is any connection receiving from this entity. Names come from the client id (RabbitMQ: ClientProvidedName; Service Bus: the SDK); set it in the app to tell workers apart."</div>
+                <div class="small cap" style="padding:14px 24px;max-width:640px">"A consumer is any connection receiving from this entity. Names come from the client id (RabbitMQ: ClientProvidedName; Service Bus: ServiceBusClientOptions.Identifier); put the app, its process id and folder in it to tell two copies apart."</div>
             </div>
             <div class="side">
                 {move || {

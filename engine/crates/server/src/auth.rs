@@ -285,7 +285,7 @@ pub enum Kind {
 }
 
 pub fn kind(path: &str, h: &HeaderMap, method: &str) -> Kind {
-    let open = ["/login/", "/api/test-ca", "/api/keyvault/test-ca", "/auth/", "/oauth/", "/.well-known/oauth"];
+    let open = ["/login/", "/api/test-ca", "/api/ca-bundle.pem", "/api/keyvault/test-ca", "/auth/", "/oauth/", "/.well-known/oauth"];
     if open.iter().any(|p| path.starts_with(p)) {
         return Kind::Open;
     }

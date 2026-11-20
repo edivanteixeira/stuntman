@@ -526,7 +526,11 @@ pub async fn serve(envs: Envs, sock: crate::amqp::Io, remote: String, header: [u
         Some(Value::String(s)) => s.split_whitespace().next().unwrap_or("amqp").split('/').next().unwrap_or("amqp").to_string(),
         _ => "amqp".into(),
     };
-    let client = format!("{product} :{}", remote.rsplit(':').next().unwrap_or(""));
+    // The .NET SDK sends ServiceBusClientOptions.Identifier as the container id; its default is
+    // "<namespace>-<guid>": an app that sets one (name, pid, folder) is told apart by it.
+    let cid = open.container_id.to_string();
+    let generated = cid.len() >= 36 && cid[cid.len() - 36..].chars().filter(|c| *c == '-').count() == 4;
+    let client = if !cid.is_empty() && !generated { format!("{cid} :{}", remote.rsplit(':').next().unwrap_or("")) } else { format!("{product} :{}", remote.rsplit(':').next().unwrap_or("")) };
     // An Event Hubs namespace named by the host is taken first: no Service Bus one is made for it.
     let eh = open.hostname.as_deref().and_then(|h| crate::eventhubs::resolve(&envs, h));
     let found = if eh.is_some() { None } else { open.hostname.as_deref().and_then(|h| resolve(&envs, h)) };

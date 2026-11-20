@@ -195,12 +195,14 @@ def run(data):
     st, v, _ = api("POST", V4, ok, {**bearer, "X-Stuntman-App": "acme-batch"})
     assert st == 404 and v["error"] == "no route", v
     api("POST", "/payments/v1/charges", {"amount": 10}, host="payments.example-pay.com")
+    api("GET", "/payments/v1/charges?status=paid&page=2", host="payments.example-pay.com")
     api("GET", "/favicon.ico")
     u = call("GET", "/apis/unmatched?group=path")["groups"]
     v4 = [g for g in u if "v4" in g["key"]][0]
     assert v4["latest"]["closest"]["text"] == "Differs in one segment: v4 here, v5 in the plugin." and v4["latest"]["caller"] == "acme-batch", v4
     one = call("GET", "/apis/unmatched?group=none")
-    pay = [c for c in one["calls"] if c["path"] == "/payments/v1/charges"]
+    pay = [c for c in one["calls"] if c["method"] == "POST" and c["path"] == "/payments/v1/charges"]
+    assert [c["request"]["query"] for c in one["calls"] if c["method"] == "GET" and c["path"] == "/payments/v1/charges"] == ["status=paid&page=2"], one
     assert one["count"] == len(one["calls"]) >= 3 and pay and pay[0]["host"] == "payments.example-pay.com" and '"amount"' in pay[0]["request"]["body"], one
     by_caller = call("GET", "/apis/unmatched?group=caller")["groups"]
     assert any(g["key"] == "acme-batch" for g in by_caller)

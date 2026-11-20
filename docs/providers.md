@@ -240,6 +240,11 @@ What the broker does with them, as RabbitMQ 4:
   with no permission for that user refuses the connection (`NOT_ALLOWED`). A user without the `administrator` tag sees
   only its vhosts and cannot change vhosts, users, permissions or policies (`policymaker` may change policies). Users
   nobody declared get in as before (the namespace's “Accept any key”).
+- Direct Reply-to (RPC): a channel that consumes `amq.rabbitmq.reply-to` (auto-ack only, or 406) and publishes with
+  `reply_to: amq.rabbitmq.reply-to` has it rewritten to `amq.rabbitmq.reply-to.<id>`; a publish to that key on the
+  default exchange, from any connection, goes straight to that channel, without a queue. When the requester has gone,
+  the reply is dropped (returned when `mandatory`). Asking for a reply without consuming first gets 406. Replies do
+  not pass through a queue, so the queue screens and the message history do not show them.
 
 A namespace set to `down` (or `close`) with `set_namespace_reachability` acts as a stopped broker: open AMQP
 connections drop at once (`down`: the TCP connection closes without connection.close, as a killed process; `close`:

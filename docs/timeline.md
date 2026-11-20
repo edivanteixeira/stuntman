@@ -26,7 +26,8 @@ Two things can escape a test:
 
 - **Requests with no route: Not answered.** They reach Stuntman but no plugin answers them (404 "no route"). The
   Timeline shows them as amber rows on top, and its rail entry carries a "N not answered" badge; each one becomes a
-  route with **Make a route from it** (`list_unmatched`, `route_from_request`).
+  route with **Make a route from it** (`list_unmatched`, `route_from_request`). `list_unmatched` groups them by
+  path, service, caller or host; `group=none` lists each call one by one, with its headers and body.
 - **Hosts the app still calls directly.** Telemetry reveals them: `real_provider_calls` lists every host your app
   called that never went through Stuntman. A forgotten base URL cannot hide.
 

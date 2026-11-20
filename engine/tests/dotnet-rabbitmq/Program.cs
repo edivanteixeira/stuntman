@@ -1,6 +1,7 @@
 // Stuntman's RabbitMQ side, checked with the official client the way a real app uses it:
 // topic exchange per message type, a queue per subscriber bound to it, QoS 1, publisher
-// confirms, manual ack and nack (no requeue), a second consumer, basic.get, connection close.
+// confirms, manual ack and nack (no requeue), a second consumer, basic.get, Direct Reply-to (RPC),
+// connection close.
 // Usage: dotnet run -- amqp://guest:any@localhost:5673/acme-rabbit-stg
 using System.Text;
 using RabbitMQ.Client;
@@ -58,6 +59,38 @@ Check(back != null && back.Redelivered, "unacked message back to the queue, rede
 // a passive declare of a missing exchange closes the channel with 404
 try { await ch2.ExchangeDeclarePassiveAsync("no-such-exchange"); Check(false, "passive declare of a missing exchange fails"); }
 catch (RabbitMQ.Client.Exceptions.OperationInterruptedException e) { Check(e.ShutdownReason?.ReplyCode == 404, "passive declare of a missing exchange: 404 NOT_FOUND"); }
+
+// Direct Reply-to (RPC): the requester consumes amq.rabbitmq.reply-to with auto-ack and names it in
+// reply_to; the server, on another connection, answers on the default exchange to the address it got.
+await using var server = await factory.CreateConnectionAsync();
+await using var sch = await server.CreateChannelAsync();
+await sch.QueueDeclareAsync("rpc.render", false, false, false, null);
+await sch.QueuePurgeAsync("rpc.render");
+var seenReplyTo = "";
+var srv = new AsyncEventingBasicConsumer(sch);
+srv.ReceivedAsync += async (_, ea) => {
+    seenReplyTo = ea.BasicProperties.ReplyTo ?? "";
+    var rp = new BasicProperties { CorrelationId = ea.BasicProperties.CorrelationId };
+    await sch.BasicPublishAsync("", seenReplyTo, false, rp, Encoding.UTF8.GetBytes("rendered " + Encoding.UTF8.GetString(ea.Body.ToArray())));
+};
+await sch.BasicConsumeAsync("rpc.render", true, srv);
+await using var rch = await conn.CreateChannelAsync();
+var reply = new TaskCompletionSource<(string, string)>();
+var rc = new AsyncEventingBasicConsumer(rch);
+rc.ReceivedAsync += (_, ea) => { reply.TrySetResult((ea.BasicProperties.CorrelationId ?? "", Encoding.UTF8.GetString(ea.Body.ToArray()))); return Task.CompletedTask; };
+await rch.BasicConsumeAsync("amq.rabbitmq.reply-to", true, rc);
+await rch.BasicPublishAsync("", "rpc.render", false, new BasicProperties { ReplyTo = "amq.rabbitmq.reply-to", CorrelationId = "c-1" }, Encoding.UTF8.GetBytes("invoice-1"));
+await Task.WhenAny(reply.Task, Task.Delay(10000));
+Check(reply.Task.IsCompleted && reply.Task.Result == ("c-1", "rendered invoice-1"), "Direct Reply-to: the answer reaches the requester, correlation id kept");
+Check(seenReplyTo.StartsWith("amq.rabbitmq.reply-to."), "Direct Reply-to: reply_to rewritten to the channel's address");
+// Asking for a direct reply without consuming amq.rabbitmq.reply-to first: 406.
+await using var bad = await conn.CreateChannelAsync();
+try { await bad.BasicPublishAsync("", "rpc.render", false, new BasicProperties { ReplyTo = "amq.rabbitmq.reply-to" }, Encoding.UTF8.GetBytes("x")); await bad.QueueDeclarePassiveAsync("rpc.render"); } catch { }
+Check(bad.CloseReason?.ReplyCode == 406, "Direct Reply-to without consuming it first: 406 PRECONDITION_FAILED");
+// Consuming it with manual ack: 406.
+await using var bad2 = await conn.CreateChannelAsync();
+try { await bad2.BasicConsumeAsync("amq.rabbitmq.reply-to", false, new AsyncEventingBasicConsumer(bad2)); } catch { }
+Check(bad2.CloseReason?.ReplyCode == 406, "Direct Reply-to with manual ack: 406 PRECONDITION_FAILED");
 
 await conn.CloseAsync();
 Console.WriteLine(failed == 0 ? "dotnet rabbitmq: all checks passed" : $"dotnet rabbitmq: {failed} failed");

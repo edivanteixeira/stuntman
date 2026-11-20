@@ -23,6 +23,40 @@ use crate::{broker, config};
 
 type Tx = mpsc::UnboundedSender<Vec<u8>>;
 
+// ---------------------------------------------------------------- Direct Reply-to
+
+/// The pseudo-queue a client consumes (no_ack) and names in reply_to; RabbitMQ rewrites reply_to to
+/// `amq.rabbitmq.reply-to.<token>`, and a publish to that key on the default exchange goes straight to
+/// the channel that asked, never through a queue.
+const REPLY_TO: &str = "amq.rabbitmq.reply-to";
+
+/// address → (writer, channel state, channel, consumer tag)
+type Replies = HashMap<String, (Tx, Arc<Mutex<Chan>>, u16, String)>;
+
+fn replies() -> &'static Mutex<Replies> {
+    static R: std::sync::OnceLock<Mutex<Replies>> = std::sync::OnceLock::new();
+    R.get_or_init(Default::default)
+}
+
+/// Delivers a reply to the channel waiting for it; false when nobody waits (the requester left).
+fn deliver_reply(address: &str, props: &basic::AMQPProperties, body: &[u8]) -> bool {
+    let Some((tx, c, ch, tag)) = replies().lock().unwrap().get(address).cloned() else { return false };
+    if tx.is_closed() {
+        return false;
+    }
+    let dtag = {
+        let mut g = c.lock().unwrap();
+        g.next_tag += 1;
+        g.next_tag
+    };
+    send(&tx, AMQPFrame::Method(ch, AMQPClass::Basic(basic::AMQPMethod::Deliver(basic::Deliver { consumer_tag: ss(&tag), delivery_tag: dtag, redelivered: false, exchange: ss(""), routing_key: ss(address) }))));
+    send(&tx, AMQPFrame::Header(ch, AMQPContentHeader { class_id: 60, body_size: body.len() as u64, properties: props.clone() }));
+    for part in body.chunks(131_000) {
+        send(&tx, AMQPFrame::Body(ch, part.to_vec()));
+    }
+    true
+}
+
 pub(crate) fn enc(f: &AMQPFrame) -> Vec<u8> {
     cookie_factory::gen_simple(gen_frame(f), Vec::new()).unwrap_or_default()
 }
@@ -196,6 +230,8 @@ struct Chan {
     consumers: HashMap<String, (String, Arc<Notify>)>,
     /// A publish waiting for its header and body.
     pending: Option<(basic::Publish, Option<AMQPContentHeader>, Vec<u8>)>,
+    /// Direct Reply-to: (consumer tag, the address replies go to).
+    reply: Option<(String, String)>,
 }
 
 struct Conn {
@@ -209,6 +245,8 @@ struct Conn {
     acked: Arc<Notify>,
     /// "Disconnect it" on any of its consumers closes the whole connection (CONNECTION_FORCED).
     kill: Arc<Notify>,
+    /// Channels we closed and whose close-ok has not come: what the client still sends there is dropped.
+    closing: Mutex<std::collections::HashSet<u16>>,
 }
 
 fn close_conn(tx: &Tx, code: u16, text: &str, class: u16, method: u16) {
@@ -331,7 +369,7 @@ pub async fn serve(envs: Envs, sock: crate::amqp::Io, remote: String) {
     }
     ctx.live.seen(client.split(" :").next().unwrap_or(&client), "RabbitMQ");
     let kill = Arc::new(Notify::new());
-    let conn = Arc::new(Conn { ctx: ctx.clone(), ns: ns.clone(), client: client.clone(), remote: remote.clone(), tx: tx.clone(), chans: Mutex::new(HashMap::new()), acked: Arc::new(Notify::new()), kill: kill.clone() });
+    let conn = Arc::new(Conn { ctx: ctx.clone(), ns: ns.clone(), client: client.clone(), remote: remote.clone(), tx: tx.clone(), chans: Mutex::new(HashMap::new()), acked: Arc::new(Notify::new()), kill: kill.clone(), closing: Default::default() });
     // Heartbeats both ways: ours every half interval.
     let hb_tx = tx.clone();
     let hb = tokio::spawn(async move {
@@ -405,6 +443,9 @@ fn credentials(mech: &str, resp: &[u8]) -> (String, String) {
 async fn close_channel_state(conn: &Conn, c: &Arc<Mutex<Chan>>, why: &str) {
     let (consumers, unacked) = {
         let mut g = c.lock().unwrap();
+        if let Some((_, addr)) = g.reply.take() {
+            replies().lock().unwrap().remove(&addr);
+        }
         (g.consumers.drain().collect::<Vec<_>>(), std::mem::take(&mut g.unacked))
     };
     for (_, (id, stop)) in &consumers {
@@ -432,6 +473,21 @@ async fn handle(conn: &Arc<Conn>, f: AMQPFrame) -> bool {
     let tx = &conn.tx;
     let ctx = &conn.ctx;
     let nsn = conn.ns.namespace.clone();
+    let ch_of = match &f {
+        AMQPFrame::Method(ch, m) => Some((*ch, matches!(m, AMQPClass::Channel(channel::AMQPMethod::CloseOk(_) | channel::AMQPMethod::Close(_))))),
+        AMQPFrame::Header(ch, _) | AMQPFrame::Body(ch, _) => Some((*ch, false)),
+        _ => None,
+    };
+    if let Some((ch, closes)) = ch_of {
+        let mut closing = conn.closing.lock().unwrap();
+        if closing.contains(&ch) {
+            if closes {
+                closing.remove(&ch);
+            } else {
+                return true;
+            }
+        }
+    }
     match f {
         AMQPFrame::Heartbeat | AMQPFrame::InvalidHeartbeat(_) | AMQPFrame::ProtocolHeader(_) => true,
         AMQPFrame::Header(ch, h) => {
@@ -560,6 +616,13 @@ async fn handle(conn: &Arc<Conn>, f: AMQPFrame) -> bool {
                 if name.is_empty() {
                     name = format!("amq.gen-{}", &broker::uuid4()[..13]);
                 }
+                // Direct Reply-to is always there: a passive declare of it (or of an address) answers ok.
+                if name.starts_with(REPLY_TO) {
+                    if !d.nowait {
+                        send(tx, AMQPFrame::Method(ch, AMQPClass::Queue(queue::AMQPMethod::DeclareOk(queue::DeclareOk { queue: ss(&name), message_count: 0, consumer_count: 0 }))));
+                    }
+                    return true;
+                }
                 let args = table_json(&d.arguments);
                 match declare_queue(ctx, &nsn, &conn.client, &name, d.passive, d.durable && !d.exclusive, args) {
                     Ok(()) => {
@@ -635,6 +698,7 @@ async fn close_and_forget(conn: &Arc<Conn>, ch: u16, code: u16, text: &str, clas
     if let Some(c) = c {
         close_channel_state(conn, &c, text).await;
     }
+    conn.closing.lock().unwrap().insert(ch);
     close_chan(&conn.tx, ch, code, text, class, method);
 }
 
@@ -800,8 +864,29 @@ async fn finish_publish(conn: &Arc<Conn>, ch: u16) {
         }
         (p, h, body, confirm, g.pub_seq)
     };
-    let props = h.map(|h| h.properties).unwrap_or_default();
+    let mut props = h.map(|h| h.properties).unwrap_or_default();
     let (ex, key) = (p.exchange.as_str().to_string(), p.routing_key.as_str().to_string());
+    // A request that wants its answer by Direct Reply-to: this channel must consume it first.
+    if props.reply_to().as_ref().map(|r| r.as_str()) == Some(REPLY_TO) {
+        let addr = c.lock().unwrap().reply.as_ref().map(|r| r.1.clone());
+        match addr {
+            Some(a) => props = props.with_reply_to(ss(&a)),
+            None => {
+                close_and_forget(conn, ch, 406, "PRECONDITION_FAILED - fast reply consumer does not exist", 60, 40).await;
+                return;
+            }
+        }
+    }
+    // An answer to a Direct Reply-to address: straight to the waiting channel. Nobody waiting: dropped.
+    if ex.is_empty() && key.starts_with(&format!("{REPLY_TO}.")) {
+        if !deliver_reply(&key, &props, &body) && p.mandatory {
+            send_return(conn, ch, 312, "NO_ROUTE", &ex, &key, &props, &body);
+        }
+        if confirm {
+            ack_pub(conn, ch, tag);
+        }
+        return;
+    }
     let o = outgoing(&props, &ex, &key, body, &conn.client);
     let entity = if ex.is_empty() { key.clone() } else { ex.clone() };
     let ns = config::get(&conn.ctx, &conn.ns.namespace).unwrap_or(conn.ns.clone());
@@ -873,6 +958,24 @@ async fn basic(conn: &Arc<Conn>, ch: u16, b: basic::AMQPMethod) -> bool {
         }
         basic::AMQPMethod::Consume(c) => {
             let q = c.queue.as_str().to_string();
+            if q == REPLY_TO {
+                if !c.no_ack {
+                    close_and_forget(conn, ch, 406, "PRECONDITION_FAILED - reply consumer cannot acknowledge", 60, 20).await;
+                    return true;
+                }
+                let tag = if c.consumer_tag.as_str().is_empty() { format!("amq.ctag-{}", &broker::uuid4()[..18]) } else { c.consumer_tag.as_str().to_string() };
+                let channel = chan(conn, ch);
+                let addr = format!("{REPLY_TO}.{}", broker::uuid4().replace('-', ""));
+                let old = channel.lock().unwrap().reply.replace((tag.clone(), addr.clone()));
+                if let Some((_, a)) = old {
+                    replies().lock().unwrap().remove(&a);
+                }
+                replies().lock().unwrap().insert(addr, (tx.clone(), channel, ch, tag.clone()));
+                if !c.nowait {
+                    send(&tx, AMQPFrame::Method(ch, AMQPClass::Basic(basic::AMQPMethod::ConsumeOk(basic::ConsumeOk { consumer_tag: ss(&tag) }))));
+                }
+                return true;
+            }
             let exists = config::get(&ctx, &nsn).map(|n| n.entities.get(&q).and_then(|e| e.queue.as_ref()).is_some()).unwrap_or(false);
             if !exists {
                 close_and_forget(conn, ch, 404, &format!("NOT_FOUND - no queue '{q}' in vhost '{nsn}'"), 60, 20).await;
@@ -893,6 +996,14 @@ async fn basic(conn: &Arc<Conn>, ch: u16, b: basic::AMQPMethod) -> bool {
         }
         basic::AMQPMethod::Cancel(c) => {
             let tag = c.consumer_tag.as_str().to_string();
+            {
+                let channel = chan(conn, ch);
+                let mut g = channel.lock().unwrap();
+                if g.reply.as_ref().is_some_and(|r| r.0 == tag) {
+                    let (_, addr) = g.reply.take().unwrap();
+                    replies().lock().unwrap().remove(&addr);
+                }
+            }
             let e = chan(conn, ch).lock().unwrap().consumers.remove(&tag);
             if let Some((id, stop)) = e {
                 stop.notify_one();

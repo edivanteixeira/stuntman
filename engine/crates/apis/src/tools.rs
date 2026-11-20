@@ -113,6 +113,14 @@ fn calls() -> Vec<Tool> {
         })
         .param("service", "plugin name").param("answer", "answer name").param("since", "15m (default), 1h, 1d").param("q", "path, id, CPF…").param("limit", "default 200")
         .route("GET", "/apis/calls"),
+        Tool::new("list_api_traffic", "Every call in the order it came, answered by a route or not (matched: false, answered 404 \"no route\"), after a cursor: pass the last `next` as `after` to get only what came since. One cursor for both lists, so a test reads the calls its step made without cutting by time.", |ctx, a| async move {
+            let after = a.u64("after").unwrap_or(0) as i64;
+            let calls = store::traffic(&ctx, after, a.u64("limit").unwrap_or(500).min(5000) as i64).await?;
+            let next = calls.last().and_then(|c| c["seq"].as_i64()).unwrap_or(after);
+            Ok(json!({"after": after, "next": next, "count": calls.len(), "calls": calls}))
+        })
+        .param("after", "seq of the last call already read (default 0: from the start); use the `next` of the previous answer").param("limit", "default 500, at most 5000")
+        .route("GET", "/apis/traffic"),
         Tool::new("get_api_call", "What the app sent and what Stuntman answered, the steps and webhooks; raw=true adds headers and bodies.", |ctx, a| async move {
             store::get(&ctx, &a.need("id")?, a.bool("raw").unwrap_or(false)).await
         })

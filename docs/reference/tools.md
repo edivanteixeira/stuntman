@@ -5,17 +5,17 @@ Every action in Stuntman is one tool. Each tool is an **MCP tool** (same name) a
 
 _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit by hand._
 
-**404 tools** in 17 areas.
+**406 tools** in 17 areas.
 
 - [Environments, timeline and access](#environments-timeline-and-access) · 22 tools
 - [Email and mailboxes](#email-and-mailboxes) · 41 tools
 - [SMS](#sms) · 17 tools
 - [WhatsApp](#whatsapp) · 28 tools
-- [HTTP APIs (plugins)](#http-apis-plugins) · 69 tools
+- [HTTP APIs (plugins)](#http-apis-plugins) · 70 tools
 - [AI models](#ai-models) · 9 tools
 - [Product events](#product-events) · 8 tools
 - [Storage (Azure Blob, S3)](#storage-azure-blob-s3) · 45 tools
-- [Messaging (Service Bus, RabbitMQ, ActiveMQ, Event Hubs)](#messaging-service-bus-rabbitmq-activemq-event-hubs) · 32 tools
+- [Messaging (Service Bus, RabbitMQ, ActiveMQ, Event Hubs)](#messaging-service-bus-rabbitmq-activemq-event-hubs) · 33 tools
 - [Identity (OIDC, OAuth2, SAML, LDAP, Bot Framework)](#identity-oidc-oauth2-saml-ldap-bot-framework) · 28 tools
 - [Files (FTP, SFTP)](#files-ftp-sftp) · 8 tools
 - [Streams (Kafka, Schema Registry)](#streams-kafka-schema-registry) · 10 tools
@@ -159,6 +159,7 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 |---|---|---|---|---|
 | `list_api_services` | `GET /api/apis/services` | — | — | HTTP API services (plugins) in this environment: origin, region, calls and billable calls today, forced answer, URLs; broken files with their error. |
 | `list_api_calls` | `GET /api/apis/calls` | — | service, answer, since, q, limit | Calls any HTTP plugin answered, newest first: sentence, answer name, status, billable, trace id. |
+| `list_api_traffic` | `GET /api/apis/traffic` | — | after, limit | Every call in the order it came, answered by a route or not (matched: false, answered 404 "no route"), after a cursor: pass the last `next` as `after` to get only what came since. One cursor for both lists, so a test reads the calls its step made without cutting by time. |
 | `get_api_call` | `GET /api/apis/calls/{id}` | id | raw | What the app sent and what Stuntman answered, the steps and webhooks; raw=true adds headers and bodies. |
 | `wait_for_api_call` | `GET /api/apis/calls/wait` | service | route, answer, timeout, since | Waits for the next call to a service (and route, and answer): what a test waits for after acting in the app. |
 | `force_answer` | `POST /api/apis/{service}/force` | service, answer | count, for, route | The next calls get this named answer (or reset \| empty \| timeout \| 500 \| 503 \| html): count=N calls or for=10m; route= limits it to one route (the token route is forced only this way); answer=default stops. |
@@ -309,7 +310,8 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | Tool | HTTP | Required | Optional | What it does |
 |---|---|---|---|---|
 | `list_namespaces` | `GET /api/messaging/namespaces` | — | summary | Namespaces with kind (azure-service-bus, rabbitmq), entities (queues, topics and their subscriptions or bindings), counters per state and the connection string. summary=true: only ports, connection strings and counts. |
-| `list_messaging_warnings` | `GET /api/messaging/warnings` | — | — | What works here but would break on the real provider, or hides a bug: Service Bus entities the app created on first use (auto create; Azure answers MessagingEntityNotFound), and queues or subscriptions that more than one connection receives from (each gets part of the messages). |
+| `trace_message_route` | `GET /api/messaging/route` | — | namespace, vhost, exchange, key, headers | Where a RabbitMQ message would go, without publishing it: every binding on the way (exchange to exchange, exchange to queue), whether its key matches, and the queues it reaches. |
+| `list_messaging_warnings` | `GET /api/messaging/warnings` | — | — | What works here but would break on the real provider, or hides a bug: Service Bus entities the app created on first use (auto create; Azure answers MessagingEntityNotFound), queues or subscriptions that more than one connection receives from (each gets part of the messages), and RabbitMQ messages that reached no queue (unrouted: exchange and routing key). |
 | `list_queue_messages` | `GET /api/messaging/{namespace}/{entity}/messages` | namespace, entity | state, q, last | Messages of a queue, topic or subscription, newest first; state = active \| scheduled \| locked \| dead_letter \| completed. |
 | `get_queue_message` | `GET /api/messaging/{namespace}/{entity}/messages/{seq}` | namespace, seq | entity | One message: properties, body and the delivery history (published, delivered, abandoned, completed, dead-lettered…). |
 | `publish` | `POST /api/messaging/{namespace}/{entity}/messages` | namespace, entity | body, subject, properties, schedule_at, correlation_id, session_id, routing_key, message_id | Publishes a message as a test (recorded as sent by you or the agent, never as the app). Topics fan out to their subscriptions. |

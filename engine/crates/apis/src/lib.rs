@@ -74,6 +74,10 @@ impl Module for Apis {
         tools::all()
     }
 
+    fn start(&self, ctx: Ctx) {
+        store::upgrade(&ctx);
+    }
+
     fn extra_routes(&self) -> Router<Ctx> {
         let ca = || async { file("application/x-pem-file", "stuntman-test-ca.pem", ca::get().pem.clone().into_bytes()) };
         // DER: what macOS Keychain, the Windows store and Android take; .crt and .der are the same bytes.

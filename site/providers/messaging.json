@@ -320,6 +320,14 @@
    [
     "create_rule",
     "Lose locks, duplicate, hold or drop matching deliveries"
+   ],
+   [
+    "trace_message_route",
+    "Where a RabbitMQ message would go: each binding, and the queues it reaches"
+   ],
+   [
+    "list_messaging_warnings",
+    "Messages that reached no queue, entities made on first use, shared receivers"
    ]
   ],
   "http": [
@@ -347,6 +355,16 @@
     "PUT",
     "/api/messaging/{namespace}/reachability",
     "set_namespace_reachability"
+   ],
+   [
+    "GET",
+    "/api/messaging/route",
+    "trace_message_route"
+   ],
+   [
+    "GET",
+    "/api/messaging/warnings",
+    "list_messaging_warnings"
    ]
   ]
  },

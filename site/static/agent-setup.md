@@ -284,7 +284,7 @@ it: explain and propose an environment-variable override instead.
 2. Read what arrived: `list_api_calls`, `list_messages`, `list_sms`, `list_whatsapp_messages`, `list_objects`,
    `list_deliveries`, `list_traces`, `list_ai_calls`, `list_product_events`, `list_transfers`,
    `list_mailbox_messages`, `list_stream_messages`, `list_pubsub_messages`, `list_activemq_messages` — whichever lines apply.
-3. Check for leaks: `real_provider_calls` (needs telemetry) and `list_unmatched`. Anything listed still goes
+3. Check for leaks: `real_provider_calls` (needs telemetry), `list_unmatched` and `list_messaging_warnings`. Anything listed still goes
    to a real provider or has no route: fix it or tell the developer.
 4. Show one small provocation, then undo it. For example: `force_sms_failure {"answer": "500", "count": 1}`,
    or a storage rule with `create_rule` and `how_often: {"first": 1}`, then show on the timeline how the app reacted.
@@ -338,6 +338,7 @@ Keep the frame, translate the words, fill in the real values and list only what 
 | TLS errors (Key Vault, `:8443`, AMQPS, FTPS) | Trust the Stuntman Test CA for the app's process only ([Step 6](#trusting-the-stuntman-test-ca-https-key-vault-8443-amqps-ftps)); .NET on macOS/Windows ignores `SSL_CERT_FILE`. An OS store only after the developer agrees — never on a machine that talks to real providers. |
 | `ServiceBusAdministrationClient`: connection refused on `:80` or `:443` | The connection string has no port: use `:5300` in it, or publish `-p 127.0.0.1:80:5300`. |
 | A call shows up in `list_unmatched` | The plugin has no route for it: add the route with `put_plugin`. `group=none` lists each call with its full path, query, headers and body. |
+| A RabbitMQ message never reaches its consumer | `list_messaging_warnings` shows it as `unrouted` (exchange and routing key); `trace_message_route` shows each binding on the way and which one does not match. |
 | The MCP server does not appear | Continue over HTTP (`/api`); tell the developer to restart their agent later to get MCP. |
 
 ## Safety, again

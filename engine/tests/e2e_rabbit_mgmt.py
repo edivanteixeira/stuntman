@@ -36,6 +36,11 @@ def main():
         assert req(s, "GET", "/api/aliveness-test/acme-tms")[1] == {"status": "ok"}
         assert req(s, "GET", "/api/vhosts/nope")[0] == 404
         assert "acme-tms" in [n["namespace"] for n in s.call("GET", "/messaging/namespaces")["namespaces"]] or True
+        # Where a message would go, without an AMQP client.
+        r = s.call("GET", "/messaging/route?vhost=acme-tms&exchange=cargas&key=any")
+        assert r["queues"] == ["cargas-criadas"] and r["hops"][0]["matches"] is True and r["hops"][0]["destinationType"] == "queue", r
+        assert s.call("GET", "/messaging/route?vhost=acme-tms&exchange=&key=nope")["queues"] == []
+        s.call("GET", "/messaging/route?vhost=acme-tms&exchange=missing", expect=404)
         vh = [x["name"] for x in req(s, "GET", "/api/vhosts")[1]]
         assert vh[0] == "/" and "acme-tms" in vh, vh
     print("RabbitMQ management e2e: ok")

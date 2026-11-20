@@ -216,6 +216,19 @@ use; Azure Service Bus does not create entities and answers `MessagingEntityNotF
 subscriptions that several connections receive from. Create the entity in the infrastructure and press "Keep it in the
 YAML" (or `add_entity`), or turn `auto_create` off to test the missing entity.
 
+**Messages that reached no queue.** RabbitMQ drops a message no binding takes, and so does Stuntman; the publisher only
+hears of it with `mandatory`. `list_messaging_warnings` lists each such exchange and routing key as `unrouted`, with
+the count, the last time and the sender; the warning goes once a binding takes that key. To see why,
+`trace_message_route` (`GET /api/messaging/route?vhost=<namespace>&exchange=<x>&key=<k>`, optional `headers`) walks the
+bindings without publishing: each one on the way (exchange to exchange, exchange to queue), its keys, whether it
+matches, and the queues reached.
+
+```text
+trace_message_route {"vhost": "acme-bus", "exchange": "request:topic:Acme.Reports:Render", "key": ""}
+→ {"queues": ["Acme.Reports:Render"], "hops": [{"source": "request:topic:Acme.Reports:Render", "destination": "Acme.Reports:Render",
+   "destinationType": "exchange", "bindingKeys": [""], "matches": true}, …]}
+```
+
 `GET /api/messaging/namespaces?summary=true` answers the ports, connection strings and counts only, for scripts and
 agents; without it each namespace comes with its entities, settings and YAML.
 

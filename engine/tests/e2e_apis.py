@@ -206,6 +206,14 @@ def run(data):
     sv = [c for c in one["calls"] if c["service"] == "serpro-datavalid"][0]["request"]
     assert (sv["path"], sv["servicePath"]) == (V4, "/datavalid/v4/pessoa-fisica/validacao"), sv
     assert one["count"] == len(one["calls"]) >= 3 and pay and pay[0]["host"] == "payments.example-pay.com" and '"amount"' in pay[0]["request"]["body"], one
+    # One cursor for answered and unmatched calls: oldest first, each with seq and matched.
+    t = call("GET", "/apis/traffic")
+    seqs = [c["seq"] for c in t["calls"]]
+    assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs) and t["next"] == seqs[-1], t
+    assert {c["matched"] for c in t["calls"]} == {True, False}, t
+    api("GET", "/payments/v1/after-cursor", host="payments.example-pay.com")
+    t2 = call("GET", f"/apis/traffic?after={t['next']}")
+    assert [(c["path"], c["matched"]) for c in t2["calls"]] == [("/payments/v1/after-cursor", False)] and t2["next"] > t["next"], t2
     by_caller = call("GET", "/apis/unmatched?group=caller")["groups"]
     assert any(g["key"] == "acme-batch" for g in by_caller)
     draft = call("POST", f"/apis/unmatched/{v4['latest']['id']}/route")

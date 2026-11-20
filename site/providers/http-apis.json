@@ -324,6 +324,10 @@
     "Requests no route took, grouped or one by one, with the closest route"
    ],
    [
+    "list_api_traffic",
+    "Answered and unmatched calls in order, after a cursor"
+   ],
+   [
     "authorize_as",
     "Completes a waiting page as a person"
    ],
@@ -362,6 +366,11 @@
     "POST",
     "/api/clock/advance",
     "advance_clock"
+   ],
+   [
+    "GET",
+    "/api/apis/traffic",
+    "list_api_traffic"
    ]
   ]
  },

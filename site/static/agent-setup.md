@@ -191,7 +191,7 @@ Do everything in the environment you created in step 3. For each provider:
 | Line | What to do |
 |---|---|
 | Email, SMS, WhatsApp, Webhook inboxes, Telemetry, AI models, Product events | Built in; nothing to install. Create webhook inboxes with `create_webhook_inbox` when the app sends its own webhooks. For AI models, add a few rules with `set_ai_rule` so the app's prompts get useful answers; for analytics, write the expected events as a plan with `set_event_plan`. |
-| Mailboxes | `set_mailbox` for each address the app reads; `put_mail` to drop a test message. |
+| Mailboxes | `set_mailbox` for each address the app reads; `put_mail` to drop a test message; `clear_mailbox` to start a test run with it empty. |
 | File servers | `set_file_server` with the users and folders the app uses; `put_file` for files a partner would drop. |
 | ActiveMQ | Usually nothing: queues and topics appear when the app uses them. `set_activemq {"users": {...}}` when the app logs in with a fixed user (with no users, any login works); `activemq_send` for messages another system would send. |
 | Azure Event Hubs | `create_eventhub {"namespace": "<ns>", "hub": "<hub>", "partitions": 4, "consumer_groups": [...]}` for every hub the app uses (hubs are not created on first use); `eventhub_send` for events another producer would send. |
@@ -337,7 +337,7 @@ Keep the frame, translate the words, fill in the real values and list only what 
 | FTP listings hang | Passive mode needs ports `30000-30009` published as well as `2121`. |
 | TLS errors (Key Vault, `:8443`, AMQPS, FTPS) | Trust the Stuntman Test CA for the app's process only ([Step 6](#trusting-the-stuntman-test-ca-https-key-vault-8443-amqps-ftps)); .NET on macOS/Windows ignores `SSL_CERT_FILE`. An OS store only after the developer agrees — never on a machine that talks to real providers. |
 | `ServiceBusAdministrationClient`: connection refused on `:80` or `:443` | The connection string has no port: use `:5300` in it, or publish `-p 127.0.0.1:80:5300`. |
-| A call shows up in `list_unmatched` | The plugin has no route for it: add the route with `put_plugin`. |
+| A call shows up in `list_unmatched` | The plugin has no route for it: add the route with `put_plugin`. `group=none` lists each call with its full path, query, headers and body. |
 | The MCP server does not appear | Continue over HTTP (`/api`); tell the developer to restart their agent later to get MCP. |
 
 ## Safety, again

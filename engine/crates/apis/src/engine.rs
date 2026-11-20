@@ -1034,7 +1034,7 @@ pub async fn handle(State(envs): State<Envs>, mut req: Request) -> Response {
         None => {
             // Not answered is still a call to HTTP APIs (the ones a service took count in live.seen below).
             stuntman_core::usage::hit(&ctx, "apis");
-            return unmatched(&ctx, &plugins, "", &method, &path, &host, read_request(&method, &path, &query, headers, raw)).await;
+            return unmatched(&ctx, &plugins, "", &method, &path, &path, &host, read_request(&method, &path, &query, headers, raw)).await;
         }
     };
     // "/acme/v0/…" reached by the path prefix: the pages post back under the same prefix.
@@ -1151,7 +1151,7 @@ pub async fn handle(State(envs): State<Envs>, mut req: Request) -> Response {
         match_path_case(&pat, &inner, p.service.ignore_case).map(|pp| (r, pp))
     }).collect();
     let Some((r, params)) = candidates.first().cloned() else {
-        return unmatched(&ctx, &plugins, &p.service.name, &method, &inner, &host, rq).await;
+        return unmatched(&ctx, &plugins, &p.service.name, &method, &path, &inner, &host, rq).await;
     };
     // A10c: a key seen before gets the first answer again; with another body, 409.
     let idem = p.service.idempotency.as_ref().filter(|_| ["POST", "PUT", "PATCH", "DELETE"].contains(&method.as_str())).and_then(|i| headers.get(&i.header.to_lowercase()).map(|k| (i.clone(), k.clone())));
@@ -1284,9 +1284,10 @@ pub async fn respond(o: Outcome, kill: Option<Kill>) -> Response {
     }
 }
 
-async fn unmatched(ctx: &Ctx, plugins: &[Plugin], service: &str, method: &str, path: &str, host: &str, rq: Req) -> Response {
+/// `full`: the path as received; `path`: relative to the service (the same when there is none).
+async fn unmatched(ctx: &Ctx, plugins: &[Plugin], service: &str, method: &str, full: &str, path: &str, host: &str, rq: Req) -> Response {
     let c = closest(plugins, service, method, path);
-    let req_json = json!({"method": method, "path": path, "query": rq.raw_query, "headers": rq.headers, "body": String::from_utf8_lossy(&rq.raw_body).chars().take(16 * 1024).collect::<String>()});
+    let req_json = json!({"method": method, "path": full, "servicePath": path, "query": rq.raw_query, "headers": rq.headers, "body": String::from_utf8_lossy(&rq.raw_body).chars().take(16 * 1024).collect::<String>()});
     let _ = store::unmatched_add(ctx, method, path, host, service, &rq.caller, req_json, c).await;
     let msg = if service.is_empty() { format!("Stuntman: no plugin answers {host}{path}") } else { format!("Stuntman: {service} has no route for {method} {path}") };
     let mut r = (StatusCode::NOT_FOUND, axum::Json(json!({"error": "no route", "stuntman": msg}))).into_response();

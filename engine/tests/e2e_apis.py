@@ -203,6 +203,8 @@ def run(data):
     one = call("GET", "/apis/unmatched?group=none")
     pay = [c for c in one["calls"] if c["method"] == "POST" and c["path"] == "/payments/v1/charges"]
     assert [c["request"]["query"] for c in one["calls"] if c["method"] == "GET" and c["path"] == "/payments/v1/charges"] == ["status=paid&page=2"], one
+    sv = [c for c in one["calls"] if c["service"] == "serpro-datavalid"][0]["request"]
+    assert (sv["path"], sv["servicePath"]) == (V4, "/datavalid/v4/pessoa-fisica/validacao"), sv
     assert one["count"] == len(one["calls"]) >= 3 and pay and pay[0]["host"] == "payments.example-pay.com" and '"amount"' in pay[0]["request"]["body"], one
     by_caller = call("GET", "/apis/unmatched?group=caller")["groups"]
     assert any(g["key"] == "acme-batch" for g in by_caller)

@@ -1026,7 +1026,7 @@ pub async fn handle(State(envs): State<Envs>, mut req: Request) -> Response {
     let query = req.uri().query().unwrap_or("").to_string();
     let raw = axum::body::to_bytes(req.into_body(), 64 << 20).await.map(|b| b.to_vec()).unwrap_or_default();
     let host = headers.get("host").cloned().unwrap_or_default();
-    let plugins = plugin::all(&ctx);
+    let plugins = plugin::shared(&ctx);
     let t0 = std::time::Instant::now();
     let found = find_service(&plugins, &host, &path);
     let (p, inner) = match found {

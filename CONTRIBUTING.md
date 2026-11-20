@@ -23,6 +23,9 @@ If you touched how Stuntman writes (SQLite, the broker, call recording), measure
 flushes almost for free, a cloud disk takes about 6 ms. `engine/tests/perf/run_slow_disk.sh <image>` runs an image on a
 Docker volume with every flush delayed 6 ms and prints req/s for 1 and 16 clients; one client without a route should
 stay above 1,000 req/s (with `STUNTMAN_DURABILITY=full` it falls to about 55).
+If you touched what every HTTP call reads (plugins, the history), measure it with a big data folder too:
+`engine/tests/perf/bench_scale.py <api> <apis> <data folder>` adds 85 services and 300,000 calls to a running
+Stuntman and measures one call; it should stay below 1 ms, about the same as on an empty folder.
 
 If you added or changed a tool, regenerate the reference:
 

@@ -324,6 +324,18 @@ def run(data):
     err, v = tool("set_data", {"service": "serpro-datavalid", "table": "people", "rows": [{"cpf": "666.666.666-66", "name": "Lucas Hayes", "answer": "cpf_irregular"}]})
     assert not err and len(v["rows"]) == 1
 
+    # ---- Plugins are parsed once and kept: a save is seen at once, a file edited by hand within a second
+    y = "service:\n  name: kept\nroutes:\n  - route: GET /v\n    decide:\n      - answer: ok\nanswers:\n  - name: ok\n    status: 200\n    body: '{\"v\": %d}'\n"
+    call("PUT", "/plugins/kept", {"yaml": y % 1})
+    assert api("GET", "/kept/v")[1] == {"v": 1}
+    call("PUT", "/plugins/kept", {"yaml": y % 2})
+    assert api("GET", "/kept/v")[1] == {"v": 2}, "a save through the API is seen by the next call"
+    f = [os.path.join(r, "kept.yaml") for r, _, fs in os.walk(data) if "kept.yaml" in fs][0]
+    open(f, "w").write(y % 33)
+    wait(lambda: api("GET", "/kept/v")[1] == {"v": 33}, "a hand edit to be seen", 3)
+    os.remove(f)
+    wait(lambda: api("GET", "/kept/v")[0] == 404, "a removed file to be seen", 3)
+
 
 def main():
     data = tempfile.mkdtemp(prefix="duble-api-")

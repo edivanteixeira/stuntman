@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS api_calls(
   billable INTEGER NOT NULL DEFAULT 0, caller TEXT NOT NULL DEFAULT '', trace_id TEXT, ms INTEGER NOT NULL DEFAULT 0,
   provoked TEXT, sent TEXT NOT NULL DEFAULT '{}', answered TEXT NOT NULL DEFAULT '{}', request TEXT NOT NULL DEFAULT '{}',
   response TEXT NOT NULL DEFAULT '{}', steps TEXT NOT NULL DEFAULT '[]', sends TEXT NOT NULL DEFAULT '[]');
-CREATE INDEX IF NOT EXISTS api_calls_service ON api_calls(service, at);
+CREATE INDEX IF NOT EXISTS api_calls_day ON api_calls(service, at, billable);
 CREATE TABLE IF NOT EXISTS api_unmatched(
   id TEXT PRIMARY KEY, at INTEGER NOT NULL, method TEXT NOT NULL, path TEXT NOT NULL, host TEXT NOT NULL DEFAULT '',
   service TEXT NOT NULL DEFAULT '', caller TEXT NOT NULL DEFAULT '', request TEXT NOT NULL DEFAULT '{}', closest TEXT NOT NULL DEFAULT '{}',
@@ -186,9 +186,11 @@ pub async fn unmatched_add(ctx: &Ctx, method: &str, path: &str, host: &str, serv
     Ok(id)
 }
 
-/// Older data folders: the unmatched calls' place in the shared sequence.
+/// Older data folders: the unmatched calls' place in the shared sequence, and the old index.
 pub fn upgrade(ctx: &Ctx) {
     let _ = ctx.db.migrate("ALTER TABLE api_unmatched ADD COLUMN seq INTEGER");
+    // api_calls_day covers the daily counts too (a list of services read every row of the day).
+    let _ = ctx.db.migrate("DROP INDEX IF EXISTS api_calls_service");
 }
 
 /// Answered and unmatched calls after `after` (a seq), oldest first: one cursor for both.

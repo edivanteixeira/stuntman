@@ -26,8 +26,12 @@ fn service_of(a: &Args) -> Result<String, ApiError> {
 
 /// The left column of A1 and the header of A3–A5: a service with its counts and state.
 pub async fn service_view(ctx: &Ctx, p: &Plugin) -> Value {
-    let day = util::now_ms() - 86_400_000;
-    let counts = store::counts(ctx, day).await.unwrap_or_default();
+    let counts = store::counts(ctx, util::now_ms() - 86_400_000).await.unwrap_or_default();
+    service_view_with(ctx, p, &counts).await
+}
+
+/// `counts`: calls and billable calls today by service, read once for a list of services.
+async fn service_view_with(ctx: &Ctx, p: &Plugin, counts: &std::collections::BTreeMap<String, (i64, i64)>) -> Value {
     let (calls, billable) = counts.get(&p.service.name).cloned().unwrap_or((0, 0));
     let warn = plugin::per(&p.service.billing.warn_above).map(|x| x.0 as i64);
     let forced = store::forced(ctx, &p.service.name).await.ok().flatten();
@@ -93,9 +97,10 @@ pub fn all() -> Vec<Tool> {
 fn calls() -> Vec<Tool> {
     vec![
         Tool::new("list_api_services", "HTTP API services (plugins) in this environment: origin, region, calls and billable calls today, forced answer, URLs; broken files with their error.", |ctx, _a| async move {
+            let counts = store::counts(&ctx, util::now_ms() - 86_400_000).await.unwrap_or_default();
             let mut out = vec![];
-            for p in plugin::all(&ctx) {
-                out.push(service_view(&ctx, &p).await);
+            for p in plugin::shared(&ctx).iter() {
+                out.push(service_view_with(&ctx, p, &counts).await);
             }
             let broken: Vec<Value> = plugin::broken(&ctx).into_iter().map(|(n, e)| json!({"name": n, "error": e, "file": plugin::rel(&n)})).collect();
             Ok(json!({"services": out, "broken": broken, "port": crate::port()}))
@@ -290,6 +295,7 @@ fn plugin_tools() -> Vec<Tool> {
             let s = service_of(&a)?;
             plugin::get(&ctx, &s)?;
             std::fs::remove_file(plugin::file(&ctx, &s)).map_err(|e| ApiError::internal(e.to_string()))?;
+            plugin::forget();
             for d in [crate::soap::folder(&ctx, &s), crate::openapi::folder(&ctx, &s), crate::record::folder(&ctx, &s), crate::record::files_dir(&ctx, &s)] {
                 let _ = std::fs::remove_dir_all(d);
             }

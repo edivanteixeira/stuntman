@@ -842,12 +842,49 @@ pub fn get(ctx: &Ctx, name: &str) -> Result<Plugin, ApiError> {
 
 /// Every plugin that loads; broken files are reported by list_api_services.
 pub fn all(ctx: &Ctx) -> Vec<Plugin> {
-    let mut v: Vec<Plugin> = std::fs::read_dir(dir(ctx)).into_iter().flatten().flatten()
+    shared(ctx).as_ref().clone()
+}
+
+type Files = Vec<(std::ffi::OsString, Option<std::time::SystemTime>, u64)>;
+struct Parsed {
+    files: Files,
+    gen: u64,
+    checked: std::time::Instant,
+    plugins: std::sync::Arc<Vec<Plugin>>,
+}
+static PARSED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, Parsed>>> = std::sync::LazyLock::new(Default::default);
+static GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Stuntman changed plugin files (saved, deleted, an environment made or removed): the next read parses again.
+pub fn forget() {
+    GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The plugins, parsed once and kept: every HTTP call reads them, and parsing 85 files per call
+/// cost milliseconds. Stuntman's own writes call `forget`; a file edited by hand is seen within a
+/// second (name, mtime and size of each YAML are looked at again at most once a second).
+pub fn shared(ctx: &Ctx) -> std::sync::Arc<Vec<Plugin>> {
+    let d = dir(ctx);
+    let gen = GEN.load(std::sync::atomic::Ordering::SeqCst);
+    let kept = PARSED.lock().unwrap().get(&d).filter(|p| p.gen == gen).map(|p| (p.checked.elapsed() < std::time::Duration::from_secs(1), p.files.clone(), p.plugins.clone()));
+    if let Some((true, _, plugins)) = kept {
+        return plugins;
+    }
+    let mut files: Files = std::fs::read_dir(&d).into_iter().flatten().flatten()
         .filter(|e| e.path().extension().map(|x| x == "yaml").unwrap_or(false))
-        .filter_map(|e| std::fs::read_to_string(e.path()).ok().and_then(|t| parse(&t).ok()))
+        .map(|e| { let m = e.metadata().ok(); (e.file_name(), m.as_ref().and_then(|m| m.modified().ok()), m.map(|m| m.len()).unwrap_or(0)) })
         .collect();
-    v.sort_by(|a, b| a.service.name.cmp(&b.service.name));
-    v
+    files.sort();
+    let plugins = match kept {
+        Some((_, f, plugins)) if f == files => plugins,
+        _ => {
+            let mut v: Vec<Plugin> = files.iter().filter_map(|(f, _, _)| std::fs::read_to_string(d.join(f)).ok().and_then(|t| parse(&t).ok())).collect();
+            v.sort_by(|a, b| a.service.name.cmp(&b.service.name));
+            std::sync::Arc::new(v)
+        }
+    };
+    PARSED.lock().unwrap().insert(d, Parsed { files, gen, checked: std::time::Instant::now(), plugins: plugins.clone() });
+    plugins
 }
 
 pub fn broken(ctx: &Ctx) -> Vec<(String, String)> {
@@ -1096,6 +1133,7 @@ pub fn save_text(ctx: &Ctx, name: &str, t: &str) -> Result<String, ApiError> {
     }
     std::fs::create_dir_all(dir(ctx)).map_err(|e| ApiError::internal(e.to_string()))?;
     std::fs::write(file(ctx, name), t).map_err(|e| ApiError::internal(e.to_string()))?;
+    forget();
     ctx.live.send("apis.plugin", name, "updated");
     Ok(version(t))
 }

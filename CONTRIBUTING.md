@@ -26,6 +26,8 @@ stay above 1,000 req/s (with `STUNTMAN_DURABILITY=full` it falls to about 55).
 If you touched what every HTTP call reads (plugins, the history), measure it with a big data folder too:
 `engine/tests/perf/bench_scale.py <api> <apis> <data folder>` adds 85 services and 300,000 calls to a running
 Stuntman and measures one call; it should stay below 1 ms, about the same as on an empty folder.
+For the broker, `engine/tests/perf/bench_amqp.py <host> <amqp port> <management port>` times a confirmed publish,
+publish to delivery and consuming with acks over AMQP 0-9-1 (needs `pika`).
 
 If you added or changed a tool, regenerate the reference:
 

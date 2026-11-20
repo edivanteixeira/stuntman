@@ -255,6 +255,12 @@ def chip(color, text):
     return f'<span class="chip" style="--c:var(--line-{color})" aria-hidden="true"></span>{text}'
 
 
+def bench(groups):
+    rows = "".join(f'<div class="bench__row" style="--c:var(--line-{c})"><h3>{name}</h3>' + "".join(
+        f'<div class="bench__stat"><b>{n}<small>{u}</small></b><span>{cap}</span></div>' for n, u, cap in stats) + "</div>" for name, c, stats in groups)
+    return f'<div class="bench">{rows}</div>'
+
+
 def anchor(name):
     return "".join(c for c in name.lower().replace(" ", "-") if c.isalnum() or c == "-")
 
@@ -366,13 +372,14 @@ def home():
   </div>
 </section>
 <section class="wrap section">
-  {head(2, "Fast enough to leave in the loop.", "Every call is answered, recorded and on the timeline in well under a millisecond, with a full staging setup behind it: dozens of providers and months of history. The agent can run the flow as many times as it needs.")}
-  {table(["Measured", "p50 per call", "Calls per second"], [
-      ("85 services, 300,000 calls in the history, no matching route", "0.18 ms", "3,700 (1 client)"),
-      ("85 services, 300,000 calls in the history, a route that answers", "0.39 ms", "2,000 (1 client)"),
-      ("A disk that takes 6 ms per flush, like a cloud disk", "0.45 ms", "1,800 (1 client) · 4,400 (16 clients)"),
-  ])}
-  <p class="note" style="margin-top:var(--space-md)">Stuntman 0.11.8 in Docker (Linux) on a laptop. Every call is written to the history before it is answered. Run them yourself: <code>engine/tests/perf/bench_scale.py</code> and <code>engine/tests/perf/run_slow_disk.sh</code>.</p>
+  {head(2, "Fast enough to leave in the loop.", "Every call and every message is answered, recorded and on the timeline in about a millisecond, with a full staging setup behind it: dozens of providers and months of history. The agent can run the flow as many times as it needs.")}
+  {bench([("HTTP APIs", "teal", [("0.18", "ms", "a call, with 85 services and 300,000 calls in the history"),
+                                  ("0.39", "ms", "a call a route answers, same setup"),
+                                  ("4,400", "/s", "calls from 16 clients, on a disk that takes 6 ms per flush")]),
+          ("Messages", "blue", [("1.2", "ms", "a persistent publish, confirmed"),
+                                ("1.9", "ms", "from publish to the consumer"),
+                                ("800", "/s", "consumed and acked by one client")])])}
+  <p class="note" style="margin-top:var(--space-md)">Median times, Stuntman 0.11.8 in Docker (Linux) on a laptop; messages over AMQP 0-9-1 with a RabbitMQ client. Every call and message is written to disk before it is answered. Run them yourself: <code>engine/tests/perf/bench_scale.py</code>, <code>run_slow_disk.sh</code> and <code>bench_amqp.py</code>.</p>
 </section>
 <section class="wrap section"><div class="split">
   {head(2, "No plugin for your provider yet? Ask.", "A provider is one YAML file: routes, state, answers, callbacks and the sentence each call leaves. The tools that read a plugin can also write it, so the agent drafts it and you review it in the UI, with the YAML beside it.")}

@@ -19,6 +19,7 @@ default; most setups change nothing.
 | `STUNTMAN_PLUGINS` | `plugins` next to the engine (`/app/plugins` in Docker) | the plugin catalog |
 | `STUNTMAN_PORT` | `8025` | screen, `/api`, `/mcp`, SMS, WhatsApp, SendGrid, identity, AI models, product events, GELF over HTTP |
 | `STUNTMAN_HTTPS_PORT` | `8445` | the same as `STUNTMAN_PORT` over TLS (Test CA): for sign-in libraries that take only an `https` authority, such as MSAL in a browser; `0` turns it off |
+| `STUNTMAN_DURABILITY` | `normal` | how hard Stuntman keeps its writes: `normal` commits without waiting for the disk (a crash of the machine, not of Stuntman, can lose the last moments; on a cloud disk this is tens of times faster), `full` flushes every commit, `off` never flushes |
 | `STUNTMAN_SMTP_PORT` | `2525` | SMTP |
 | `STUNTMAN_HOOKS_PORT` | `8027` | webhook inboxes |
 | `STUNTMAN_APIS_PORT` | `8028` | HTTP API plugins |

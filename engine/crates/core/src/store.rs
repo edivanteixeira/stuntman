@@ -7,13 +7,24 @@ use rusqlite::Connection;
 
 use crate::ApiError;
 
+/// STUNTMAN_DURABILITY: `normal` (default) commits to the WAL without an fsync, so a write costs no
+/// disk flush; a crash of the machine (not of Stuntman) can lose the last moments. `full` flushes
+/// every commit, `off` never flushes (not even at checkpoints).
+pub fn synchronous() -> &'static str {
+    match std::env::var("STUNTMAN_DURABILITY").unwrap_or_default().as_str() {
+        "full" => "FULL",
+        "off" => "OFF",
+        _ => "NORMAL",
+    }
+}
+
 #[derive(Clone)]
 pub struct Db(Arc<Mutex<Connection>>);
 
 impl Db {
     pub fn open(path: &std::path::Path) -> rusqlite::Result<Self> {
         let c = Connection::open(path)?;
-        c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")?;
+        c.execute_batch(&format!("PRAGMA journal_mode=WAL; PRAGMA synchronous={}; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;", synchronous()))?;
         Ok(Self(Arc::new(Mutex::new(c))))
     }
 

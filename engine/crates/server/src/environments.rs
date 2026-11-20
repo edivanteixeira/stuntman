@@ -642,6 +642,7 @@ pub async fn delete(name: &str) -> Result<Value, ApiError> {
     }
     let d = ctx.data_dir.to_path_buf();
     tokio::task::spawn_blocking(move || std::fs::remove_dir_all(d)).await.map_err(|e| ApiError::internal(e.to_string()))?.map_err(|e| ApiError::internal(e.to_string()))?;
+    stuntman_apis::plugin::forget(); // the same name made again reads its own files
     crate::auth::forget_env(name);
     Ok(json!({"deleted": name, "environments": names()}))
 }

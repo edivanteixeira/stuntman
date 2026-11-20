@@ -76,7 +76,7 @@ pub async fn serve(port: u16, envs: Envs, app: Router) {
             let Ok(start) = tokio_rustls::LazyConfigAcceptor::new(rustls::server::Acceptor::default(), sock).await else { return };
             let sni = start.client_hello().server_name().unwrap_or("localhost").to_string();
             let ctx = envs.by_host(Some(&sni));
-            let plugins = ctx.as_ref().map(plugin::all).unwrap_or_default();
+            let plugins = ctx.as_ref().map(plugin::shared).unwrap_or_default();
             let svc = engine::find_service(&plugins, &sni, "/").map(|(p, _)| p.clone());
             let mtls = svc.as_ref().map(|p| p.service.auth.client_certificate.as_ref().map(|c| c.required).unwrap_or(false)).unwrap_or(false);
             let Some(leaf) = ca::get().leaf(&sni) else { return };

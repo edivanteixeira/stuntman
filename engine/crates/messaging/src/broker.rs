@@ -24,7 +24,13 @@ CREATE TABLE IF NOT EXISTS msg_messages(
   expires_at INTEGER, locked_until INTEGER NOT NULL DEFAULT 0, locked_by TEXT NOT NULL DEFAULT '', lock_token TEXT NOT NULL DEFAULT '',
   settled_at INTEGER, dl_reason TEXT NOT NULL DEFAULT '', dl_description TEXT NOT NULL DEFAULT '',
   sender TEXT NOT NULL DEFAULT '', via TEXT NOT NULL DEFAULT '', trace_id TEXT, flags TEXT NOT NULL DEFAULT '', origin INTEGER);
-CREATE INDEX IF NOT EXISTS msg_holder ON msg_messages(ns, holder, state, available_at, seq);
+-- The next message of a queue in seq order: with available_at before seq, every claim scanned and sorted the
+-- whole queue (a long queue delivered a few messages a second).
+DROP INDEX IF EXISTS msg_holder;
+CREATE INDEX IF NOT EXISTS msg_queue ON msg_messages(ns, holder, state, seq);
+-- The sweep every second (expired locks, due scheduled messages, time to live) without a full scan.
+CREATE INDEX IF NOT EXISTS msg_sweep ON msg_messages(state, locked_until, available_at);
+CREATE INDEX IF NOT EXISTS msg_ttl ON msg_messages(expires_at) WHERE expires_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS msg_token ON msg_messages(lock_token);
 CREATE TABLE IF NOT EXISTS msg_history(id INTEGER PRIMARY KEY AUTOINCREMENT, seq INTEGER NOT NULL, at INTEGER NOT NULL,
   what TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', tone TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT '');
@@ -685,9 +691,7 @@ pub async fn settle(ctx: &Ctx, ns: &str, token: &str, outcome: &str, reason: &st
     if new_state == "completed" {
         bump_done(ctx, &consumer_id).await;
         let minute = now / 60_000;
-        let (c2, h2) = (consumer_id.clone(), holder.clone());
-        let n_done: i64 = ctx.db.call(move |c| c.query_row("SELECT count(*) FROM msg_history h JOIN msg_messages m ON m.seq=h.seq WHERE h.what='Completed' AND m.holder=?1 AND h.at/60000=?2", params![h2, minute], |r| r.get(0))).await.unwrap_or(1);
-        let _ = c2;
+        let n_done = done_this_minute(ctx, ns, &holder, minute);
         let label = if n_done <= 1 { format!("{consumer_name} completed #{seq} from {holder}") } else { format!("{consumer_name} completed {n_done} messages from {holder}") };
         tl(ctx, &format!("mq:done:{ns}:{holder}:{consumer_name}:{minute}"), ns, &label, "ok", &if n_done <= 1 { ns.to_string() } else { format!("folded  ·  {n_done} in 1 min") }, trace.as_deref(), consumer_name, &link_of(ns, &holder, seq)).await;
     } else if new_state == "dead_letter" {
@@ -718,6 +722,20 @@ pub async fn expire_locks(ctx: &Ctx, consumer: &str) -> usize {
     let c2 = consumer.to_string();
     let now = util::now_ms() - 1;
     ctx.db.call(move |c| c.execute("UPDATE msg_messages SET locked_until=?2 WHERE locked_by=?1 AND state='locked'", params![c2, now])).await.unwrap_or(0)
+}
+
+/// Messages completed from a holder in this minute (the timeline folds them into one row). Counted in
+/// memory: a count over msg_history on every ack grew with the history and slowed a long queue down.
+fn done_this_minute(ctx: &Ctx, ns: &str, holder: &str, minute: i64) -> i64 {
+    static DONE: OnceLock<Mutex<HashMap<String, (i64, i64)>>> = OnceLock::new();
+    let mut m = DONE.get_or_init(Default::default).lock().unwrap();
+    m.retain(|_, (min, _)| *min >= minute - 1);
+    let e = m.entry(format!("{}|{ns}|{holder}", ctx.env)).or_insert((minute, 0));
+    if e.0 != minute {
+        *e = (minute, 0);
+    }
+    e.1 += 1;
+    e.1
 }
 
 async fn bump_done(ctx: &Ctx, consumer_id: &str) {
@@ -933,6 +951,26 @@ pub async fn consumer_close(ctx: &Ctx, id: &str, reason: &str) {
     let (i, r) = (id.to_string(), reason.to_string());
     let _ = ctx.db.call(move |c| c.execute("UPDATE msg_consumers SET until=?2, reason=?3 WHERE id=?1 AND until IS NULL", params![i, util::now_ms(), r])).await;
     ctx.live.send("messaging.consumer", id, "closed");
+}
+
+/// Holders more than one connection receives from now: (holder, the clients). Each gets part of the
+/// messages, so a forgotten second app (an old build, another worktree) handles some with old code.
+pub async fn shared_receivers(ctx: &Ctx, ns: &str) -> Vec<(String, Vec<String>)> {
+    let n2 = ns.to_string();
+    let rows: Vec<(String, String)> = ctx.db.call(move |c| {
+        let mut s = c.prepare("SELECT DISTINCT holder, client || CASE WHEN remote<>'' THEN ' from ' || remote ELSE '' END FROM msg_consumers WHERE ns=?1 AND until IS NULL ORDER BY holder")?;
+        let v = s.query_map([n2], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>();
+        v
+    }).await.unwrap_or_default();
+    let mut out: Vec<(String, Vec<String>)> = vec![];
+    for (h, c) in rows {
+        match out.last_mut() {
+            Some((lh, cs)) if *lh == h => cs.push(c),
+            _ => out.push((h, vec![c])),
+        }
+    }
+    out.retain(|(_, cs)| cs.len() > 1);
+    out
 }
 
 pub async fn consumers(ctx: &Ctx, ns: &str, holder: &str) -> Result<Vec<Value>, ApiError> {

@@ -119,6 +119,11 @@ takes (none of them holds the private key):
 | `http://localhost:8025/api/test-ca.pem` | PEM | Node, Python, Go, curl, Linux system store, `SSL_CERT_FILE` |
 | `http://localhost:8025/api/test-ca.crt` (same as `.der`) | DER | macOS Keychain, Windows certificate store |
 | `http://localhost:8025/api/test-ca.p12` (same as `.pfx`) | PKCS#12, CA only, password `changeit` | Java truststore, certificate-only PFX |
+| `http://localhost:8025/api/ca-bundle.pem` | PEM: the public roots of the Stuntman machine plus the Test CA | `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `curl --cacert` when the app must also reach real hosts |
+
+A variable such as `SSL_CERT_FILE` *replaces* the trusted roots: pointed at the Test CA alone, the app trusts nothing
+else. Point it at `ca-bundle.pem` instead. On macOS, .NET and Go ignore `SSL_CERT_FILE` (they use the Keychain): add the
+`.crt` to the login keychain (below) or validate against the CA in test configuration.
 
 The `get_test_ca` tool returns the same URLs, the file path and the options below.
 

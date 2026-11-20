@@ -85,7 +85,14 @@ impl Module for Apis {
                 Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
             }
         };
-        Router::new().route("/api/keyvault/test-ca.pem", get(ca)).route("/api/test-ca.pem", get(ca))
+        // The public roots of this machine plus the Test CA, one file: SSL_CERT_FILE, REQUESTS_CA_BUNDLE,
+        // NODE_EXTRA_CA_CERTS or curl --cacert take it, so the app still trusts the real internet.
+        let bundle = || async {
+            let roots = [std::env::var("SSL_CERT_FILE").unwrap_or_default().as_str(), "/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/cert.pem"]
+                .iter().filter(|p| !p.is_empty()).find_map(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+            file("application/x-pem-file", "stuntman-ca-bundle.pem", format!("{}\n# Stuntman Test CA\n{}", roots.trim_end(), ca::get().pem).into_bytes())
+        };
+        Router::new().route("/api/keyvault/test-ca.pem", get(ca)).route("/api/test-ca.pem", get(ca)).route("/api/ca-bundle.pem", get(bundle))
             .route("/api/test-ca.crt", get(der("stuntman-test-ca.crt"))).route("/api/test-ca.der", get(der("stuntman-test-ca.der")))
             .route("/api/test-ca.p12", get(p12("stuntman-test-ca.p12"))).route("/api/test-ca.pfx", get(p12("stuntman-test-ca.pfx"))).route("/api/plugins/{service}/yaml", get(|State(ctx): State<Ctx>, Path(s): Path<String>| async move {
             ([(header::CONTENT_TYPE, "application/yaml")], plugin::text(&ctx, &s)).into_response()

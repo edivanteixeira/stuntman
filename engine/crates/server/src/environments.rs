@@ -581,6 +581,10 @@ async fn set(a: Args) -> Result<Value, ApiError> {
     if a.get("real_hosts").is_some() {
         f.real_hosts = a.list("real_hosts");
     }
+    if let Some(v) = a.get("apps") {
+        let v = if let Some(t) = v.as_str() { serde_json::from_str(t).map_err(|e| ApiError::bad(format!("apps: {e}")))? } else { v.clone() };
+        f.apps = serde_json::from_value(v).map_err(|e| ApiError::bad(format!("apps: {{app: {{KEY: value}}}} ({e})")))?;
+    }
     if let Some(l) = a.str("lifetime").or(a.str("expires")) {
         let (lt, at) = expiry(&l)?;
         f.lifetime = lt;
@@ -719,6 +723,7 @@ async fn connections(ctx: &Ctx, base: Option<String>) -> Value {
     add("Stuntman", "MCP", "MCP endpoint", "STUNTMAN_MCP", format!("{public}/mcp"));
     add("Stuntman", "API", "Control API", "STUNTMAN_API", format!("{public}/api"));
     add("Stuntman", "Test CA", "Test CA (PEM)", "STUNTMAN_TEST_CA", format!("{public}/api/test-ca.pem"));
+    add("Stuntman", "CA bundle", "Public roots + Test CA (PEM)", "STUNTMAN_CA_BUNDLE", format!("{public}/api/ca-bundle.pem"));
     // One .env line each; a second item of the same kind gets its name in the key.
     let mut seen = std::collections::HashMap::<String, usize>::new();
     let mut lines = vec![format!("# Stuntman · environment {}", ctx.env)];
@@ -730,6 +735,45 @@ async fn connections(ctx: &Ctx, base: Option<String>) -> Value {
         lines.push(format!("{key}={}", it["value"].as_str().unwrap_or("")));
     }
     json!({"environment": &*ctx.env, "base": base, "items": items, "env": lines.join("\n") + "\n"})
+}
+
+/// One app's variables (environment.yaml apps.<app>), with ${KEY} taken from the connection settings
+/// and ${secret:[vault/]name} from Key Vault (read as "app <app>", so the access log shows it).
+pub async fn app_env(ctx: &Ctx, app: &str) -> Result<Value, ApiError> {
+    let apps = ctx.state.file.read().unwrap().apps.clone();
+    let Some(vars) = apps.get(app) else {
+        return Err(ApiError::not_found(format!("No app “{app}” in {}: apps declared in environment.yaml: {}", ctx.env, if apps.is_empty() { "none".to_string() } else { apps.keys().cloned().collect::<Vec<_>>().join(", ") })));
+    };
+    let conns = connections(ctx, None).await;
+    let known: std::collections::HashMap<String, String> = conns["env"].as_str().unwrap_or("").lines().filter(|l| !l.starts_with('#'))
+        .filter_map(|l| l.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let (mut out, mut missing, mut lines) = (serde_json::Map::new(), vec![], vec![format!("# Stuntman · environment {} · app {app}", ctx.env)]);
+    for (k, v) in vars {
+        let mut val = String::new();
+        let mut rest = v.as_str();
+        while let Some(i) = rest.find("${") {
+            val.push_str(&rest[..i]);
+            let Some(j) = rest[i..].find('}') else { break };
+            let name = &rest[i + 2..i + j];
+            let got = if let Some(sec) = name.strip_prefix("secret:") {
+                let (vault, n) = sec.split_once('/').map(|(a, b)| (Some(a), b)).unwrap_or((None, sec));
+                let mut args = json!({"name": n, "by": format!("app {app}")});
+                if let Some(vn) = vault { args["vault"] = json!(vn); }
+                call(ctx, "get_secret", args).await["value"].as_str().map(String::from)
+            } else {
+                known.get(name).cloned()
+            };
+            match got {
+                Some(x) => val.push_str(&x),
+                None => { missing.push(name.to_string()); val.push_str(&rest[i..i + j + 1]); }
+            }
+            rest = &rest[i + j + 1..];
+        }
+        val.push_str(rest);
+        lines.push(format!("{k}={val}"));
+        out.insert(k.clone(), json!(val));
+    }
+    Ok(json!({"environment": &*ctx.env, "app": app, "vars": out, "missing": missing, "env": lines.join("\n") + "\n"}))
 }
 
 fn templates() -> Vec<Value> {
@@ -792,6 +836,7 @@ pub fn tools() -> Vec<Tool> {
             .param("real_hosts", "list of real provider host names answered with the Stuntman Test CA")
             .param("public_url", "where browsers open it (https://…); empty clears it")
             .param("allowed_email_domains", "list of real e-mail domains identity accepts for people")
+            .param("apps", "{app: {KEY: value}}: the variables each app sets; ${QUEUES_CONNECTION}-style names and ${secret:name} are filled in (replaces the whole map)")
             .param("expires", "same as lifetime: 1h, 24h, 72h, 7d, never")
             .param("version", "the version you read; a change made elsewhere since then answers 409")
             .route("PUT", "/environments/{name}"),
@@ -850,6 +895,13 @@ pub fn tools() -> Vec<Tool> {
         .req("name", "environment name")
         .param("base", "path-prefix form on this address, e.g. http://stuntman.stuntman.svc (default: the base domain)")
         .route("GET", "/environments/{name}/connections"),
+        Tool::new("get_app_env", "One app's variables, ready: environment.yaml apps.<app> with ${KEY} from get_connections and ${secret:[vault/]name} from Key Vault. Also GET /api/env/<app> (KEY=VALUE lines).", |_ctx, a| async move {
+            let ctx = find(&a.need("name")?)?;
+            app_env(&ctx, &a.need("app")?).await
+        })
+        .req("name", "environment name")
+        .req("app", "app name (a key of apps in environment.yaml)")
+        .route("GET", "/environments/{name}/apps/{app}"),
         Tool::new("get_environment_hosts", "Lines for /etc/hosts (or a DNS zone) so the environment's host names reach this Stuntman.", |_ctx, a| async move {
             let ctx = find(&a.need("name")?)?;
             Ok(json!({"hosts": hosts(&ctx)}))

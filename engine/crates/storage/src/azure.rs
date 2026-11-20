@@ -104,6 +104,8 @@ struct Call {
     remote: String,
     version: String,
     kill: Option<Kill>,
+    /// The blob name as sent, before "\" became "/": a SAS may be signed over it.
+    raw_blob: String,
 }
 
 pub async fn handle(State(envs): State<Envs>, mut req: Request) -> Response {
@@ -126,7 +128,7 @@ pub async fn handle(State(envs): State<Envs>, mut req: Request) -> Response {
     let body = axum::body::to_bytes(req.into_body(), 1 << 30).await.map(|b| b.to_vec()).unwrap_or_default();
     let qm: BTreeMap<String, String> = q.iter().cloned().collect();
     ctx.live.seen(&ops::caller(&h), "Storage");
-    let c = Call { caller: ops::caller(&h), ctx, method, raw_path, q, qm, h, body, remote, version: version.clone(), kill };
+    let mut c = Call { caller: ops::caller(&h), ctx, method, raw_path, q, qm, h, body, remote, version: version.clone(), kill, raw_blob: String::new() };
     let segs: Vec<String> = path.trim_start_matches('/').splitn(3, '/').map(|s| auth::decode_path(s)).collect();
     // <account>.blob.core.windows.net: the account is the host's first label.
     let host_acct = c.h.get("host").and_then(|h| h.split('.').next()).map(String::from).unwrap_or_default();
@@ -140,6 +142,9 @@ pub async fn handle(State(envs): State<Envs>, mut req: Request) -> Response {
     if account.kind != config::AZURE {
         return err(400, "InvalidUri", &format!("{} is an S3 account: use the S3 port {}", account.account, crate::s3_port())).into(&version);
     }
+    // Azure stores "\" in a blob name as "/": a\b\c and a/b/c are the same blob.
+    c.raw_blob = blob.clone();
+    let blob = blob.replace('\\', "/");
     run(c, account, container, blob).await
 }
 
@@ -153,7 +158,7 @@ async fn authorize(c: &Call, a: &Account, container: &str, blob: &str, op: &str)
     let any = a.access.any_key;
     let keys: Vec<(String, String)> = a.access.keys.iter().map(|k| (k.clone(), config::key_value(&c.ctx, &a.account, k))).collect();
     if let Some(sig) = c.qm.get("sig") {
-        let signed_with = keys.iter().find(|(_, v)| !v.is_empty() && auth::azure_sas(&c.qm, &a.account, container, blob, v) == *sig).map(|(k, _)| k.clone());
+        let signed_with = keys.iter().find(|(_, v)| !v.is_empty() && (auth::azure_sas(&c.qm, &a.account, container, blob, v) == *sig || auth::azure_sas(&c.qm, &a.account, container, &c.raw_blob, v) == *sig)).map(|(k, _)| k.clone());
         let s = links::Seen {
             kind: "sas",
             sig: sig.clone(),
@@ -570,10 +575,10 @@ pub fn copy_source(src: &str, prefix: &str) -> (String, String, String) {
         // On an emulator port the endpoint repeats the account in the path (see ops::endpoint).
         let path = path.strip_prefix(&format!("{acct}/")).map(String::from).unwrap_or(path);
         let parts: Vec<String> = path.splitn(2, '/').map(auth::decode_path).collect();
-        return (acct.to_string(), parts.first().cloned().unwrap_or_default(), parts.get(1).cloned().unwrap_or_default());
+        return (acct.to_string(), parts.first().cloned().unwrap_or_default(), parts.get(1).cloned().unwrap_or_default().replace('\\', "/"));
     }
     let parts: Vec<String> = path.splitn(3, '/').map(auth::decode_path).collect();
-    (parts.first().cloned().unwrap_or_default(), parts.get(1).cloned().unwrap_or_default(), parts.get(2).cloned().unwrap_or_default())
+    (parts.first().cloned().unwrap_or_default(), parts.get(1).cloned().unwrap_or_default(), parts.get(2).cloned().unwrap_or_default().replace('\\', "/"))
 }
 
 /// One <Container> of List Containers. A private container has no <PublicAccess> element, as in Azure: the .NET SDK
@@ -607,6 +612,8 @@ mod copy_t {
         assert_eq!(super::copy_source("http://127.0.0.1:10000/e/stg-b/acme/c/d", "/e/stg-b"), s("acme", "c", "d"));
         assert_eq!(super::copy_source("http://acmedev.blob.stg-a.stuntman.local:20000/uploads/a/b.pdf", ""), s("acmedev", "uploads", "a/b.pdf"));
         assert_eq!(super::copy_source("http://acmedev.blob.stg-a.stuntman.local:10000/acmedev/uploads/a/b.pdf", ""), s("acmedev", "uploads", "a/b.pdf"));
+        // "\" is "/" in Azure, also in a copy source.
+        assert_eq!(super::copy_source("http://127.0.0.1:10000/acme/c/a%5Cb%5Cc.xml", ""), s("acme", "c", "a/b/c.xml"));
     }
 }
 
@@ -650,7 +657,7 @@ async fn list_blobs(c: &Call, a: &Account, container: &str) -> Response {
         }
         Err(e) => return err(500, "InternalError", &e.message).into(&c.version),
     };
-    let prefix = c.qm.get("prefix").cloned().unwrap_or_default();
+    let prefix = c.qm.get("prefix").cloned().unwrap_or_default().replace('\\', "/");
     let delim = c.qm.get("delimiter").cloned().unwrap_or_default();
     let marker = c.qm.get("marker").cloned().unwrap_or_default();
     let max: usize = c.qm.get("maxresults").and_then(|m| m.parse().ok()).unwrap_or(5000);

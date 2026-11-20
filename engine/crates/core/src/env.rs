@@ -43,6 +43,11 @@ pub struct EnvFile {
     pub created_by: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub cloned_from: String,
+    /// The apps that use this environment and the variables each one sets (KEY: value). A value may
+    /// name a connection setting (${QUEUES_CONNECTION}) or a secret (${secret:name}, ${secret:vault/name});
+    /// GET /api/env/<app> answers the KEY=VALUE lines.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub apps: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]

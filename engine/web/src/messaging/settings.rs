@@ -76,7 +76,8 @@ pub fn Settings() -> impl IntoView {
                             let (xk2, xn2) = (xk.clone(), xn.clone());
                             view! { <div class="row" style="gap:14px;padding:7px 0;border-bottom:1px solid var(--rule)">
                                 <span class="mono" style="width:260px">{name.clone()}</span><span class="small cap grow">{what}</span>
-                                {(!created.is_empty()).then(|| view! { <span class="small attn">{format!("made by {created}  ·  ")}</span>
+                                {(!created.is_empty()).then(|| view! { <span class="small attn" title=if sb && created != "admin client" { "Azure Service Bus does not create entities: there the app gets MessagingEntityNotFound. Create it in the infrastructure, then keep it in the YAML." } else { "" }>
+                                    {if sb && created != "admin client" { format!("created on first use by {created}: Azure will not create it  ·  ") } else { format!("made by {created}  ·  ") }}</span>
                                     <button class="link" on:click=move |_| { let (k, n, e) = (xk2.clone(), xn2.clone(), n1.clone()); leptos::task::spawn_local(async move { match api::send("POST", &format!("/services/{k}/accounts/{}/entities", enc(&n)), json!({"entity": e})).await { Ok(_) => ui::toast("Kept in the YAML"), Err(x) => ui::toast_err(x) } }); }>"Keep it in the YAML"</button> })}
                                 <button class="link plain" on:click=move |_| { let (k, n, e) = (xk.clone(), xn.clone(), n2.clone()); leptos::task::spawn_local(async move { match api::send("DELETE", &format!("/services/{k}/accounts/{}/entities/{}", enc(&n), enc(&e)), json!({})).await { Ok(_) => ui::toast("Removed with its messages"), Err(x) => ui::toast_err(x) } }); }>"Remove"</button>
                             </div> }

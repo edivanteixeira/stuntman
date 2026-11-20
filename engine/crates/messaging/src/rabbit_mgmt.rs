@@ -278,7 +278,14 @@ fn perm_json(user: &str, vhost: &str, p: &Permission) -> Value {
 
 // ---------------------------------------------------------------- handlers
 
-async fn put_vhost(State(e): State<Envs>, Path(v): Path<String>, headers: HeaderMap, body: Option<Json<Value>>) -> Response {
+/// A request body as JSON; empty (curl -X PUT with a JSON content type, as scripts send it) is none:
+/// RabbitMQ takes that, axum's Json would answer 400.
+fn js(raw: &axum::body::Bytes) -> Option<Json<Value>> {
+    if raw.iter().all(|b| b.is_ascii_whitespace()) { None } else { serde_json::from_slice(raw).ok().map(Json) }
+}
+
+async fn put_vhost(State(e): State<Envs>, Path(v): Path<String>, headers: HeaderMap, raw: axum::body::Bytes) -> Response {
+    let body = js(&raw);
     let name = vh(&v);
     let Some(ctx) = e.default_env() else { return StatusCode::SERVICE_UNAVAILABLE.into_response() };
     // RabbitMQ: a PUT without default_queue_type sets it back to classic.
@@ -318,7 +325,8 @@ async fn delete_vhost(State(e): State<Envs>, Path(v): Path<String>) -> Response 
     StatusCode::NO_CONTENT.into_response()
 }
 
-async fn put_policy(State(e): State<Envs>, Path((v, name)): Path<(String, String)>, body: Option<Json<Value>>) -> Response {
+async fn put_policy(State(e): State<Envs>, Path((v, name)): Path<(String, String)>, raw: axum::body::Bytes) -> Response {
+    let body = js(&raw);
     let Some((ctx, n)) = ns_of(&e, &vh(&v)) else { return not_found() };
     let Some(Json(b)) = body else { return bad("Bad Request") };
     let Some(pattern) = b["pattern"].as_str() else { return bad("[{key_missing,pattern}]") };
@@ -339,7 +347,8 @@ async fn put_policy(State(e): State<Envs>, Path((v, name)): Path<(String, String
     }), was_new)
 }
 
-async fn put_user(State(e): State<Envs>, Path(u): Path<String>, body: Option<Json<Value>>) -> Response {
+async fn put_user(State(e): State<Envs>, Path(u): Path<String>, raw: axum::body::Bytes) -> Response {
+    let body = js(&raw);
     let Some(ctx) = e.default_env() else { return StatusCode::SERVICE_UNAVAILABLE.into_response() };
     let b = body.map(|Json(b)| b).unwrap_or(json!({}));
     let mut all = users(&ctx);
@@ -381,7 +390,8 @@ async fn delete_user(State(e): State<Envs>, Path(u): Path<String>) -> Response {
     StatusCode::NO_CONTENT.into_response()
 }
 
-async fn put_permission(State(e): State<Envs>, Path((v, u)): Path<(String, String)>, body: Option<Json<Value>>) -> Response {
+async fn put_permission(State(e): State<Envs>, Path((v, u)): Path<(String, String)>, raw: axum::body::Bytes) -> Response {
+    let body = js(&raw);
     let Some((ctx, n)) = ns_of(&e, &vh(&v)) else { return bad("vhost_or_user_not_found") };
     let b = body.map(|Json(b)| b).unwrap_or(json!({}));
     let s = |k: &str| b[k].as_str().unwrap_or("").to_string();
@@ -392,7 +402,8 @@ async fn put_permission(State(e): State<Envs>, Path((v, u)): Path<(String, Strin
     }), was_new)
 }
 
-async fn put_queue(State(e): State<Envs>, Path((v, q)): Path<(String, String)>, body: Option<Json<Value>>) -> Response {
+async fn put_queue(State(e): State<Envs>, Path((v, q)): Path<(String, String)>, raw: axum::body::Bytes) -> Response {
+    let body = js(&raw);
     let Some((ctx, n)) = ns_of(&e, &vh(&v)) else { return not_found() };
     let b = body.map(|Json(b)| b).unwrap_or(json!({}));
     let args = b["arguments"].as_object().cloned().unwrap_or_default();
@@ -427,7 +438,8 @@ async fn delete_queue(State(e): State<Envs>, Path((v, q)): Path<(String, String)
     StatusCode::NO_CONTENT.into_response()
 }
 
-async fn put_exchange(State(e): State<Envs>, Path((v, x)): Path<(String, String)>, body: Option<Json<Value>>) -> Response {
+async fn put_exchange(State(e): State<Envs>, Path((v, x)): Path<(String, String)>, raw: axum::body::Bytes) -> Response {
+    let body = js(&raw);
     let Some((ctx, n)) = ns_of(&e, &vh(&v)) else { return not_found() };
     let kind = body.as_ref().and_then(|b| b["type"].as_str().map(String::from)).unwrap_or("direct".into());
     let was_new = n.entities.get(&x).and_then(|e| e.topic.as_ref()).is_none();
@@ -605,12 +617,12 @@ pub fn router(envs: Envs) -> Router {
             let name = vh(&v);
             match ns_of(&e, &name) { Some((_, n)) => Json(bindings_of(&n, &name)).into_response(), None => not_found() }
         }))
-        .route("/api/bindings/{vhost}/e/{ex}/q/{q}", post(|State(e): State<Envs>, Path((v, x, q)): Path<(String, String, String)>, body: Option<Json<Value>>| post_binding(e, v, x, q, false, body))
+        .route("/api/bindings/{vhost}/e/{ex}/q/{q}", post(|State(e): State<Envs>, Path((v, x, q)): Path<(String, String, String)>, raw: axum::body::Bytes| post_binding(e, v, x, q, false, js(&raw)))
             .get(|State(e): State<Envs>, Path((v, x, q)): Path<(String, String, String)>| async move {
                 let name = vh(&v);
                 match ns_of(&e, &name) { Some((_, n)) => Json(bindings_between(&n, &name, &x, &q, "queue")).into_response(), None => not_found() }
             }))
-        .route("/api/bindings/{vhost}/e/{ex}/e/{dest}", post(|State(e): State<Envs>, Path((v, x, d)): Path<(String, String, String)>, body: Option<Json<Value>>| post_binding(e, v, x, d, true, body))
+        .route("/api/bindings/{vhost}/e/{ex}/e/{dest}", post(|State(e): State<Envs>, Path((v, x, d)): Path<(String, String, String)>, raw: axum::body::Bytes| post_binding(e, v, x, d, true, js(&raw)))
             .get(|State(e): State<Envs>, Path((v, x, d)): Path<(String, String, String)>| async move {
                 let name = vh(&v);
                 match ns_of(&e, &name) { Some((_, n)) => Json(bindings_between(&n, &name, &x, &d, "exchange")).into_response(), None => not_found() }

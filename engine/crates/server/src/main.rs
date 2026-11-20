@@ -324,6 +324,13 @@ pub fn env_router(ctx: Ctx) -> Router {
         .route("/stream", get(stream))
         .route("/clients", get(|s: State<App>| async move { Json(json!({"clients": s.ctx.live.clients()})) }))
         .route("/tools", get(|| async move { Json(catalog(&srv().tools)) }))
+        // An app's KEY=VALUE lines (environment.yaml apps.<app>): `curl …/api/env/worker > .env`.
+        .route("/env/{app}", get(|s: State<App>, Path(app): Path<String>| async move {
+            match environments::app_env(&s.ctx, &app).await {
+                Ok(v) => ([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], v["env"].as_str().unwrap_or("").to_string()).into_response(),
+                Err(e) => (StatusCode::from_u16(e.status).unwrap_or(StatusCode::BAD_REQUEST), format!("{}\n", e.message)).into_response(),
+            }
+        }))
         .route("/env", get(|s: State<App>| async move {
             let f = s.ctx.state.file.read().unwrap().clone();
             Json(json!({"env": &*s.ctx.env, "host": &*s.ctx.host, "prefix": s.ctx.prefix(), "paused": f.paused, "pausedSince": f.paused_since,

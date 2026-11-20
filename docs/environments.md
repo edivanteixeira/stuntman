@@ -36,6 +36,7 @@ The answer lists the new environment's addresses: its MCP endpoint, its API, its
 | Push the expiry (default 24 h) | `extend_environment` | `POST /api/environments/{name}/extend` `{"by": "24h"}` |
 | Pause or resume | `pause_environment` | `POST /api/environments/{name}/pause` |
 | What the app sets (connection strings, URLs, `.env`) | `get_connections` | `GET /api/environments/{name}/connections[?base=…]` |
+| One app's variables, filled in (see below) | `get_app_env` | `GET /api/environments/{name}/apps/{app}`, or `GET /api/env/{app}` as `KEY=VALUE` lines |
 | Templates and their values | `list_environment_templates` | `GET /api/environments/templates` |
 | Delete, with everything in it | `delete_environment` | `DELETE /api/environments/{name}` |
 
@@ -43,6 +44,32 @@ The answer lists the new environment's addresses: its MCP endpoint, its API, its
 current expiry.
 
 A **paused** environment answers 503 on every service, stores nothing, and keeps its state.
+
+### The apps of an environment
+
+`apps` in `environment.yaml` (or `set_environment` with `apps`) lists the apps that use the environment and the
+variables each one sets. A value can name a connection setting (`${QUEUES_CONNECTION}`, any key of
+`get_connections`) or a secret (`${secret:name}`, `${secret:vault/name}`):
+
+```yaml
+apps:
+  api:
+    BUS: ${QUEUES_CONNECTION}
+    KEYVAULT_URL: ${KEYVAULT_URL}
+    IDENTITY_ENDPOINT: http://localhost:8025/msi/token
+    IDENTITY_HEADER: api-mi
+  worker:
+    BUS: ${QUEUES_CONNECTION}
+    SIGNING_PASSWORD: ${secret:acme-kv/signing-password}
+    IDENTITY_ENDPOINT: http://localhost:8025/msi/token
+    IDENTITY_HEADER: worker-mi
+    SSL_CERT_FILE: /tmp/stuntman-ca-bundle.pem
+```
+
+`curl -s http://localhost:8025/api/env/worker > .env` gives the app its lines; `/e/<name>/api/env/worker` reads another
+environment. A name that is not known stays as written and is listed under `missing` in `get_app_env`. Secret reads go
+to the vault's access log as `app <name>`. `/api/env/{app}` needs sign-in like the rest of `/api` when it is on. The
+apps come with the environment when it is cloned or made from a template.
 
 ## How a request finds its environment
 
@@ -155,7 +182,7 @@ answers 404 and the name is free for a new one, which starts clean. Expiry (chec
 
 A new version opens every environment in `/data` as it was, with its state. Database changes are migrations that
 only add tables and columns, and new `environment.yaml` keys are optional: an older file reads as before. Pin the
-image tag (`edivanteixeira/stuntman:0.11.1`) and read the release notes before you move it.
+image tag (`edivanteixeira/stuntman:0.11.2`) and read the release notes before you move it.
 
 ## Sizing
 

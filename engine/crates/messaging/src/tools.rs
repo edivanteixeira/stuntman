@@ -85,7 +85,36 @@ pub async fn ns_view(ctx: &Ctx, n: &config::Namespace) -> Value {
         "file": config::rel_file(&n.namespace), "yaml": config::text(ctx, &n.namespace), "settings": n, "port": crate::port(),
         "managementConnection": if n.kind == config::SB { json!(connection(ctx, n).replace(&format!(":{};", crate::port()), &format!(":{};", crate::mgmt_port()))) } else { Value::Null },
         "managementPort": if n.kind == config::SB { json!(crate::mgmt_port()) } else { Value::Null },
-        "bindError": crate::amqp::BIND_ERROR.lock().unwrap().clone(), "managementBindError": crate::amqp::MGMT_BIND_ERROR.lock().unwrap().clone()})
+        "bindError": crate::amqp::BIND_ERROR.lock().unwrap().clone(), "managementBindError": crate::amqp::MGMT_BIND_ERROR.lock().unwrap().clone(),
+        "warnings": warnings(ctx, n).await})
+}
+
+/// What works here but not on the real provider, or hides a bug: entities the app made on first use
+/// (Azure Service Bus does not create them) and entities two connections receive from.
+pub async fn warnings(ctx: &Ctx, n: &config::Namespace) -> Vec<Value> {
+    let mut out = vec![];
+    if n.kind == config::SB {
+        for (name, e) in &n.entities {
+            let by = e.queue.as_ref().map(|q| q.created_by.clone()).or(e.topic.as_ref().map(|t| t.created_by.clone())).unwrap_or_default();
+            if !by.is_empty() && by != "admin client" {
+                out.push(json!({"kind": "created_on_first_use", "namespace": n.namespace, "entity": name, "by": by,
+                    "message": format!("{name} was created when {by} first used it (auto create). Azure Service Bus does not create entities: there the app gets MessagingEntityNotFound. Create it in the infrastructure (or with the admin client), then “Keep it in the YAML”.")}));
+            }
+        }
+    }
+    for (holder, clients) in broker::shared_receivers(ctx, &n.namespace).await {
+        out.push(json!({"kind": "several_receivers", "namespace": n.namespace, "entity": holder, "clients": clients,
+            "message": format!("{} connections receive from {holder}: each gets part of the messages. If only one app should consume it, stop the others ({}).", clients.len(), clients.join("; "))}));
+    }
+    out
+}
+
+/// The short view (?summary=1): what a script or an agent needs to connect, and the counts.
+pub async fn ns_summary(ctx: &Ctx, n: &config::Namespace) -> Value {
+    let w = warnings(ctx, n).await;
+    json!({"namespace": n.namespace, "kind": n.kind, "connection": connection(ctx, n), "port": crate::port(),
+        "managementPort": if n.kind == config::SB { json!(crate::mgmt_port()) } else { Value::Null },
+        "queues": n.queues(), "topics": n.topics(), "counts": broker::counts(ctx, &n.namespace, "").await, "warnings": w.len()})
 }
 
 fn service(a: &Args) -> Result<String, ApiError> {
@@ -166,14 +195,24 @@ fn find_holder(n: &config::Namespace, entity: &str) -> Result<String, ApiError> 
 
 fn queues() -> Vec<Tool> {
     vec![
-        Tool::new("list_namespaces", "Namespaces with kind (azure-service-bus, rabbitmq), entities (queues, topics and their subscriptions or bindings), counters per state and the connection string.", |ctx, _a| async move {
+        Tool::new("list_namespaces", "Namespaces with kind (azure-service-bus, rabbitmq), entities (queues, topics and their subscriptions or bindings), counters per state and the connection string. summary=true: only ports, connection strings and counts.", |ctx, a| async move {
+            let short = a.bool("summary").unwrap_or(false);
             let mut out = vec![];
             for n in config::list(&ctx) {
-                out.push(ns_view(&ctx, &n).await);
+                out.push(if short { ns_summary(&ctx, &n).await } else { ns_view(&ctx, &n).await });
             }
             Ok(json!({"namespaces": out, "port": crate::port()}))
         })
+        .param("summary", "true: ports, connection strings and counts only")
         .route("GET", "/messaging/namespaces"),
+        Tool::new("list_messaging_warnings", "What works here but would break on the real provider, or hides a bug: Service Bus entities the app created on first use (auto create; Azure answers MessagingEntityNotFound), and queues or subscriptions that more than one connection receives from (each gets part of the messages).", |ctx, _a| async move {
+            let mut out = vec![];
+            for n in config::list(&ctx) {
+                out.extend(warnings(&ctx, &n).await);
+            }
+            Ok(json!({"warnings": out}))
+        })
+        .route("GET", "/messaging/warnings"),
         Tool::new("list_queue_messages", "Messages of a queue, topic or subscription, newest first; state = active | scheduled | locked | dead_letter | completed.", |ctx, a| async move {
             let ns = ns_of(&a)?;
             let n = config::get(&ctx, &ns)?;

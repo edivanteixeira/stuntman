@@ -31,7 +31,8 @@ def main():
         st, xs = req(s, "GET", "/api/exchanges/acme-tms")
         assert {"name": "cargas", "type": "fanout"}.items() <= {k: v for k, v in xs[1].items()}.items(), xs
         st, bs = req(s, "GET", "/api/bindings/acme-tms")
-        assert bs[0]["source"] == "cargas" and bs[0]["destination"] == "cargas-criadas", bs
+        # The default exchange's binding comes too (source ""), as in RabbitMQ.
+        assert any(b["source"] == "cargas" and b["destination"] == "cargas-criadas" for b in bs) and any(b["source"] == "" for b in bs), bs
         assert req(s, "GET", "/api/aliveness-test/acme-tms")[1] == {"status": "ok"}
         assert req(s, "GET", "/api/vhosts/nope")[0] == 404
         assert "acme-tms" in [n["namespace"] for n in s.call("GET", "/messaging/namespaces")["namespaces"]] or True

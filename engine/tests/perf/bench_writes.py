@@ -8,7 +8,31 @@ fast machine, run Stuntman on Linux with LD_PRELOAD=slow_fsync.so (see run_slow_
 """
 import http.client, json, sys, threading, time, urllib.parse, urllib.request
 
-YAML = "service:\n  name: bench\n  title: Bench\nroutes:\n  - route: GET /ping\n    decide:\n      - answer: ok\nanswers:\n  - name: ok\n    status: 200\n    body: '{\"ok\": true}'\n"
+YAML = """service:
+  name: bench
+  title: Bench
+routes:
+  - route: GET /ping
+    decide:
+      - answer: ok
+  - route: GET /route/v1/driving/{coords}
+    decide:
+      - answer: route
+answers:
+  - name: ok
+    status: 200
+    body: '{"ok": true}'
+  - name: route
+    status: 200
+    template: handlebars
+    headers:
+      Content-Type: application/json
+      X-Request-Id: "{{randomValue length=12 type='ALPHANUMERIC'}}"
+    body: |
+      {"code": "Ok", "coordinates": "{{request.pathSegments.[3]}}", "waypoints": [{{#each request.query.stop}}{{#if @index}}, {{/if}}{"name": "{{this}}", "hint": "{{upper this}}"}{{/each}}],
+       "routes": [{"distance": {{randomInt lower=1000 upper=90000}}, "duration": {{randomInt lower=60 upper=7200}}, "legs": [],
+       "weight_name": "routability", "geometry": "{{request.query.geometries}}", "at": "{{now format='yyyy-MM-dd HH:mm:ss'}}"}]}
+"""
 
 
 def put_plugin(api):

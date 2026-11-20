@@ -5,7 +5,7 @@ A call must cost about the same as on an empty folder.
 
 It adds the services through the API, writes the history straight into the environment's
 duble.sqlite (much faster than 300,000 calls), then measures one client without and with a
-route, and two read calls. --empty measures the folder as it is, for a baseline. --max-ms N fails when the p50 of a call without a route is above N ms.
+route, with a Handlebars template, and two read calls. --empty measures the folder as it is, for a baseline. --max-ms N fails when the p50 of a call without a route is above N ms.
 """
 import glob, json, os, sqlite3, sys, time, urllib.request
 
@@ -57,7 +57,7 @@ def main():
         db = seed_history(data)
         print(f"{SERVICES} services, {CALLS} calls in {db} ({os.path.getsize(db) >> 20} MB)", flush=True)
     rows = []
-    for name, path in [("HTTP without a route", "/bench-none/x"), ("HTTP with a route", "/bench/ping"), ("read: one call", "/api/apis/calls?limit=1"), ("read: services", "/api/apis/services")]:
+    for name, path in [("HTTP without a route", "/bench-none/x"), ("HTTP with a route", "/bench/ping"), ("HTTP with a template", "/bench/route/v1/driving/-46.63,-23.55;-46.65,-23.56?geometries=polyline&stop=a&stop=b"), ("read: one call", "/api/apis/calls?limit=1"), ("read: services", "/api/apis/services")]:
         rate, p50 = run(apis if path[1:4] != "api" else api, path, 1, 3.0)
         rows.append((name, p50))
         print(f"{name:22s} 1 client: {rate:8.0f} req/s   p50 {p50:6.2f} ms", flush=True)

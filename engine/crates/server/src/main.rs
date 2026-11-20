@@ -295,6 +295,11 @@ async fn main() {
     // Connection by connection (as the provider ports): a forced SMS or WhatsApp failure can reset
     // or close the socket the app sent on. serve returns only when the port cannot be bound.
     static BIND: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    // The same over HTTPS (Test CA): for clients that take only an https authority, such as MSAL.
+    let https = env("STUNTMAN_HTTPS_PORT", "8445").parse().unwrap_or(8445u16);
+    if https > 0 {
+        tokio::spawn(stuntman_apis::tls::serve_main(https, root_router.clone()));
+    }
     stuntman_core::netserve::serve(port, root_router, "http", &BIND).await;
     panic!("http port: {}", BIND.lock().unwrap().clone().unwrap_or_default());
 }

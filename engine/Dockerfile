@@ -48,10 +48,10 @@ ENV STUNTMAN_DATA=/data \
     STUNTMAN_FTP_PASSIVE_HOST=127.0.0.1
 USER stuntman
 VOLUME /data
-# UI/API/MCP · SMTP · webhooks · HTTP APIs (+TLS) · Key Vault · AMQP (+TLS) · Blob · S3 · OTLP grpc/http
+# UI/API/MCP (+TLS) · SMTP · webhooks · HTTP APIs (+TLS) · Key Vault · AMQP (+TLS) · Blob · S3 · OTLP grpc/http
 # · LDAP · FTP (+passive range) · SFTP · IMAP · POP3 · Kafka · Schema Registry · RabbitMQ management · ActiveMQ (OpenWire) · GELF/StatsD (udp)
 # · Service Bus management (5300, as the official emulator; also AMQP)
-EXPOSE 8025 2525 8027 8028 8443 8444 5673 5671 5300 10000 9000 4317 4318 \
+EXPOSE 8025 8445 2525 8027 8028 8443 8444 5673 5671 5300 10000 9000 4317 4318 \
        3389 2121 30000-30009 2222 1143 1110 9092 8081 8085 4567 15672 61616 12201/udp 8125/udp
 HEALTHCHECK --interval=30s --timeout=5s CMD ["/bin/bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8025 && printf 'GET /api/env HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q 200 <&3"]
 ENTRYPOINT ["/usr/bin/tini", "--", "stuntman"]

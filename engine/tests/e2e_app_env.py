@@ -1,10 +1,10 @@
 """What an app gets from Stuntman to start, and what warns before production: an app's KEY=VALUE
-lines with a secret filled in (GET /api/env/<app>), the CA bundle, Service Bus entities made on
+lines with a secret filled in (GET /api/env/<app>), the CA bundle, Entra over HTTPS, Service Bus entities made on
 first use, two connections on one queue, and the short namespace list.
 
     cargo build -p stuntman && python3 tests/e2e_app_env.py
 """
-import json, urllib.request
+import json, ssl, tempfile, urllib.request
 
 from azure.servicebus import ServiceBusClient, ServiceBusMessage
 
@@ -40,6 +40,13 @@ def main():
         st, pem = text(s, "/ca-bundle.pem")
         _, ca = text(s, "/test-ca.pem")
         assert st == 200 and ca.strip() in pem and pem.count("BEGIN CERTIFICATE") > 1, pem[-400:]
+        # ---- the main port over HTTPS (Test CA): Entra's discovery names https endpoints (MSAL takes only https)
+        f = tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False); f.write(pem); f.close()
+        s.call("PUT", "/identity/providers/entra", {"tenant": "contoso-stg", "flavour": "entra-v2"})
+        base = f"https://localhost:{s.HTTPS_PORT}"
+        with urllib.request.urlopen(f"{base}/login/contoso-stg/v2.0/.well-known/openid-configuration", context=ssl.create_default_context(cafile=f.name), timeout=30) as r:
+            d = json.loads(r.read())
+        assert d["issuer"].startswith(base) and d["authorization_endpoint"].startswith(f"{base}/login/contoso-stg/oauth2/v2.0/authorize"), d
         conns = s.call("GET", f"/environments/{env}/connections")
         assert any(i["key"] == "STUNTMAN_CA_BUNDLE" for i in conns["items"]), conns
 

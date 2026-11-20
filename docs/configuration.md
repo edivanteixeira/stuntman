@@ -18,6 +18,7 @@ default; most setups change nothing.
 | `STUNTMAN_WEB` | `web/dist` (`/app/web` in Docker) | the built screen |
 | `STUNTMAN_PLUGINS` | `plugins` next to the engine (`/app/plugins` in Docker) | the plugin catalog |
 | `STUNTMAN_PORT` | `8025` | screen, `/api`, `/mcp`, SMS, WhatsApp, SendGrid, identity, AI models, product events, GELF over HTTP |
+| `STUNTMAN_HTTPS_PORT` | `8445` | the same as `STUNTMAN_PORT` over TLS (Test CA): for sign-in libraries that take only an `https` authority, such as MSAL in a browser; `0` turns it off |
 | `STUNTMAN_SMTP_PORT` | `2525` | SMTP |
 | `STUNTMAN_HOOKS_PORT` | `8027` | webhook inboxes |
 | `STUNTMAN_APIS_PORT` | `8028` | HTTP API plugins |
@@ -55,6 +56,7 @@ The project was first called Dublê: `DUBLE_*` variables still work when the `ST
 | Port | What answers |
 |---|---|
 | `8025` | screen, HTTP API (`/api`), MCP (`/mcp`), SMS, WhatsApp, SendGrid, identity (OIDC, SAML, Bot Framework), managed identity, AI models, product events, GELF over HTTP (`/gelf`) |
+| `8445` | the same as `8025` over TLS (Test CA) |
 | `2525` | SMTP (STARTTLS) |
 | `8027` | webhook inboxes (`/in/<inbox>`) |
 | `8028` / `8443` | HTTP API plugins / over TLS |
@@ -110,7 +112,7 @@ in git and start Stuntman from it.
 
 ## The Stuntman Test CA
 
-TLS endpoints (Key Vault, HTTP plugins on `:8443`, AMQPS, the HTTPS side of `:5300`, FTPS) use certificates signed by
+TLS endpoints (the main port over HTTPS on `:8445`, Key Vault, HTTP plugins on `:8443`, AMQPS, the HTTPS side of `:5300`, FTPS) use certificates signed by
 the Stuntman Test CA, created on first start in `data/keys/test-ca.pem`. Download it in the format your platform
 takes (none of them holds the private key):
 

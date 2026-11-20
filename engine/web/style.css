@@ -424,7 +424,8 @@ button.chip:hover { border-color: var(--border); }
 button.chip.on { background: var(--surface); border-color: var(--ink); }
 
 /* Messaging (M1) */
-.mtable { border-top: 1px solid var(--rule); }
+.mtable { border-top: 1px solid var(--rule); overflow-x: auto; }
+.mtable > .mhead, .mtable > .mrow { min-width: 720px; }
 .mtable .mhead { display: flex; gap: 12px; padding: 8px 24px; font: 600 10.5px var(--sans); letter-spacing: .08em; color: var(--caption); border-bottom: 1px solid var(--rule); }
 .mtable .mrow { display: flex; gap: 12px; align-items: flex-start; padding: 10px 24px; border-bottom: 1px solid var(--rule); cursor: pointer; font-size: 13px; }
 .mtable .mrow:hover { background: var(--soft); }

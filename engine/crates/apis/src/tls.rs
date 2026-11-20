@@ -161,3 +161,43 @@ pub async fn serve(port: u16, envs: Envs, app: Router) {
         });
     }
 }
+
+/// The main port (UI, API, MCP, identity) over HTTPS with a Test CA certificate for the name the
+/// client asked (SNI, else localhost). Browser sign-in libraries (MSAL) take only an https authority;
+/// the pages and tokens name https://<host>:<port> because the request says it came by https.
+pub async fn serve_main(port: u16, app: Router) {
+    static BIND: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    let l = match TcpListener::bind(("0.0.0.0", port)).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("HTTPS: port {port}: {e}");
+            *BIND.lock().unwrap() = Some(format!("port {port}: {e}"));
+            return;
+        }
+    };
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    loop {
+        let Ok((sock, addr)) = l.accept().await else { continue };
+        let (app, provider) = (app.clone(), provider.clone());
+        tokio::spawn(async move {
+            let Ok(start) = tokio_rustls::LazyConfigAcceptor::new(rustls::server::Acceptor::default(), sock).await else { return };
+            let sni = start.client_hello().server_name().unwrap_or("localhost").to_string();
+            let Some(leaf) = ca::get().leaf(&sni) else { return };
+            let Ok(b) = rustls::ServerConfig::builder_with_provider(provider).with_safe_default_protocol_versions() else { return };
+            let mut cfg = b.with_no_client_auth().with_cert_resolver(Arc::new(Fixed(leaf)));
+            cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+            let Ok(tls) = start.into_stream(Arc::new(cfg)).await else { return };
+            let svc = hyper::service::service_fn(move |mut req: hyper::Request<hyper::body::Incoming>| {
+                req.extensions_mut().insert(Kill::new());
+                req.extensions_mut().insert(Remote(addr));
+                req.headers_mut().entry("x-forwarded-proto").or_insert(hyper::header::HeaderValue::from_static("https"));
+                let app = app.clone();
+                async move {
+                    use tower::ServiceExt;
+                    app.oneshot(req.map(Body::new)).await
+                }
+            });
+            let _ = hyper::server::conn::http1::Builder::new().keep_alive(true).serve_connection(TokioIo::new(tls), svc).await;
+        });
+    }
+}

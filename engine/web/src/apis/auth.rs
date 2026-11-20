@@ -153,7 +153,7 @@ pub fn Auth() -> impl IntoView {
                         }.into_any()
                     }}
                 </div></div>
-                <div class="side yaml" style="width:430px">
+                <div class="side yaml wide">
                     <div class="row"><span class="caps">{move || s(&saved.get(), "file")}</span><span class="small ok">"live"</span></div>
                     <pre class="yaml envyaml" style="margin-top:10px">{move || {
                         let text = s(&saved.get(), "yaml");

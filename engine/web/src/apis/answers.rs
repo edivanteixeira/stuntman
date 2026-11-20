@@ -121,7 +121,7 @@ pub fn Answers() -> impl IntoView {
                         view! {
                             <input class="input" style="font-size:16px;font-weight:600;width:320px" prop:value=s(&d, "name") on:change=move |e| draft.update(|x| x["name"] = json!(event_target_value(&e).trim().replace(' ', "_")))/>
                             <div class="small cap" style="margin:4px 0 14px">{format!("{st}  ·  {}", if s(&d, "note").is_empty() { "a named answer".to_string() } else { s(&d, "note") })}</div>
-                            <div class="row"><span style="width:80px">"Status"</span>
+                            <div class="row" style="flex-wrap:wrap;row-gap:8px"><span style="width:80px">"Status"</span>
                                 <select class="select" on:change=move |e| draft.update(|x| x["status"] = json!(event_target_value(&e).parse::<u64>().unwrap_or(200)))>
                                     {STATUSES.iter().map(|(c, l)| { let on = *c as i64 == st; view! { <option value=c.to_string() selected=on>{*l}</option> } }).collect_view()}</select>
                                 <label class="check" style="margin-left:14px"><input type="checkbox" prop:checked=d["raw"] == true on:change=move |e| draft.update(|x| x["raw"] = json!(event_target_checked(&e)))/>"Malformed on purpose (raw, not checked)"</label></div>
@@ -199,14 +199,16 @@ pub fn Answers() -> impl IntoView {
                     <div class="caps" style="margin:24px 0 10px">"Data the answers read"</div>
                     {move || tables.get().as_object().cloned().unwrap_or_default().into_iter().map(|(t, rows)| {
                         let rows = rows.as_array().cloned().unwrap_or_default();
-                        let cols: Vec<String> = rows.first().and_then(|r| r.as_object()).map(|o| o.keys().filter(|k| *k != "base64" && *k != "sha256").cloned().collect()).unwrap_or_default();
+                        let mut cols: Vec<String> = rows.first().and_then(|r| r.as_object()).map(|o| o.keys().filter(|k| *k != "base64" && *k != "sha256").cloned().collect()).unwrap_or_default();
+                        // The fields that tell rows apart come first (only three fit the panel).
+                        cols.sort_by_key(|c| ["name", "title", "email", "cpf", "id", "slug"].iter().position(|k| k == c).unwrap_or(99));
                         let t2 = t.clone();
                         let add = add_row.clone();
                         let is_cpf = cols.iter().any(|c| c == "cpf");
                         let cols2 = cols.clone();
                         view! {
                             <div class="row"><span class="grow">{t.clone()}</span><span class="small cap">{format!("{} entries", rows.len())}</span></div>
-                            <table class="kv2" style="margin:4px 0 6px 12px">{rows.iter().take(8).map(|r| view! { <tr>{cols.iter().map(|c| view! { <td class="mono">{s(r, c)}</td> }).collect_view()}</tr> }).collect_view()}</table>
+                            <table class="kv2 data" style="margin:4px 0 6px 12px;width:calc(100% - 12px)">{rows.iter().take(8).map(|r| view! { <tr>{cols.iter().take(3).map(|c| { let (v, tv) = (s(r, c), s(r, c)); view! { <td class="mono" title=tv>{v}</td> } }).collect_view()}</tr> }).collect_view()}</table>
                             {(rows.len() > 8).then(|| view! { <div class="small cap" style="margin-left:12px">{format!("… and {} more", rows.len() - 8)}</div> })}
                             <button class="link" style="margin:0 0 14px 12px;font-size:13px" on:click=move |_| {
                                 let (t, add, cols) = (t2.clone(), add.clone(), cols2.clone());

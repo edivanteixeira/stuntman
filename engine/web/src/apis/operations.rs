@@ -209,7 +209,7 @@ pub fn Operations() -> impl IntoView {
                         let names2 = names.clone();
                         view! {
                             <div class="input mono" style="font-size:14px;font-weight:500;width:auto;max-width:720px;display:flex;align-items:center">{op.clone()}</div>
-                            <div class="row" style="margin:8px 0 14px"><span class="small attn">{format!("{} calls today", api::thousands(n_today))}</span>
+                            <div class="row" style="margin:8px 0 14px"><span class="small attn">{format!("{} call{} today", api::thousands(n_today), if n_today == 1 { "" } else { "s" })}</span>
                                 <label class="check"><input type="checkbox" prop:checked=d["billable"] == true on:change=move |e| draft.update(|x| x["billable"] = json!(event_target_checked(&e)))/>"billable"</label></div>
                             {card(1, "Receive", view! { <div class="stepsum">{format!("SOAP {} envelope{}{}", s(&o, "version"),
                                 if o["validate"] == true { format!(" checked against {}", s(&d, "input")) } else { " (types not checked)".to_string() },
@@ -253,7 +253,7 @@ pub fn Operations() -> impl IntoView {
                         }.into_any()
                     }}
                 </div>
-                <div class="side yaml" style="width:430px">
+                <div class="side yaml wide">
                     <div class="row"><span class="caps grow">{move || s(&plugin.get(), "file").to_uppercase()}</span><span class="small ok">"live"</span>
                         <button class="link" style="margin-left:10px" on:click=move |_| { let on = !yaml_mode.get_untracked(); yaml_mode.set(on); if on { yaml_text.set(s(&plugin.get_untracked(), "yaml")); } }>{move || if yaml_mode.get() { "Back to the steps" } else { "Edit the YAML" }}</button></div>
                     {move || if yaml_mode.get() {

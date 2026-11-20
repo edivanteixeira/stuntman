@@ -3,7 +3,7 @@
 
 use leptos::prelude::*;
 use leptos_router::{
-    components::{Redirect, Route, Router, Routes},
+    components::{ParentRoute, Redirect, Route, Router, Routes},
     hooks::{use_location, use_navigate},
     path,
 };
@@ -76,16 +76,21 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/inboxes/webhooks/:name") view=webhook::deliveries::Deliveries/>
                     <Route path=path!("/inboxes/webhooks/:name/behaviour") view=webhook::behaviour::Behaviour/>
                     <Route path=path!("/inboxes/:address") view=|| view! { <email::area::Area><email::inboxes::Inboxes/></email::area::Area> }/>
-                    <Route path=path!("/apis") view=|| view! { <apis::area::Area><apis::calls::Calls/></apis::area::Area> }/>
                     <Route path=path!("/apis/unmatched") view=apis::unmatched::Unmatched/>
-                    <Route path=path!("/apis/new") view=|| view! { <apis::area::Area><apis::area::NewService/></apis::area::Area> }/>
-                    <Route path=path!("/apis/:service") view=|| view! { <apis::area::Area><apis::calls::Calls/></apis::area::Area> }/>
-                    <Route path=path!("/apis/:service/calls") view=|| view! { <apis::area::Area><apis::calls::Calls/></apis::area::Area> }/>
-                    <Route path=path!("/apis/:service/routes") view=|| view! { <apis::area::Area><apis::operations::RoutesOrOperations/></apis::area::Area> }/>
-                    <Route path=path!("/apis/:service/review") view=|| view! { <apis::area::Area><apis::review::Review/></apis::area::Area> }/>
-                    <Route path=path!("/apis/:service/answers") view=|| view! { <apis::area::Area><apis::answers::Answers/></apis::area::Area> }/>
-                    <Route path=path!("/apis/:service/pages") view=|| view! { <apis::area::Area><apis::pages::Pages/></apis::area::Area> }/>
-                    <Route path=path!("/apis/:service/tools") view=|| view! { <apis::area::Area><apis::mcp::Tools/></apis::area::Area> }/>
+                    // One rail for every tab: it keeps its filter and scroll while you move between tabs.
+                    <ParentRoute path=path!("/apis") view=apis::area::Area>
+                        <Route path=path!("") view=apis::calls::Calls/>
+                        <Route path=path!("new") view=apis::area::NewService/>
+                        <Route path=path!(":service") view=apis::calls::Calls/>
+                        <Route path=path!(":service/calls") view=apis::calls::Calls/>
+                        <Route path=path!(":service/routes") view=apis::operations::RoutesOrOperations/>
+                        <Route path=path!(":service/review") view=apis::review::Review/>
+                        <Route path=path!(":service/answers") view=apis::answers::Answers/>
+                        <Route path=path!(":service/pages") view=apis::pages::Pages/>
+                        <Route path=path!(":service/tools") view=apis::mcp::Tools/>
+                        <Route path=path!(":service/auth") view=apis::auth::Auth/>
+                        <Route path=path!(":service/settings") view=apis::settings::Settings/>
+                    </ParentRoute>
                     <Route path=path!("/ai") view=ai::Calls/>
                     <Route path=path!("/ai/rules") view=ai::Rules/>
                     <Route path=path!("/ai/spend") view=ai::Spend/>
@@ -101,8 +106,6 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/catalog") view=catalog::Store/>
                     <Route path=path!("/catalog/import") view=catalog::Import/>
                     <Route path=path!("/catalog/:plugin") view=catalog::PluginPage/>
-                    <Route path=path!("/apis/:service/auth") view=|| view! { <apis::area::Area><apis::auth::Auth/></apis::area::Area> }/>
-                    <Route path=path!("/apis/:service/settings") view=|| view! { <apis::area::Area><apis::settings::Settings/></apis::area::Area> }/>
                     <Route path=path!("/services/api") view=|| view! { <Redirect path="/apis/new"/> }/>
                     <Route path=path!("/identity") view=identity::signins::SignIns/>
                     <Route path=path!("/identity/users") view=identity::users::Users/>

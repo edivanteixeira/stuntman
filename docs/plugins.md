@@ -307,7 +307,8 @@ An answer with `template: handlebars` renders its body as a WireMock response te
 ![The route editor with the YAML beside it](images/screen-route-editor.png)
 
 The web UI edits the same file. Every change is validated before it is saved, and the YAML beside the editor shows
-the exact lines that changed. Saving from the web UI or a tool rewrites the file, so YAML comments are not kept; edit
+the exact lines that changed (on a window narrower than 1440 px the editor takes that room; Settings shows the whole
+file). Saving from the web UI or a tool rewrites the file, so YAML comments are not kept; edit
 by hand when comments matter. A save from the web UI or a tool is used by the next call; a file edited by hand is
 read again within a second.
 

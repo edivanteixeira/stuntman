@@ -217,7 +217,7 @@ pub fn Routes() -> impl IntoView {
                                 sel.set(k2.clone()); saved.set(r.clone()); draft.set(r.clone()); trial.set(Value::Null); try_body.set(sample(&r, &plugin.get_untracked()["plugin"]));
                             }>
                             <span class="mono small cap" style="width:40px">{m}</span>
-                            <div class="grow"><div class="mono small">{path}</div>{(n > 0 || r["token"] == true).then(|| view! { <div class="small cap">{if r["token"] == true { "token (client credentials)".to_string() } else { format!("{n} calls today") }}</div> })}</div></div> }
+                            <div class="grow"><div class="mono small">{path}</div>{(n > 0 || r["token"] == true).then(|| view! { <div class="small cap">{if r["token"] == true { "token (client credentials)".to_string() } else { format!("{n} call{} today", if n == 1 { "" } else { "s" }) }}</div> })}</div></div> }
                     }).collect_view()}
                     <button class="link add" on:click=new_route>"+ Add route"</button>
                     {move || { let sp = plugin.get()["plugin"]["spec"].clone(); (!sp.is_null()).then(|| {
@@ -280,7 +280,7 @@ pub fn Routes() -> impl IntoView {
                         let mut next = || { n += 1; n };
                         view! {
                             <div class="row"><input class="input mono" style="width:520px;font-size:15px;font-weight:500" prop:value=s(&d, "route") on:change=move |e| set("/route", json!(event_target_value(&e).trim().to_string()))/></div>
-                            <div class="small attn" style="margin:6px 0 16px">{format!("{n_today} calls today{}", if d["billable"] == true { "  ·  billable" } else { "" })}
+                            <div class="small attn" style="margin:6px 0 16px">{format!("{n_today} call{} today{}", if n_today == 1 { "" } else { "s" }, if d["billable"] == true { "  ·  billable" } else { "" })}
                                 <label class="check" style="margin-left:14px"><input type="checkbox" prop:checked=d["billable"] == true on:change=move |e| set("/billable", if event_target_checked(&e) { json!(true) } else { Value::Null })/>"billable"</label></div>
                             {card("receive", next(), "Receive", rcv_sum, if token { ().into_any() } else { view! {
                                 <Show when=move || step.get() == "receive">
@@ -368,7 +368,7 @@ pub fn Routes() -> impl IntoView {
                         }.into_any()
                     }}
                 </div>
-                <div class="side yaml" style="width:430px">
+                <div class="side yaml wide">
                     <div class="row"><span class="caps grow">{move || s(&plugin.get(), "file")}</span><span class="small ok">"live"</span>
                         <button class="link" style="margin-left:10px" on:click=move |_| { let on = !yaml_mode.get_untracked(); yaml_mode.set(on); if on { yaml_text.set(s(&plugin.get_untracked(), "yaml")); } }>{move || if yaml_mode.get() { "Back to the steps" } else { "Edit the YAML" }}</button></div>
                     {move || if yaml_mode.get() {

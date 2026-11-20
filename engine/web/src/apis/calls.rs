@@ -18,7 +18,8 @@ pub fn Calls() -> impl IntoView {
     let nav = use_navigate();
     let qm = use_query_map();
     let pm = use_params_map();
-    let since = RwSignal::new("15m".to_string());
+    // The range lives in the rail (the area), so it survives a trip to another tab or service.
+    let since = use_context::<super::Range>().map(|r| r.0).unwrap_or_else(|| RwSignal::new("15m".to_string()));
     let q = RwSignal::new(String::new());
     let list = services();
     let calls = RwSignal::new(Vec::<Value>::new());
@@ -69,7 +70,7 @@ pub fn Calls() -> impl IntoView {
                         let c = cur.get();
                         (!c.is_null()).then(|| view! {
                             <div class="crumbs row"><span class="strong" style="font-size:15px">{move || match since.get().as_str() { "1h" => "Last hour", "1d" => "Last 24 hours", "5m" => "Last 5 minutes", _ => "Last 15 minutes" }}</span>
-                                <span class="small attn" style="margin-left:14px">{format!("{} calls{}", api::n(&c, "callsToday"),
+                                <span class="small attn" style="margin-left:14px">{format!("{} today{}", api::thousands(api::n(&c, "callsToday")),
                                     if c["billable"] == true { format!("  ·  {} billable  ·  about ${:.2} at the price you set", api::n(&c, "billableToday"), c["costToday"].as_f64().unwrap_or(0.0)) } else { String::new() })}</span></div>
                         })
                     }}
@@ -89,9 +90,10 @@ pub fn Calls() -> impl IntoView {
                         }}
                     </div>
                     {move || (calls.get().is_empty()).then(|| view! {
-                        <div class="callout" style="margin:20px 24px"><div class="t">{format!("No API calls in {}", s(&env.get(), "env").to_uppercase())}</div>
-                            <div class="t2">{move || { let c = cur.get(); if c.is_null() { "Install a plugin from the catalog, then point the app's base URL at Stuntman.".to_string() } else { format!("Point the app's base URL at {} (or the real host {} with the Stuntman Test CA). Auth and limits shows it.", s(&c["urls"], "local"), if s(&c["urls"], "real").is_empty() { "—".into() } else { s(&c["urls"], "real") }) } }}</div>
-                            {move || { let c = cur.get(); if c.is_null() { view! { <a class="link" href="/apis/new">"+ New service"</a> }.into_any() } else { view! { <a class="link" href=format!("/apis/{}/auth", enc(&s(&c, "name")))>"Auth & limits ›"</a> }.into_any() } }}</div> })}
+                        <div class="callout" style="margin:20px 24px"><div class="t">{move || { let today = api::n(&cur.get(), "callsToday"); if !q.get().is_empty() { format!("No calls match “{}”", q.get()) } else if today > 0 && since.get() != "1d" { format!("No calls in this range  ·  {} today", api::thousands(today)) } else { format!("No API calls in {}", s(&env.get(), "env").to_uppercase()) } }}</div>
+                            {move || (api::n(&cur.get(), "callsToday") > 0 && since.get() != "1d").then(|| view! { <button class="link" style="margin-bottom:8px" on:click=move |_| since.set("1d".into())>"Show the last 24 h ›"</button> })}
+                            <div class="t2">{move || { let c = cur.get(); if !q.get().is_empty() || (api::n(&c, "callsToday") > 0 && since.get() != "1d") { String::new() } else if c.is_null() { "Install a plugin from the catalog, then point the app's base URL at Stuntman.".to_string() } else { format!("Point the app's base URL at {} (or the real host {} with the Stuntman Test CA). Auth and limits shows it.", s(&c["urls"], "local"), if s(&c["urls"], "real").is_empty() { "—".into() } else { s(&c["urls"], "real") }) } }}</div>
+                            {move || { let c = cur.get(); if !q.get().is_empty() || (api::n(&c, "callsToday") > 0 && since.get() != "1d") { ().into_any() } else if c.is_null() { view! { <a class="link" href="/apis/new">"+ New service"</a> }.into_any() } else { view! { <a class="link" href=format!("/apis/{}/auth", enc(&s(&c, "name")))>"Auth & limits ›"</a> }.into_any() } }}</div> })}
                     <div class="small cap" style="padding:14px 24px">"Sentences come from the plugin; Raw HTTP is one click away on the right."</div>
                 </div>
                 <div class="side envside">

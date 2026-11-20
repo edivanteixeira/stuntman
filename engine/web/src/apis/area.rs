@@ -3,7 +3,7 @@
 //! page: install a plugin (or another instance of one) or start an empty one that records.
 
 use leptos::prelude::*;
-use leptos_router::hooks::{use_location, use_navigate, use_params_map};
+use leptos_router::{components::Outlet, hooks::{use_location, use_navigate}};
 use serde_json::{json, Value};
 
 use super::{origin_line, services};
@@ -30,15 +30,18 @@ pub fn pick(list: &[Value]) -> String {
 }
 
 #[component]
-pub fn Area(children: Children) -> impl IntoView {
+pub fn Area() -> impl IntoView {
     let nav = use_navigate();
     let loc = use_location();
-    let p = use_params_map();
+    // The rail is the parent route, so the child's :service is read from the path.
+    let p = Memo::new(move |_| loc.pathname.get().strip_prefix("/apis/").and_then(|r| r.split('/').next()).filter(|x| !x.is_empty() && *x != "new").map(|x| js_sys::decode_uri_component(x).ok().and_then(|d| d.as_string()).unwrap_or(x.to_string())));
     let list = services();
+    provide_context(super::Services(list));
+    provide_context(super::Range(RwSignal::new("15m".to_string())));
     let filter = RwSignal::new(String::new());
-    let cur = Memo::new(move |_| p.get().get("service").unwrap_or_else(|| pick(&list.get())));
+    let cur = Memo::new(move |_| p.get().unwrap_or_else(|| pick(&list.get())));
     Effect::new(move |_| {
-        if let (Some(sv), Some(st)) = (p.get().get("service"), store()) { let _ = st.set_item(LAST, &sv); }
+        if let (Some(sv), Some(st)) = (p.get(), store()) { let _ = st.set_item(LAST, &sv); }
     });
     let tab = move || {
         let path = loc.pathname.get();
@@ -72,7 +75,7 @@ pub fn Area(children: Children) -> impl IntoView {
                 </div>
                 <div class="small cap kfoot">"BR: a Brazil-only provider. The line under each service says where its plugin came from."</div>
             </div>
-            {children()}
+            <Outlet/>
         </div>
     }
 }

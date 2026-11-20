@@ -139,6 +139,8 @@ pub fn s(v: &Value, k: &str) -> String {
     match v.get(k) {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Null) | None => String::new(),
+        // real_host and friends: one name or a list; [] is "nothing", not the text "[]".
+        Some(Value::Array(a)) if a.iter().all(|x| x.is_string()) => a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "),
         Some(o) => o.to_string(),
     }
 }

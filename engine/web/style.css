@@ -266,10 +266,15 @@ mark { background: var(--attention-fill); color: var(--ink); }
 .envcard .mono { margin-left: 18px; }
 .envside { width: 440px; background: var(--surface); padding: 24px 24px; }
 .envside .h2 { font: 600 18px var(--sans); margin: 0 0 6px; }
+/* Tables in a side panel fit it: long templates wrap instead of widening the panel. */
+.side .tbl, .side .kv2 { width: 100%; table-layout: fixed; }
+.side .tbl td, .side .kv2 td { overflow-wrap: anywhere; }
 table.kv2 { border-collapse: collapse; width: 100%; }
 table.kv2 td { padding: 4px 0; vertical-align: top; font-size: 12px; }
 table.kv2 td:first-child { color: var(--text-2); width: 150px; padding-right: 12px; }
 table.kv2 td.mono { font: 400 12px var(--mono); word-break: break-all; }
+/* Data rows in a side panel: the first three fields, one line each; the whole value on hover. */
+table.kv2.data td, table.kv2.data td:first-child { width: auto; padding-right: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; word-break: normal; overflow-wrap: normal; }
 table.kv2 td.kv-long { background: var(--subtle); border-radius: 4px; padding: 6px 8px; overflow-wrap: anywhere; }
 .callout { border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); padding: 14px 18px; margin: 14px 0; max-width: 720px; }
 .callout .t { font-weight: 500; margin-bottom: 4px; }
@@ -325,6 +330,9 @@ pre.envyaml .yl.mark { box-shadow: -10px 0 0 -6px #a8740a; background: var(--att
 .urlbox { border: 1px solid var(--rule); border-radius: 6px; padding: 10px 12px; margin: 12px 0; font-size: 11px; word-break: break-all; background: var(--surface); }
 .rrow { display: flex; gap: 10px; align-items: flex-start; padding: 12px 16px 12px 24px; border-bottom: 1px solid var(--rule); cursor: pointer; }
 .rrow.on { background: var(--surface); box-shadow: inset 3px 0 0 var(--ink); }
+/* The method keeps its column; a long path wraps instead of pushing it or scrolling the list. */
+.rrow > span:first-child { flex: none; }
+.rrow .grow { min-width: 0; overflow-wrap: anywhere; }
 .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
 .radio input.input { height: 26px; }
 
@@ -334,9 +342,12 @@ pre.envyaml .yl.mark { box-shadow: -10px 0 0 -6px #a8740a; background: var(--att
 .stepcard.on { border-color: var(--ink); background: var(--soft); }
 .stepcard .stepn { width: 18px; height: 18px; border-radius: 9px; border: 1px solid var(--border); display: inline-flex; align-items: center; justify-content: center; font: 500 10px var(--mono); margin-right: 6px; }
 .stepcard .stepn.on { background: var(--ink); color: #fff; border-color: var(--ink); }
-.stepcard .stepsum { margin-top: 6px; white-space: pre-wrap; font-size: 13px; }
+.stepcard .stepsum { margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
 .stepcard.on .stepsum { font: 400 12px/1.6 var(--mono); }
 .stepedit { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--rule); cursor: default; }
+/* Rule rows (when → answer ×) fit the card: inputs and long answer names shrink. */
+.stepedit .row > .input, .stepedit .row > .select { min-width: 0; }
+.stepedit .row > .select { max-width: 45%; }
 .trybox { border: 1px solid var(--rule); border-radius: 8px; padding: 12px 16px; margin-top: 16px; max-width: 720px; background: var(--surface); }
 pre.envyaml .yl.shade { background: var(--subtle); }
 .callout.attn-fill { background: var(--attention-fill); border-color: transparent; }
@@ -554,3 +565,11 @@ a.mrow.on { box-shadow: inset 3px 0 0 var(--ink); background: #fff; }
 .pill.warn { background: var(--attention-fill); border-color: #ebd9a8; color: var(--attention); }
 .pill.warn.on { background: var(--attention); border-color: var(--attention); color: var(--surface); }
 .ftable .frow.na { background: #fff8e6; border-radius: 6px; margin: 0 0 8px; border-bottom: 0; cursor: default; }
+
+/* On a laptop screen a tab's middle column keeps its fields inside it, and the right panel gives way. */
+.pane.form .input, .pane.form .select, .pane.form textarea { max-width: 100%; }
+.pane.form .row { flex-wrap: wrap; row-gap: 8px; }
+@media (max-width: 1440px) { .side.envside { width: 300px; } }
+/* The live YAML beside Routes and Auth: the editor comes first on a laptop screen (Settings has the whole file). */
+.side.yaml.wide { width: 430px; }
+@media (max-width: 1440px) { .side.yaml.wide { display: none; } }

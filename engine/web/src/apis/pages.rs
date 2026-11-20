@@ -71,7 +71,7 @@ pub fn Pages() -> impl IntoView {
                     }).collect_view()}
                     <div class="small cap" style="padding:16px 20px">"A page is what the provider shows in the browser: login, consent, approval. You declare fields and buttons; Stuntman draws it."</div>
                 </div>
-                <div class="pane pad" style="display:flex;gap:28px;align-items:flex-start">
+                <div class="pane pad" style="display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start">
                     <div style="width:420px;flex:none">
                         <div class="caps" style="margin-bottom:8px">"Page  ·  part of the plugin file"</div>
                         <textarea class="yaml-edit" spellcheck="false" prop:value=move || yaml.get() on:input=move |e| { yaml.set(event_target_value(&e)); dirty.set(true) }></textarea>

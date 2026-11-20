@@ -182,7 +182,7 @@ answers 404 and the name is free for a new one, which starts clean. Expiry (chec
 
 A new version opens every environment in `/data` as it was, with its state. Database changes are migrations that
 only add tables and columns, and new `environment.yaml` keys are optional: an older file reads as before. Pin the
-image tag (`edivanteixeira/stuntman:0.11.6`) and read the release notes before you move it.
+image tag (`edivanteixeira/stuntman:0.11.7`) and read the release notes before you move it.
 
 ## Sizing
 

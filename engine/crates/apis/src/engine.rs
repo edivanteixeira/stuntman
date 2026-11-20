@@ -1286,7 +1286,7 @@ pub async fn respond(o: Outcome, kill: Option<Kill>) -> Response {
 
 async fn unmatched(ctx: &Ctx, plugins: &[Plugin], service: &str, method: &str, path: &str, host: &str, rq: Req) -> Response {
     let c = closest(plugins, service, method, path);
-    let req_json = json!({"method": method, "path": path, "headers": rq.headers, "body": String::from_utf8_lossy(&rq.raw_body).chars().take(16 * 1024).collect::<String>()});
+    let req_json = json!({"method": method, "path": path, "query": rq.raw_query, "headers": rq.headers, "body": String::from_utf8_lossy(&rq.raw_body).chars().take(16 * 1024).collect::<String>()});
     let _ = store::unmatched_add(ctx, method, path, host, service, &rq.caller, req_json, c).await;
     let msg = if service.is_empty() { format!("Stuntman: no plugin answers {host}{path}") } else { format!("Stuntman: {service} has no route for {method} {path}") };
     let mut r = (StatusCode::NOT_FOUND, axum::Json(json!({"error": "no route", "stuntman": msg}))).into_response();

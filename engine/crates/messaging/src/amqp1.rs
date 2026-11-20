@@ -526,10 +526,10 @@ pub async fn serve(envs: Envs, sock: crate::amqp::Io, remote: String, header: [u
         Some(Value::String(s)) => s.split_whitespace().next().unwrap_or("amqp").split('/').next().unwrap_or("amqp").to_string(),
         _ => "amqp".into(),
     };
-    // The .NET SDK sends ServiceBusClientOptions.Identifier as the container id; its default is
-    // "<namespace>-<guid>": an app that sets one (name, pid, folder) is told apart by it.
+    // The .NET SDK sends ServiceBusClientOptions.Identifier as the container id; an app that sets one
+    // (name, pid, folder) is told apart by it. Unset, the SDKs make one up: the product and port say more.
     let cid = open.container_id.to_string();
-    let generated = cid.len() >= 36 && cid[cid.len() - 36..].chars().filter(|c| *c == '-').count() == 4;
+    let generated = generated_container_id(&cid);
     let client = if !cid.is_empty() && !generated { format!("{cid} :{}", remote.rsplit(':').next().unwrap_or("")) } else { format!("{product} :{}", remote.rsplit(':').next().unwrap_or("")) };
     // An Event Hubs namespace named by the host is taken first: no Service Bus one is made for it.
     let eh = open.hostname.as_deref().and_then(|h| crate::eventhubs::resolve(&envs, h));
@@ -1368,5 +1368,24 @@ mod t {
         assert_eq!(o.props["tenant"], json!("globex"));
         assert_eq!(back.header.unwrap().delivery_count, 1);
         assert_eq!(pct_decode("a%2Fb%3D"), "a/b=");
+    }
+}
+
+/// A container id the SDK made up: "<anything><guid>" (Java, Python, older .NET) or
+/// "amqp://<host>/-<8 hex>" (.NET Service Bus without Identifier).
+fn generated_container_id(cid: &str) -> bool {
+    let uuid = cid.len() >= 36 && cid.is_char_boundary(cid.len() - 36) && cid[cid.len() - 36..].chars().filter(|c| *c == '-').count() == 4;
+    let dotnet = cid.contains("://") && cid.rsplit_once('-').is_some_and(|(_, t)| t.len() == 8 && t.chars().all(|c| c.is_ascii_hexdigit()));
+    uuid || dotnet
+}
+
+#[cfg(test)]
+mod container_ids {
+    #[test]
+    fn made_up_or_chosen() {
+        assert!(super::generated_container_id("amqp://acme-bus.stg.localhost/-b3493175"));
+        assert!(super::generated_container_id("SBReceiver-7a1e2b3c-0d4e-4f5a-8b6c-7d8e9f0a1b2c"));
+        assert!(!super::generated_container_id("worker pid 4120 /srv/worker/"));
+        assert!(!super::generated_container_id("orders-api"));
     }
 }

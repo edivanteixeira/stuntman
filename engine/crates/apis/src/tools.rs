@@ -193,7 +193,7 @@ fn unmatched_tools() -> Vec<Tool> {
             Ok(json!({"group": group, "groups": groups.into_iter().map(|(k, v)| json!({"key": k, "count": v.len(), "first": v.last().map(|x| x["at"].clone()), "latest": v[0].clone(),
                 "callers": v.iter().map(|x| x["caller"].as_str().unwrap_or("").to_string()).collect::<std::collections::BTreeSet<_>>()})).collect::<Vec<_>>()}))
         })
-        .param("group", "path (default) | service | caller | host | none (each call, one by one, with headers and body)").param("since", "1h (default)").param("ignored", "true: show ignored too")
+        .param("group", "path (default) | service | caller | host | none (each call, one by one, with query string, headers and body)").param("since", "1h (default)").param("ignored", "true: show ignored too")
         .route("GET", "/apis/unmatched"),
         Tool::new("route_from_request", "A draft route prefilled from an unmatched request (method, path, body fields; the closest route's steps copied). Returns its YAML; set_route saves it.", |ctx, a| async move {
             let u = store::unmatched_one(&ctx, &a.need("id")?).await?;

@@ -20,6 +20,7 @@ services:
       - "${BIND:-127.0.0.1}:8027:8027"   # webhook inboxes
       - "${BIND:-127.0.0.1}:8028:8028"   # HTTP APIs (plugins)
       - "${BIND:-127.0.0.1}:8443:8443"   # HTTP APIs over TLS (Test CA)
+      - "${BIND:-127.0.0.1}:8445:8445"   # UI, API, Identity over TLS (Test CA): MSAL takes only https
       - "${BIND:-127.0.0.1}:8444:8444"   # Key Vault (TLS)
       - "${BIND:-127.0.0.1}:5673:5673"   # AMQP (Service Bus / RabbitMQ)
       - "${BIND:-127.0.0.1}:5671:5671"   # AMQPS

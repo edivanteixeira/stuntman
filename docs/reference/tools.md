@@ -5,10 +5,10 @@ Every action in Stuntman is one tool. Each tool is an **MCP tool** (same name) a
 
 _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit by hand._
 
-**402 tools** in 17 areas.
+**404 tools** in 17 areas.
 
 - [Environments, timeline and access](#environments-timeline-and-access) · 22 tools
-- [Email and mailboxes](#email-and-mailboxes) · 39 tools
+- [Email and mailboxes](#email-and-mailboxes) · 41 tools
 - [SMS](#sms) · 17 tools
 - [WhatsApp](#whatsapp) · 28 tools
 - [HTTP APIs (plugins)](#http-apis-plugins) · 69 tools
@@ -95,6 +95,8 @@ _Generated from the engine source by `tools/gen_tool_reference.py`. Do not edit 
 | `set_mailbox` | `PUT /api/mailboxes/{address}` | address | password, provoke | Creates or changes a mailbox the app reads: its address (the login), a password (empty: any but "wrong") and a provocation: login_refused, busy, drop_fetch, tls_required, token_expired (none clears). |
 | `put_mail` | `POST /api/mailboxes/{address}/messages` | address | from, subject, text, html, attachments, raw, folder | Puts a message in a mailbox as if someone sent it: from, subject, text (and html), attachments [{filename, content_type, base64 or text}] — or raw (a whole RFC 822 message). The app finds it on its next poll. |
 | `list_mailbox_messages` | `GET /api/mailboxes/{address}/messages` | address | folder | The messages in a mailbox (a folder): sender, subject, flags (read, deleted), size; and what the app did on it (IMAP/POP3 commands, without passwords). |
+| `clear_mailbox` | `DELETE /api/mailboxes/{address}/messages` | address | folder | Empties a mailbox (every folder, or one): its messages go, the mailbox, password and folders stay; UIDs are not reused. An open IMAP session hears the EXPUNGEs on its next command; a POP3 session already logged in keeps what it saw. |
+| `delete_mailbox` | `DELETE /api/mailboxes/{address}` | address | — | Removes a mailbox with its messages and its log. |
 
 ## SMS
 

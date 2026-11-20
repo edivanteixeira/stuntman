@@ -45,7 +45,9 @@ pub async fn set(ctx: &Ctx, address: &str, password: Option<String>, provoke: Op
     let a = address.to_lowercase();
     ctx.db
         .call(move |cn| {
-            cn.execute("INSERT OR IGNORE INTO email_mailboxes(address, uidvalidity, created) VALUES(?1,?2,?3)", params![a, util::now_ms() / 1000, util::now_ms()])?;
+            // In 100 ms steps since 2023 (fits IMAP's 32 bits until 2036): a mailbox deleted and made again gets another
+            // UIDVALIDITY, so clients drop the UIDs they cached.
+            cn.execute("INSERT OR IGNORE INTO email_mailboxes(address, uidvalidity, created) VALUES(?1,?2,?3)", params![a, (util::now_ms() - 1_672_531_200_000) / 100, util::now_ms()])?;
             if let Some(p) = password {
                 cn.execute("UPDATE email_mailboxes SET password=?2 WHERE address=?1", params![a, p])?;
             }
@@ -129,6 +131,41 @@ pub async fn expunge(ctx: &Ctx, address: &str, folder: &str) -> Result<Vec<i64>,
             Ok(gone)
         })
         .await
+}
+
+/// Removes the messages of a mailbox (one folder, or all). The mailbox, its password and folders stay;
+/// UIDVALIDITY and the next UID stay too, as after an EXPUNGE: UIDs are never reused. None: no such mailbox.
+pub async fn clear(ctx: &Ctx, address: &str, folder: Option<String>) -> Result<Option<usize>, ApiError> {
+    let a = address.to_lowercase();
+    let n = ctx
+        .db
+        .call(move |cn| {
+            if cn.query_row("SELECT 1 FROM email_mailboxes WHERE address=?1", [&a], |_| Ok(())).optional()?.is_none() {
+                return Ok(None);
+            }
+            Ok(Some(match folder {
+                Some(f) => cn.execute("DELETE FROM email_mailbox_msgs WHERE mailbox=?1 AND folder=?2", params![a, f])?,
+                None => cn.execute("DELETE FROM email_mailbox_msgs WHERE mailbox=?1", [&a])?,
+            }))
+        })
+        .await?;
+    ctx.live.send("email.mailboxes", address, "cleared");
+    Ok(n)
+}
+
+/// Removes a mailbox with its messages and its log. false: no such mailbox.
+pub async fn delete(ctx: &Ctx, address: &str) -> Result<bool, ApiError> {
+    let a = address.to_lowercase();
+    let gone = ctx
+        .db
+        .call(move |cn| {
+            cn.execute("DELETE FROM email_mailbox_msgs WHERE mailbox=?1", [&a])?;
+            cn.execute("DELETE FROM email_mailbox_log WHERE mailbox=?1", [&a])?;
+            Ok(cn.execute("DELETE FROM email_mailboxes WHERE address=?1", [&a])? > 0)
+        })
+        .await?;
+    ctx.live.send("email.mailboxes", address, "deleted");
+    Ok(gone)
 }
 
 pub async fn move_to(ctx: &Ctx, address: &str, uid: i64, to: &str, copy: bool) -> Result<i64, ApiError> {
@@ -287,5 +324,26 @@ pub fn tools() -> Vec<Tool> {
         })
         .req("address", "the mailbox").param("folder", "INBOX")
         .route("GET", "/mailboxes/{address}/messages"),
+        Tool::new("clear_mailbox", "Empties a mailbox (every folder, or one): its messages go, the mailbox, password and folders stay; UIDs are not reused. An open IMAP session hears the EXPUNGEs on its next command; a POP3 session already logged in keeps what it saw.", |ctx, a| async move {
+            let address = a.need("address")?;
+            match clear(&ctx, &address, a.str("folder")).await? {
+                Some(n) => {
+                    log(&ctx, &address, "Stuntman", &format!("cleared by you{}", a.str("folder").map(|f| format!(" ({f})")).unwrap_or_default()), &format!("{n} removed")).await;
+                    Ok(json!({"address": address, "removed": n}))
+                }
+                None => Err(ApiError::not_found(format!("No mailbox {address}"))),
+            }
+        })
+        .req("address", "the mailbox").param("folder", "one folder (default: all)")
+        .route("DELETE", "/mailboxes/{address}/messages"),
+        Tool::new("delete_mailbox", "Removes a mailbox with its messages and its log.", |ctx, a| async move {
+            let address = a.need("address")?;
+            if !delete(&ctx, &address).await? {
+                return Err(ApiError::not_found(format!("No mailbox {address}")));
+            }
+            Ok(json!({"address": address, "deleted": true}))
+        })
+        .req("address", "the mailbox")
+        .route("DELETE", "/mailboxes/{address}"),
     ]
 }

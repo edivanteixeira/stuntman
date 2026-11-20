@@ -92,6 +92,17 @@ await using var bad2 = await conn.CreateChannelAsync();
 try { await bad2.BasicConsumeAsync("amq.rabbitmq.reply-to", false, new AsyncEventingBasicConsumer(bad2)); } catch { }
 Check(bad2.CloseReason?.ReplyCode == 406, "Direct Reply-to with manual ack: 406 PRECONDITION_FAILED");
 
+// Exchange-to-exchange, as MassTransit sends a request: request:topic:<type> -> <type> (exchange) -> <type> (queue).
+await using var xx = await conn.CreateChannelAsync(new CreateChannelOptions(publisherConfirmationsEnabled: true, publisherConfirmationTrackingEnabled: true));
+await xx.ExchangeDeclareAsync("Acme.Reports:Render", ExchangeType.Fanout, true, false);
+await xx.QueueDeclareAsync("Acme.Reports:Render", true, false, false, null);
+await xx.QueueBindAsync("Acme.Reports:Render", "Acme.Reports:Render", "");
+await xx.ExchangeDeclareAsync("request:topic:Acme.Reports:Render", ExchangeType.Topic, true, false);
+await xx.ExchangeBindAsync("Acme.Reports:Render", "request:topic:Acme.Reports:Render", "");
+await xx.BasicPublishAsync("request:topic:Acme.Reports:Render", "", true, new BasicProperties { Persistent = true }, Encoding.UTF8.GetBytes("render-1"));
+var viaX = await xx.BasicGetAsync("Acme.Reports:Render", true);
+Check(viaX != null && Encoding.UTF8.GetString(viaX.Body.ToArray()) == "render-1", "exchange-to-exchange: a publish to the source reaches the queue behind the destination");
+
 await conn.CloseAsync();
 Console.WriteLine(failed == 0 ? "dotnet rabbitmq: all checks passed" : $"dotnet rabbitmq: {failed} failed");
 return failed == 0 ? 0 : 1;

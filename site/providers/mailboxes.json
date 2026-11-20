@@ -231,6 +231,10 @@
     "Messages, flags and the app's commands"
    ],
    [
+    "clear_mailbox",
+    "Empties a mailbox before a test; UIDs are not reused"
+   ],
+   [
     "get_environment",
     "The environment's addresses and settings"
    ],
@@ -259,6 +263,11 @@
     "GET",
     "/api/mailboxes/{address}/messages",
     "list_mailbox_messages"
+   ],
+   [
+    "DELETE",
+    "/api/mailboxes/{address}/messages",
+    "clear_mailbox"
    ]
   ]
  },

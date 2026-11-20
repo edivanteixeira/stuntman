@@ -71,14 +71,14 @@ a { color: var(--link); text-decoration: none; }
 .page { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 .head { height: 88px; border-bottom: 1px solid var(--rule); padding: 0 24px; display: flex; flex-direction: column; justify-content: space-between; flex: none; }
 .head .top { display: flex; align-items: center; gap: 12px; height: 56px; padding-top: 4px; }
-.head h1 { font: 700 22px/1 var(--sans); margin: 0; }
+.head h1 { font: 700 22px/1 var(--sans); margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .head h1 .crumb { color: var(--caption); }
 .head .chan { width: 22px; height: 5px; border-radius: 2px; background: var(--line-email); display: inline-block; margin: 0 10px 4px 2px; vertical-align: middle; }
 .head .sub { color: var(--caption); font-size: 12px; margin-left: 12px; }
-.head .titled { display: flex; flex-direction: column; gap: 5px; }
-.head .kind { color: var(--caption); font-size: 11px; }
-.tabs { display: flex; gap: 28px; height: 32px; align-items: stretch; }
-.tab { display: flex; align-items: center; color: var(--caption); font-size: 13px; font-weight: 500; cursor: pointer; border-bottom: 2px solid transparent; padding-bottom: 2px; }
+.head .titled { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.head .kind { color: var(--caption); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tabs { display: flex; gap: 28px; height: 32px; align-items: stretch; overflow-x: auto; scrollbar-width: none; }
+.tab { display: flex; flex: none; white-space: nowrap; align-items: center; color: var(--caption); font-size: 13px; font-weight: 500; cursor: pointer; border-bottom: 2px solid transparent; padding-bottom: 2px; }
 .tab .n { margin-left: 6px; }
 .tab.on { color: var(--ink); border-color: var(--ink); }
 .tab.off { cursor: default; }

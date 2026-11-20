@@ -732,7 +732,8 @@ pub fn xpath_eval(xml: &str, expr: &str) -> Value {
     let Ok(doc) = roxmltree::Document::parse(xml) else { return Value::Null };
     let e = expr.trim();
     let (count, e) = match e.strip_prefix("count(").and_then(|x| x.strip_suffix(')')) { Some(x) => (true, x), None => (false, e) };
-    let ln = regex::Regex::new(r#"local-name\(\)\s*=\s*['"]([\w.-]+)['"]"#).unwrap();
+    static LN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r#"local-name\(\)\s*=\s*['"]([\w.-]+)['"]"#).unwrap());
+    let ln = &*LN;
     let mut steps: Vec<String> = vec![];
     for part in e.split('/').filter(|p| !p.is_empty()) {
         steps.push(match ln.captures(part) { Some(c) => c[1].to_string(), None => part.split('[').next().unwrap_or(part).split(':').last().unwrap_or(part).to_string() });
@@ -773,8 +774,8 @@ fn xpath_h(a: &[Value], _: &Map<String, Value>) -> Result<Value, String> {
 pub fn json_path_eval(v: &Value, path: &str) -> Value {
     let p = path.trim().trim_start_matches('$');
     let mut cur = v.clone();
-    let re = regex::Regex::new(r"\.?([\w-]+)|\[(\d+)\]|\['([^']+)'\]").unwrap();
-    for c in re.captures_iter(p) {
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"\.?([\w-]+)|\[(\d+)\]|\['([^']+)'\]").unwrap());
+    for c in RE.captures_iter(p) {
         cur = if let Some(k) = c.get(1).or(c.get(3)) {
             match &cur { Value::String(t) => serde_json::from_str::<Value>(t).ok().and_then(|x| x.get(k.as_str()).cloned()).unwrap_or(Value::Null), x => x.get(k.as_str()).cloned().unwrap_or(Value::Null) }
         } else if let Some(i) = c.get(2) {
@@ -894,7 +895,7 @@ fn base64_h(a: &[Value], h: &Map<String, Value>) -> Result<Value, String> {
     Ok(json!(b.encode(s(&arg(a, 0)))))
 }
 
-fn registry(now: i64) -> Handlebars<'static> {
+fn registry() -> Handlebars<'static> {
     let mut hb = Handlebars::new();
     hb.set_strict_mode(false);
     // WireMock does not HTML-escape {{ }} output (a JSON body keeps its quotes).
@@ -906,16 +907,16 @@ fn registry(now: i64) -> Handlebars<'static> {
     for (k, f) in list {
         hb.register_helper(k, Box::new(V(f)));
     }
-    // now() reads the environment's clock.
-    struct Now(i64);
+    // now() reads the environment's clock, which render() puts in the context.
+    struct Now;
     impl HelperDef for Now {
-        fn call_inner<'reg: 'rc, 'rc>(&self, h: &Helper<'rc>, _: &'reg Handlebars<'reg>, _: &'rc Context, _: &mut RenderContext<'reg, 'rc>) -> Result<ScopedJson<'rc>, RenderError> {
+        fn call_inner<'reg: 'rc, 'rc>(&self, h: &Helper<'rc>, _: &'reg Handlebars<'reg>, ctx: &'rc Context, _: &mut RenderContext<'reg, 'rc>) -> Result<ScopedJson<'rc>, RenderError> {
             let mut hash: Map<String, Value> = h.hash().iter().map(|(k, v)| (k.to_string(), v.value().clone())).collect();
-            hash.insert("__now".into(), json!(self.0));
+            hash.insert("__now".into(), ctx.data().get("__now").cloned().unwrap_or_else(|| json!(stuntman_core::util::now_ms())));
             now_h(&[], &hash).map(ScopedJson::Derived).map_err(|e| RenderErrorReason::Other(e).into())
         }
     }
-    hb.register_helper("now", Box::new(Now(now)));
+    hb.register_helper("now", Box::new(Now));
     hb.register_helper("regexExtract", Box::new(RegexExtract));
     hb.register_helper("assign", Box::new(Assign(false)));
     hb.register_helper("parseJson", Box::new(Assign(true)));
@@ -962,8 +963,8 @@ pub fn context(tpl: &str, sc: &Map<String, Value>) -> Value {
         None => query = sc.get("query").and_then(|v| v.as_object()).cloned().unwrap_or_default().into_iter().map(|(k, v)| (k, if v.is_array() { v } else { json!([v]) })).collect(),
     }
     let mut headers: Map<String, Value> = sc.get("headers").and_then(|v| v.as_object()).cloned().unwrap_or_default().into_iter().map(|(k, v)| (k, json!([v]))).collect();
-    let re = regex::Regex::new(r"(?i)request\.headers\.\[?([\w-]+)").unwrap();
-    for c in re.captures_iter(tpl) {
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)request\.headers\.\[?([\w-]+)").unwrap());
+    for c in RE.captures_iter(tpl) {
         let want = c[1].to_string();
         if let Some(v) = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(&want)).map(|x| x.1.clone()) {
             headers.insert(want, v);
@@ -1010,13 +1011,36 @@ fn keep_lines(t: &str) -> String {
     out
 }
 
+static REGISTRY: std::sync::LazyLock<std::sync::RwLock<Handlebars<'static>>> = std::sync::LazyLock::new(|| std::sync::RwLock::new(registry()));
+static COMPILED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Result<String, String>>>> = std::sync::LazyLock::new(Default::default);
+
+/// The name a template is registered under, compiled the first time it is seen: every call
+/// compiled it again (and built the helpers again), milliseconds per answer.
+fn compiled(src: &str) -> Result<String, String> {
+    let mut seen = COMPILED.lock().unwrap();
+    if let Some(r) = seen.get(src) {
+        return r.clone();
+    }
+    // ponytail: templates live as long as the process; drop them all past 5,000 (edited plugins leave old ones).
+    if seen.len() >= 5000 {
+        seen.clear();
+        *REGISTRY.write().unwrap() = registry();
+    }
+    let name = format!("t{}", seen.len());
+    let r = REGISTRY.write().unwrap().register_template_string(&name, keep_lines(&bare_values(&global_vars(&java_strings(src))))).map(|_| name).map_err(|e| e.to_string());
+    seen.insert(src.to_string(), r.clone());
+    r
+}
+
 pub fn render(tpl: &str, sc: &Map<String, Value>) -> Result<String, String> {
     let now = sc.get("__now").and_then(|v| v.as_i64()).unwrap_or_else(stuntman_core::util::now_ms);
     // WireMock renders only from the first {{ to the last }}: the text around is kept as it is (~ does not trim it).
     let (Some(a), Some(b)) = (tpl.find("{{"), tpl.rfind("}}")) else { return Ok(tpl.to_string()) };
     let b = b + 2 + tpl[b + 2..].starts_with('}') as usize;
-    let mid = keep_lines(&bare_values(&global_vars(&java_strings(&tpl[a..b]))));
-    let body = registry(now).render_template(&mid, &context(tpl, sc)).map_err(|e| e.to_string())?;
+    let name = compiled(&tpl[a..b])?;
+    let mut data = context(tpl, sc);
+    data["__now"] = json!(now);
+    let body = REGISTRY.read().unwrap().render(&name, &data).map_err(|e| e.to_string())?;
     Ok(format!("{}{}{}", &tpl[..a], body.replace(LINE, ""), &tpl[b..]))
 }
 

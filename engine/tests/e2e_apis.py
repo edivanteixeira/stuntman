@@ -7,7 +7,8 @@ everything the screens do works over the HTTP API and MCP.
 import base64, hashlib, hmac, http.client, http.server, json, os, shutil, socket, subprocess, tempfile, threading, time, urllib.error, urllib.parse, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BIN = os.path.join(ROOT, "target", "debug", "stuntman")
+import harness
+BIN = harness.BIN
 
 
 def free_port():
@@ -198,6 +199,9 @@ def run(data):
     u = call("GET", "/apis/unmatched?group=path")["groups"]
     v4 = [g for g in u if "v4" in g["key"]][0]
     assert v4["latest"]["closest"]["text"] == "Differs in one segment: v4 here, v5 in the plugin." and v4["latest"]["caller"] == "acme-batch", v4
+    one = call("GET", "/apis/unmatched?group=none")
+    pay = [c for c in one["calls"] if c["path"] == "/payments/v1/charges"]
+    assert one["count"] == len(one["calls"]) >= 3 and pay and pay[0]["host"] == "payments.example-pay.com" and '"amount"' in pay[0]["request"]["body"], one
     by_caller = call("GET", "/apis/unmatched?group=caller")["groups"]
     assert any(g["key"] == "acme-batch" for g in by_caller)
     draft = call("POST", f"/apis/unmatched/{v4['latest']['id']}/route")
@@ -315,6 +319,8 @@ def main():
     threading.Thread(target=recv.serve_forever, daemon=True).start()
     env = dict(os.environ, STUNTMAN_ENV=os.environ.get("STUNTMAN_ENV", "stg-a"), STUNTMAN_DATA=data, STUNTMAN_PORT=str(HTTP), STUNTMAN_HOOKS_PORT=str(HOOKS), STUNTMAN_SMTP_PORT=str(SMTP), STUNTMAN_OTLP_HTTP_PORT=str(OTLP),
                STUNTMAN_OTLP_GRPC_PORT=str(OTLP_G), STUNTMAN_BLOB_PORT=str(BLOB), STUNTMAN_S3_PORT=str(S3), STUNTMAN_APIS_PORT=str(APIS), STUNTMAN_APIS_TLS_PORT=str(TLS), STUNTMAN_WEB="/nonexistent")
+    # Every other port free too: never the defaults a running Stuntman holds.
+    env.update({f"STUNTMAN_{k}": str(free_port()) for k in harness.PORTS if f"STUNTMAN_{k}" not in env})
     log = os.path.join(data, "..", os.path.basename(data) + ".log")
     srv = subprocess.Popen([BIN], env=env, stdout=open(log, "w"), stderr=subprocess.STDOUT)
     try:

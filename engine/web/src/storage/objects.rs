@@ -215,7 +215,7 @@ pub fn Objects() -> impl IntoView {
                         let f = folder.get();
                         if accounts.get().is_empty() {
                             return view! { <div class="empty"><h3>"No storage accounts yet"</h3><div>"Add an Azure Blob or S3 account; the app then points its connection string or endpoint at Stuntman."</div>
-                                <div style="margin-top:16px" class="row" ><a class="btn" href="/services/azure-blob?new=1">"Azure Blob account"</a><a class="btn" href="/services/s3?new=1">"S3 account"</a></div></div> }.into_any();
+                                <div style="margin-top:16px;justify-content:center" class="row wrap"><a class="btn" href="/services/azure-blob?new=1">"Azure Blob account"</a><a class="btn" href="/services/s3?new=1">"S3 account"</a></div></div> }.into_any();
                         }
                         if f.is_null() { return view! { <div class="empty cap">"Loading…"</div> }.into_any(); }
                         let (a, c, p) = (account.get(), container.get(), prefix.get());

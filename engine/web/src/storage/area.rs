@@ -13,10 +13,10 @@ use crate::{
 
 /// Every storage account, refreshed on live updates.
 pub fn accounts() -> RwSignal<Vec<Value>> {
-    let live = expect_context::<api::Live>();
-    let list = RwSignal::new(Vec::<Value>::new());
+    let calm = api::calm();
+    let list = expect_context::<api::Kept>().storage;
     Effect::new(move |_| {
-        live.tick.track();
+        calm.track();
         leptos::task::spawn_local(async move {
             if let Ok(v) = api::get("/storage/accounts").await { list.set(v["accounts"].as_array().cloned().unwrap_or_default()); }
         });
@@ -56,7 +56,7 @@ pub fn Area(children: Children) -> impl IntoView {
     let loc = use_location();
     let qm = use_query_map();
     let list = accounts();
-    let filter = RwSignal::new(String::new());
+    let filter = expect_context::<api::Kept>().storage_filter;
     let new_menu = RwSignal::new(false);
     let cur = Memo::new(move |_| s(&current(&list.get(), qm.get().get("account")), "account"));
     view! {

@@ -123,7 +123,7 @@ pub fn Area(children: ChildrenFn) -> impl IntoView {
     let qm = use_query_map();
     let nav = use_navigate();
     let loc = use_location();
-    let data = RwSignal::new(Value::Null);
+    let data = expect_context::<api::Kept>().queues;
     let load = move || leptos::task::spawn_local(async move { if let Ok(v) = api::get("/messaging/namespaces").await { data.set(v); } });
     load();
     Effect::new(move |prev: Option<u64>| {
@@ -155,7 +155,7 @@ pub fn Area(children: ChildrenFn) -> impl IntoView {
     let new_open = RwSignal::new(false);
     let publish_open = RwSignal::new(false);
     provide_context(PublishOpen(publish_open));
-    let filter = RwSignal::new(String::new());
+    let filter = expect_context::<api::Kept>().queues_filter;
     let pick_ns = RwSignal::new(false);
     let n2 = nav.clone();
     view! {

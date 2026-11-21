@@ -12,7 +12,7 @@ use crate::{
     ui,
 };
 
-const TABS: [&str; 6] = ["calls", "routes", "answers", "pages", "auth", "settings"];
+const TABS: [&str; 8] = ["calls", "routes", "answers", "pages", "auth", "settings", "review", "tools"];
 const LAST: &str = "stuntman.apis.last";
 
 fn store() -> Option<web_sys::Storage> {
@@ -62,10 +62,15 @@ pub fn Area() -> impl IntoView {
                         list.get().into_iter().filter(|x| f.is_empty() || s(x, "title").to_lowercase().contains(&f) || s(x, "name").contains(&f)).map(|x| {
                             let n = s(&x, "name");
                             let (n1, n2) = (n.clone(), n.clone());
+                            let x2 = x.clone();
                             let nav = nav.clone();
                             view! {
                                 <div class="krow" class:on=move || !creating() && cur.get() == n1
-                                    on:click=move |_| nav(&format!("/apis/{}/{}", enc(&n2), tab()), Default::default())>
+                                    on:click=move |_| {
+                                        // The same tab on the other service, when it has one (Review while recording, Tools for MCP, Pages if it draws any).
+                                        let t = match tab() { "review" if x2["record"].is_null() => "calls", "tools" if x2["mcp"].is_null() => "calls", "pages" if api::n(&x2, "pages") == 0 => "calls", t => t };
+                                        nav(&format!("/apis/{}/{}", enc(&n2), t), Default::default())
+                                    }>
                                     <div class="row"><span class="grow">{s(&x, "title")}</span><span class="mono small cap">{api::thousands(api::n(&x, "callsToday"))}</span></div>
                                     <div class="small" class:attn=x["billable"] == true class:cap=x["billable"] != true>{{ let mut o = origin_line(&x); if !x["record"].is_null() { o = format!("recording  ·  {o}"); } else if !x["spec"].is_null() { o = format!("{} {}  ·  {o}", if s(&x["spec"], "version").starts_with('2') { "Swagger" } else { "OpenAPI" }, s(&x["spec"], "version")); } else if !x["soap"].is_null() { o = format!("SOAP {}  ·  {o}", s(&x["soap"], "version")); } o }}</div>
                                 </div>

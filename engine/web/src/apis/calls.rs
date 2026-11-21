@@ -13,14 +13,22 @@ use crate::{
 
 #[component]
 pub fn Calls() -> impl IntoView {
-    let live = expect_context::<api::Live>();
     let env = expect_context::<RwSignal<Value>>();
     let nav = use_navigate();
     let qm = use_query_map();
     let pm = use_params_map();
     // The range lives in the rail (the area), so it survives a trip to another tab or service.
     let since = use_context::<super::Range>().map(|r| r.0).unwrap_or_else(|| RwSignal::new("15m".to_string()));
-    let q = RwSignal::new(String::new());
+    // ?since= and ?q= open that view (a link someone sent); changing them writes them back.
+    if let Some(x) = qm.get_untracked().get("since").filter(|x| ["5m", "15m", "1h", "1d"].contains(&x.as_str())) { since.set(x); }
+    let q = RwSignal::new(qm.get_untracked().get("q").unwrap_or_default());
+    let tail = move |call: &str| {
+        let mut v = vec![];
+        if !call.is_empty() { v.push(format!("call={}", enc(call))); }
+        if since.get_untracked() != "15m" { v.push(format!("since={}", since.get_untracked())); }
+        if !q.get_untracked().is_empty() { v.push(format!("q={}", enc(&q.get_untracked()))); }
+        if v.is_empty() { String::new() } else { format!("?{}", v.join("&")) }
+    };
     let list = services();
     let calls = RwSignal::new(Vec::<Value>::new());
     let call = RwSignal::new(Value::Null);
@@ -42,11 +50,20 @@ pub fn Calls() -> impl IntoView {
         leptos::task::spawn_local(async move { call.set(api::get(&format!("/apis/calls/{}?raw=true", enc(&id))).await.unwrap_or(Value::Null)); });
     };
     Effect::new(move |_| { svc.track(); since.track(); q.track(); load(); });
+    let nav_url = nav.clone();
+    Effect::new(move |prev: Option<()>| {
+        since.track(); q.track();
+        if prev.is_none() { return; }
+        let sv = svc.get_untracked();
+        if sv.is_empty() { return; }
+        nav_url(&format!("/apis/{}/calls{}", enc(&sv), tail(&sel.get_untracked())), leptos_router::NavigateOptions { replace: true, scroll: false, ..Default::default() });
+    });
     Effect::new(move |_| { sel.track(); raw.set(false); load_call(); });
-    Effect::new(move |prev: Option<u64>| {
-        let t = live.tick.get();
-        if prev.is_some() && s(&live.last.get_untracked(), "topic").starts_with("apis.") { load(); }
-        t
+    // New calls appear within half a second, without one fetch per call under load.
+    let calm = api::calm();
+    Effect::new(move |prev: Option<()>| {
+        calm.track();
+        if prev.is_some() { load(); }
     });
     let cur = Memo::new(move |_| list.get().into_iter().find(|x| s(x, "name") == svc.get()).unwrap_or(Value::Null));
     let nav2 = nav;
@@ -82,7 +99,7 @@ pub fn Calls() -> impl IntoView {
                                 let (i1, sv) = (id.clone(), s(&c, "service"));
                                 let cls = answer_class(api::n(&c, "status"), &s(&c, "answer"));
                                 let nav = nav.clone();
-                                view! { <div class="frow" class:on=move || sel.get() == i1 on:click=move |_| nav(&format!("/apis/{}/calls?call={}", enc(&sv), enc(&id)), Default::default())>
+                                view! { <div class="frow" class:on=move || sel.get() == i1 on:click=move |_| nav(&format!("/apis/{}/calls{}", enc(&sv), tail(&id)), leptos_router::NavigateOptions { scroll: false, ..Default::default() })>
                                     <span class="mono small cap" style="width:72px">{api::hms(api::n(&c, "at"))}</span>
                                     <div class="grow"><div>{s(&c, "sentence")}</div>
                                         <div class=format!("small {cls}")>{format!("{}{}", s(&c, "answer").replace('_', " "), if s(&c, "provoked").is_empty() { String::new() } else { format!("  ·  {}", s(&c, "provoked")) })}</div></div></div> }

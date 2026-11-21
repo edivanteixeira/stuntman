@@ -157,6 +157,46 @@ pub struct Live {
     pub connected: RwSignal<bool>,
 }
 
+/// A tick that follows live events at most every 500 ms, the last one always landing: a list that
+/// fetches on every event would fetch once per call under load (85 services, hundreds of calls a
+/// second). For what has to react to each event, use `tick`.
+pub fn calm() -> RwSignal<u64> {
+    let live = expect_context::<Live>();
+    let out = RwSignal::new(0u64);
+    let pending = std::rc::Rc::new(std::cell::Cell::new(false));
+    Effect::new(move |prev: Option<()>| {
+        live.tick.track();
+        if prev.is_none() || pending.get() {
+            return;
+        }
+        pending.set(true);
+        let p = pending.clone();
+        let f = Closure::once_into_js(move || {
+            p.set(false);
+            out.update(|n| *n += 1);
+        });
+        let _ = web_sys::window().unwrap().set_timeout_with_callback_and_timeout_and_arguments_0(f.unchecked_ref(), 500);
+    });
+    out
+}
+
+/// What an area keeps while you move between its tabs (each tab is its own page, and the column
+/// of accounts, namespaces or services would otherwise empty, lose its filter and its scroll).
+#[derive(Clone, Copy)]
+pub struct Kept {
+    pub storage: RwSignal<Vec<Value>>,
+    pub storage_filter: RwSignal<String>,
+    pub queues: RwSignal<Value>,
+    pub queues_filter: RwSignal<String>,
+    pub email: RwSignal<Vec<Value>>,
+}
+
+impl Kept {
+    pub fn new() -> Self {
+        Self { storage: RwSignal::new(vec![]), storage_filter: RwSignal::new(String::new()), queues: RwSignal::new(Value::Null), queues_filter: RwSignal::new(String::new()), email: RwSignal::new(vec![]) }
+    }
+}
+
 /// One live stream per page. It is closed when the page is hidden or cached (pagehide) and opened
 /// again when it comes back: browsers allow 6 connections per host over HTTP/1.1, and open streams
 /// from cached pages would otherwise use them all and stall every other request.

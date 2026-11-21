@@ -34,44 +34,43 @@
   color-scheme: light;
 }
 
-/* Dark mode follows the system; the values are the "Dark" mode of the FigCraft "Stuntman · Color" collection. */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --surface: #1c1e22;
-    --ground: #141518;
-    --subtle: #25272c;
-    --soft: #202226;
-    --rule: #2f3237;
-    --border: #474a51;
-    --caption: #8e9198;
-    --text-2: #b6b9bf;
-    --ink: #ecedef;
-    --raised-dark: #d4d6da;
-    --link: #6cb4f5;
-    --attention: #e8b54d;
-    --attention-fill: #2e2512;
-    --danger: #ff7a7a;
-    --danger-fill: #3a1918;
-    --success: #4ccb8b;
-    --success-fill: #13291e;
-    --live: #2fd07f;
-    --line-email: #f2b632;
-    --line-blue: #3d9be9;
-    --shadow: 0 8px 24px #00000080;
-    --on-ink: #141518;
-    --on-ink-2: #474a51;
-    --on-ink-fill: #16181b0f;
-    --on-ink-line: #16181b26;
-    --blue-fill: #16263a;
-    --attention-line: #5a4620;
-    --paused: #e8b54d;
-    color-scheme: dark;
-  }
-  /* A whole band does not invert like a button: it stays dark, one step raised. */
-  :root .feature { --on-ink: #ecedef; --on-ink-2: #b6b9bf; --on-ink-fill: #ffffff0d; --on-ink-line: #ffffff1f; background: var(--subtle); color: var(--on-ink); }
-  :root .feature .btn.light { background: var(--ink); color: var(--ground); border-color: var(--ink); }
-  :root .feature .mini { --on-ink: #141518; --on-ink-2: #474a51; }
+/* Dark mode: the values are the "Dark" mode of the FigCraft "Stuntman · Color" collection. index.html sets
+ * data-theme before the first paint, from the choice at the foot of the rail (Light, Dark, System). */
+:root[data-theme="dark"] {
+  --surface: #1c1e22;
+  --ground: #141518;
+  --subtle: #25272c;
+  --soft: #202226;
+  --rule: #2f3237;
+  --border: #474a51;
+  --caption: #8e9198;
+  --text-2: #b6b9bf;
+  --ink: #ecedef;
+  --raised-dark: #d4d6da;
+  --link: #6cb4f5;
+  --attention: #e8b54d;
+  --attention-fill: #2e2512;
+  --danger: #ff7a7a;
+  --danger-fill: #3a1918;
+  --success: #4ccb8b;
+  --success-fill: #13291e;
+  --live: #2fd07f;
+  --line-email: #f2b632;
+  --line-blue: #3d9be9;
+  --shadow: 0 8px 24px #00000080;
+  --on-ink: #141518;
+  --on-ink-2: #474a51;
+  --on-ink-fill: #16181b0f;
+  --on-ink-line: #16181b26;
+  --blue-fill: #16263a;
+  --attention-line: #5a4620;
+  --paused: #e8b54d;
+  color-scheme: dark;
 }
+/* A whole band does not invert like a button: it stays dark, one step raised. */
+:root[data-theme="dark"] .feature { --on-ink: #ecedef; --on-ink-2: #b6b9bf; --on-ink-fill: #ffffff0d; --on-ink-line: #ffffff1f; background: var(--subtle); color: var(--on-ink); }
+:root[data-theme="dark"] .feature .btn.light { background: var(--ink); color: var(--ground); border-color: var(--ink); }
+:root[data-theme="dark"] .feature .mini { --on-ink: #141518; --on-ink-2: #474a51; }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: var(--ground); color: var(--ink); font: 400 13px/1.45 var(--sans); }
@@ -113,6 +112,8 @@ a { color: var(--link); text-decoration: none; }
 .rail .client > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail .client .via { margin-left: auto; font: 400 11px var(--mono); color: var(--caption); }
 .rail .foot { padding: 20px 20px 0; font: 400 11px var(--mono); color: var(--caption); }
+.rail .theme { margin: 14px 16px 0; display: flex; }
+.rail .theme button { flex: 1; height: 22px; padding: 0; font-size: 11px; }
 .rail .me { margin: 14px 20px 0; padding-top: 12px; border-top: 1px solid var(--rule); font-size: 13px; }
 .mcpbar { gap: 16px; align-items: center; background: var(--soft); border-radius: 8px; padding: 12px 20px; margin-bottom: 16px; }
 

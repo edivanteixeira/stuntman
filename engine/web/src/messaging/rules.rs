@@ -225,7 +225,7 @@ pub fn Rules() -> impl IntoView {
                     view! {
                         <div class="caps">"Try it"</div>
                         <div style="margin:8px 0 6px">{format!("Against the last {of} deliveries on {}", label(&service.get()))}</div>
-                        <div class="bar"><div class="m" style=format!("width:{pct}%;background:#a8740a")></div></div>
+                        <div class="bar"><div class="m" style=format!("width:{pct}%;background:var(--paused)")></div></div>
                         <div class="small cap">{format!("{m} would match  ·  {} untouched", api::n(&t, "untouched"))}</div>
                         {t["warnings"].as_array().cloned().unwrap_or_default().into_iter().map(|w| view! { <div class="callout attn-l"><div class="t attn">"This rule never runs"</div><div class="t2">{s(&w, "text")}</div></div> }).collect_view()}
                         {(m > 0).then(|| view! {

@@ -723,7 +723,7 @@ def environments():
 
 def start():
     p = "start"
-    steps = [("Run it", "One container serves the web UI, the HTTP API and MCP. Data lives in one volume.",
+    steps = [("Run it", "One container serves the web UI (light or dark, as your system is set), the HTTP API and MCP. Data lives in one volume.",
               "docker run -d --name stuntman -p 127.0.0.1:8025:8025 \\\n  -p 127.0.0.1:2525:2525 -p 127.0.0.1:8028:8028 \\\n  -v stuntman-data:/data edivanteixeira/stuntman\n\n# web UI, /api and /mcp on http://localhost:8025", True),
              ("Point your app at it", "Change base URLs only. Your app keeps its code and every other setting.",
               "WhatsApp (Graph)   http://localhost:8025/whatsapp\nSendGrid           http://localhost:8025/sendgrid\nSMTP               localhost:2525\nHTTP API plugins   http://localhost:8028/<service>\nAzure Blob         http://127.0.0.1:10000/<account>\nAmazon S3          http://127.0.0.1:9000\nOpenTelemetry      http://localhost:4318\nOpenAI SDK         http://localhost:8025/openai/v1\nKafka              localhost:9092", False),

@@ -32,7 +32,7 @@ docker compose up -d          # add --build to build the image from source
 ```
 
 One container serves everything: the web UI, the HTTP API (`/api`), MCP (`/mcp`) and every provider on its own port.
-Data lives in the `stuntman-data` volume. Open <http://localhost:8025>.
+Data lives in the `stuntman-data` volume. Open <http://localhost:8025>; the web UI is light or dark, as your system is set.
 
 Every port binds to `127.0.0.1` by default. To reach Stuntman from other machines, read [Security](security.md) first,
 then see [Configuration › Docker](configuration.md#docker).

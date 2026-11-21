@@ -122,7 +122,7 @@ pub fn Store() -> impl IntoView {
                 view! {
                     <div class="feature">
                         <div class="grow">
-                            <div class="caps" style="color:#a9a9a2">"Collection"</div>
+                            <div class="caps" style="color:var(--on-ink-2)">"Collection"</div>
                             <h2>{name.clone()}</h2>
                             <div class="fd">{s(&c, "description")}</div>
                             <div class="fchips">
@@ -141,13 +141,13 @@ pub fn Store() -> impl IntoView {
                                     let nav = nav.clone();
                                     view! { <button class="btn light" on:click=move |_| nav("/apis", Default::default())>"Open in HTTP APIs"</button> }.into_any()
                                 }}
-                                <span class="small" style="color:#a9a9a2">{format!("{} of {} in {}  ·  one install each, nothing hidden", api::n(&c, "installed"), api::n(&c, "total"), env_name())}</span>
+                                <span class="small" style="color:var(--on-ink-2)">{format!("{} of {} in {}  ·  one install each, nothing hidden", api::n(&c, "installed"), api::n(&c, "total"), env_name())}</span>
                             </div>
                         </div>
                         {(!f.is_null()).then(|| {
                             let pg = f["pages"][0].clone();
                             let people = f["people"].as_array().cloned().unwrap_or_default();
-                            view! { <div class="fpage"><MiniPage page=pg people=people/><div class="small" style="color:#a9a9a2;margin-top:8px">"Declared in the plugin, drawn by Stuntman."</div></div> }
+                            view! { <div class="fpage"><MiniPage page=pg people=people/><div class="small" style="color:var(--on-ink-2);margin-top:8px">"Declared in the plugin, drawn by Stuntman."</div></div> }
                         })}
                     </div>
                 }

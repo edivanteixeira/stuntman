@@ -75,7 +75,7 @@ pub fn Subscriptions() -> impl IntoView {
                             let nav = nav.clone();
                             let h2 = holder.clone();
                             view! {
-                                <div class="mrow" style=if starving { "box-shadow:inset 3px 0 0 #a8740a" } else { "" } on:click=move |_| nav(&href("messages", &sel.ns.get_untracked(), &h2, ""), Default::default())>
+                                <div class="mrow" style=if starving { "box-shadow:inset 3px 0 0 var(--paused)" } else { "" } on:click=move |_| nav(&href("messages", &sel.ns.get_untracked(), &h2, ""), Default::default())>
                                     <span class="grow" style="min-width:0"><div class="mono" style="overflow-wrap:anywhere">{short}</div>
                                         <div class="small" class:attn=starving class:cap=!starving>{if starving { format!("{filt}  ·  {w} waiting and nobody receives: no receiver attached") } else { filt }}</div></span>
                                     <span class="mono small" style="width:70px" class:attn={w > 0} class:cap={w == 0}>{w}</span>

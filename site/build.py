@@ -751,6 +751,17 @@ def start():
 PROVIDERS = sorted((json.loads(f.read_text()) for f in (HERE / "providers").glob("*.json")), key=lambda d: d["order"])
 
 
+# The full reference behind each provider page (docs/services/*.md, or the guide for a way to make an HTTP provider).
+DOC_FILES = {"messaging": ["services/servicebus.md", "services/rabbitmq.md"], "catalog": ["services/http-apis.md", "plugins.md"],
+             "openapi": ["openapi.md"], "soap": ["soap.md"], "recording": ["recording.md"], "wiremock": ["mocks.md"]}
+
+
+def doc_links(d):
+    files = DOC_FILES.get(d["id"], [f"services/{d['id']}.md"])
+    files = [f for f in files if (HERE.parent / "docs" / f).exists()]
+    return " · ".join(f'<a href="{DOCS}/{f}">{e(f.split("/")[-1])}</a>' for f in files)
+
+
 def provider_page(d):
     p = "providers/" + d["id"]
     i = [x["id"] for x in PROVIDERS].index(d["id"])
@@ -785,7 +796,8 @@ def provider_page(d):
   <p class="plabel">Stands in for</p><ul class="roster__names">{chips}</ul></div>
   <aside class="ppoint"><p class="plabel">Point your app at it</p><dl>{point}</dl>
   <p class="plabel">Your AI agent drives it</p><p class="endpoint"><span><b>MCP</b>/mcp</span><span><b>HTTP</b>/api</span></p>
-  <p class="note">Every tool is both: same names, same arguments.</p></aside>
+  <p class="note">Every tool is both: same names, same arguments.</p>
+  {f'<p class="plabel">Full reference</p><p class="note">{doc_links(d)}: every endpoint, behaviour, failure and tool.</p>' if doc_links(d) else ""}</aside>
 </section>
 <section class="wrap section" style="--c:var(--line-{col})">{head(2, f"Everything {e(d['name'])} gives you")}<ol class="pcards">{caps}</ol></section>
 <section class="wrap section" style="--c:var(--line-{col})">{head(2, "The screens", "Each number is a control or a reading on the real screen. Everything you can click there, your agent can do with a tool.")}{"".join(shots)}</section>
@@ -815,6 +827,8 @@ if __name__ == "__main__":
     shutil.copytree(HERE / "assets", OUT / "assets")
     for f in (HERE / "static").iterdir():   # agent-setup.md, llms.txt: served from the site root
         shutil.copy(f, OUT / f.name)
+    # The docs as plain Markdown (and their images) at /docs/: what agents read, e.g. docs/services/rabbitmq.md.
+    shutil.copytree(HERE.parent / "docs", OUT / "docs", ignore=lambda d, names: [n for n in names if not (n.endswith((".md", ".png", ".webp", ".svg")) or (pathlib.Path(d) / n).is_dir())])
     for d in PROVIDERS:
         BUILD["providers/" + d["id"]] = (lambda d=d: provider_page(d))
     for name, fn in BUILD.items():

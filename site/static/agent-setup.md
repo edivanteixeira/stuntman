@@ -11,7 +11,7 @@ sends callbacks and fails on cue. Every action is an MCP tool and an HTTP route.
 
 - Site: https://edivanteixeira.github.io/stuntman/
 - Source and full docs: https://github.com/edivanteixeira/stuntman
-- Docs index (one file per service with every endpoint, behaviour, provocation, tool and gap): https://github.com/edivanteixeira/stuntman/blob/main/docs/README.md.
+- Docs index (one file per service with every endpoint, behaviour, provocation, tool and gap): https://edivanteixeira.github.io/stuntman/docs/README.md (plain Markdown).
   Once Stuntman runs, read the same docs from it, matching its version: `GET http://localhost:8025/docs` (the index) and
   `GET http://localhost:8025/docs/services/<service>.md`. When you are unsure whether something exists or how it works, read
   the service's file before guessing.

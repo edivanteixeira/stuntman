@@ -30,6 +30,12 @@ RUN t="$(cat /rust-target)" \
  && cargo build --release --bin stuntman --target "$t" \
  && mkdir -p /out && cp "target/$t/release/stuntman" /out/stuntman
 
+# ---- docs ----
+# The repository's docs/ lives outside this build context. The release passes it in:
+#   docker buildx build --build-context docs=../docs ...
+# A plain `docker build` gets this empty stage, and /docs answers with a link to GitHub instead.
+FROM scratch AS docs
+
 # ---- run ----
 FROM debian:trixie-slim
 # git and unzip: Catalog › Import reads plugins from a git URL or a .zip
@@ -40,9 +46,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=build /out/stuntman /usr/local/bin/stuntman
 COPY --from=build /src/web/dist /app/web
 COPY plugins /app/plugins
+COPY --from=docs / /app/docs
 ENV STUNTMAN_DATA=/data \
     STUNTMAN_WEB=/app/web \
     STUNTMAN_PLUGINS=/app/plugins \
+    STUNTMAN_DOCS=/app/docs \
     STUNTMAN_PORT=8025 \
     STUNTMAN_FTP_PASSIVE_PORTS=30000-30009 \
     STUNTMAN_FTP_PASSIVE_HOST=127.0.0.1

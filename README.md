@@ -14,7 +14,7 @@
 <p align="center">
   <a href="docs/getting-started.md">Get started</a> ·
   <a href="docs/agents.md">Agents</a> ·
-  <a href="docs/providers.md">Providers</a> ·
+  <a href="docs/README.md#services">Services</a> ·
   <a href="docs/failures.md">Failures on cue</a> ·
   <a href="docs/plugins.md">Plugins</a> ·
   <a href="docs/reference/tools.md">Tool reference</a>
@@ -132,7 +132,7 @@ claude mcp add --transport http stuntman http://localhost:8025/mcp
 | **Product events** | PostHog, Segment, Mixpanel, GA4 Measurement Protocol, with tracking plans | 400, 413, 429, slow, half the events lost; personal data flagged |
 | **Telemetry** | OpenTelemetry (OTLP logs, traces, metrics), GELF, StatsD | a collector that refuses, rejects, throttles, slows down or drops half |
 
-→ [Providers in detail](docs/providers.md) · [Every failure you can provoke](docs/failures.md)
+→ [Each service in detail](docs/README.md#services) · [Every failure you can provoke](docs/failures.md)
 
 ## See it
 
@@ -157,7 +157,7 @@ claude mcp add --transport http stuntman http://localhost:8025/mcp
 |---|---|
 | [Getting started](docs/getting-started.md) | Run it, point your app, connect an agent, ask for the hard case |
 | [Agents](docs/agents.md) | MCP and HTTP, client-by-client setup, the loop, tools by intent |
-| [Providers](docs/providers.md) | Each line: what it speaks, what it keeps, how to point your app at it |
+| [Services](docs/README.md#services) | One file per service: every endpoint, behaviour, provocation, tool and gap |
 | [Failures on cue](docs/failures.md) | Rules, forced answers and every provocation, line by line |
 | [Timeline and proof](docs/timeline.md) | Reading what your app did; unmatched calls; telemetry |
 | [Plugins](docs/plugins.md) | The YAML format, expressions, installing, validating |

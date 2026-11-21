@@ -44,7 +44,7 @@ their own area and open from a row, so the timeline stays readable. Click a span
 who answered it, the status, the trip it caused and its attributes.
 
 Point `OTEL_EXPORTER_OTLP_ENDPOINT` at `http://localhost:4318` (or gRPC `:4317`). See
-[Providers › Telemetry](providers.md#telemetry).
+[Telemetry](services/telemetry.md).
 
 ## For agents and tests
 

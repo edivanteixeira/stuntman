@@ -64,7 +64,7 @@ The project was first called Dublê: `DUBLE_*` variables still work when the `ST
 | `8028` / `8443` | HTTP API plugins / over TLS |
 | `8444` | Key Vault (TLS) |
 | `5673` / `5671` | AMQP / over TLS |
-| `5300` | Service Bus management over HTTP or HTTPS, and AMQP ([Providers › Messaging](providers.md#management-administration-client)) |
+| `5300` | Service Bus management over HTTP or HTTPS, and AMQP ([Service Bus](services/servicebus.md)) |
 | `10000` | Azure Blob |
 | `9000` | Amazon S3 |
 | `4318` / `4317` | OTLP HTTP / gRPC |
@@ -81,7 +81,7 @@ The project was first called Dublê: `DUBLE_*` variables still work when the `ST
 
 LDAP, FTP, SFTP, IMAP, POP3, Kafka, the Schema Registry, Pub/Sub, Kinesis, the RabbitMQ management API, ActiveMQ, GELF and StatsD have no host
 name to tell environments apart, so they serve the default environment (GELF and StatsD can name another one; see
-[Providers › Telemetry](providers.md#telemetry)).
+[Telemetry](services/telemetry.md)).
 
 ## Docker
 

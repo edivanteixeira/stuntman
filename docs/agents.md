@@ -28,6 +28,12 @@ providers, configure, point the project, prove, and a welcome with every link. A
 6. **Read what the app sent.** Calls, retries, callbacks, in the provider's words.
 7. **Check the result.** Against the timeline, not a guess. Then turn the provocation off.
 
+## Read the docs from Stuntman
+
+Every running Stuntman serves its own docs as Markdown, matching its version: `GET /docs` is the
+[index](README.md), and `GET /docs/services/<service>.md` one service with every endpoint, behaviour, provocation,
+tool and gap. The MCP instructions tell agents to read it when unsure, instead of guessing.
+
 ## When Stuntman falls short
 
 An agent that hits a gap in Stuntman (a provider behaviour it gets wrong, a missing endpoint or tool, a bug) already

@@ -240,7 +240,14 @@ script creates there is what the app finds on AMQP. It answers:
 - `/api/overview`, `/api/whoami`, `/api/health/checks/alarms` and `local-alarms` (503 while a namespace is set to
   busy), `/api/healthchecks/node`, `/api/aliveness-test/{vhost}`
 - `/api/vhosts[/{vhost}]`: GET, PUT (with `default_queue_type`; a PUT without it sets it back to classic, as
-  RabbitMQ does), DELETE. An unknown vhost is 404 here; it is not created.
+  RabbitMQ does), DELETE. An unknown vhost is 404 here; it is not created. Deleting a vhost closes its open
+  connections with 320 `CONNECTION_FORCED - vhost '<name>' is deleted`, as RabbitMQ does.
+- `/` is the RabbitMQ namespace named `default`, else the first one (made as `default` when there is none). The
+  namespace list marks it with `defaultVhost: true`, and the messaging tools take `/` as its name (publish,
+  `list_consumers`, `disconnect_consumer`…).
+- `/api/connections[/{name}]` and `/api/vhosts/{vhost}/connections`: the open AMQP 0-9-1 connections (name
+  `<peer> -> <local>`, vhost, user, client-provided name, channels). DELETE `/api/connections/{name}` closes one with
+  320 `CONNECTION_FORCED`, the reason from the `X-Reason` header.
 - `/api/users[/{user}]` (PUT with `password` or `password_hash`, `tags`), `/api/users/{user}/permissions`,
   `/api/permissions[/{vhost}/{user}]`, `/api/vhosts/{vhost}/permissions`
 - `/api/policies[/{vhost}[/{name}]]`: GET returns what was PUT (pattern, apply-to, priority, definition)
@@ -262,6 +269,10 @@ What the broker does with them, as RabbitMQ 4:
 - A rejected message, a dropped head and a message over its delivery limit go to the queue's dead-letter exchange
   (`x-dead-letter-exchange` or the policy's `dead-letter-exchange`) with `x-death` and `x-first-death-*` headers;
   without one they are discarded (the screen still shows them as dead-lettered).
+- Every change through this API (users and passwords, permissions, vhosts, policies, connections closed) is a row on
+  the [Timeline](timeline.md) under Messaging: what changed, the management user who did it, and the method, path,
+  client address and user agent. A refused change (401, 404) is a row too. To find who changed a password, filter the
+  Timeline by Messaging and look for `password set`.
 - A user declared through the API is checked: a wrong password gets 401 here and `ACCESS_REFUSED` on AMQP, and a vhost
   with no permission for that user refuses the connection (`NOT_ALLOWED`). A user without the `administrator` tag sees
   only its vhosts and cannot change vhosts, users, permissions or policies (`policymaker` may change policies). Users
@@ -279,7 +290,7 @@ API answers 503 for that vhost's endpoints (the port is shared with the other vh
 connection). Queued messages stay. `ok` brings it back. Service Bus namespaces follow the same modes.
 
 Not done: `consumer-timeout` is kept in the policy but not enforced; permission patterns are kept but not checked per
-operation; `/` is an alias of the first RabbitMQ namespace.
+operation.
 
 Service Bus finds the namespace by host name: give the environment a base domain under a wildcard DNS name that
 points at Stuntman. See [Environments](environments.md#how-a-request-finds-its-environment).
@@ -746,7 +757,7 @@ Tools: `list_product_events`, `event_people`, `wait_for_event`, `check_events`, 
 |---|---|
 | **Speaks** | OpenTelemetry OTLP over HTTP (`:4318`, protobuf or JSON) and gRPC (`:4317`); GELF (Graylog) over UDP `:12201` (plain, gzip or zlib, chunked) and HTTP `POST /gelf` on `:8025`; StatsD and DogStatsD over UDP `:8125` |
 | **Point your app at** | `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`; a GELF sink at `localhost:12201` (UDP); a StatsD client at `localhost:8125` |
-| **It keeps** | traces, logs and metrics in their own area, joined to the calls that caused them by trace ID |
+| **It keeps** | traces, logs and metrics in their own area, joined to the calls that caused them by trace ID; each signal for its `keep` (24 h by default), counted from when Stuntman received it, so an app with a frozen or skewed clock keeps its data too (the screens' time windows still go by the event's own time: ask with a wider `since`) |
 | **You can provoke** | a collector that answers 401, 403, 429, 503, refuses, slows down or drops half (`provoke_collector`) |
 | **Also** | `real_provider_calls`: the hosts your app still calls directly, from its own spans |
 

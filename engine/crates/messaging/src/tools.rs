@@ -14,8 +14,13 @@ use stuntman_core::{tools::Args, util, ApiError, Ctx, Tool};
 
 use crate::{broker, config, rules};
 
-fn ns_of(a: &Args) -> Result<String, ApiError> {
-    a.str("namespace").or(a.str("ns")).or(a.str("account")).ok_or_else(|| ApiError::bad("“namespace” is required"))
+fn ns_of(ctx: &Ctx, a: &Args) -> Result<String, ApiError> {
+    let n = a.str("namespace").or(a.str("ns")).or(a.str("account")).ok_or_else(|| ApiError::bad("“namespace” is required"))?;
+    if n != "/" && !n.eq_ignore_ascii_case("%2F") {
+        return Ok(n);
+    }
+    // RabbitMQ's default vhost: the tools reach it by the same name the app uses.
+    crate::rabbit::slash(ctx).map(|n| n.namespace).ok_or_else(|| ApiError::not_found("No RabbitMQ namespace for vhost “/”: create one named default"))
 }
 
 fn entity_of(a: &Args) -> Result<String, ApiError> {
@@ -79,7 +84,7 @@ pub async fn ns_view(ctx: &Ctx, n: &config::Namespace) -> Value {
         }
     }
     let keys: Vec<Value> = n.access.policies.iter().map(|(p, pol)| json!({"name": p, "rights": pol.rights, "masked": config::mask(&config::key_value(ctx, &n.namespace, p))})).collect();
-    json!({"namespace": n.namespace, "kind": n.kind, "service": n.kind, "label": if n.kind == config::SB { "Azure Service Bus" } else { "RabbitMQ" },
+    json!({"namespace": n.namespace, "kind": n.kind, "service": n.kind, "defaultVhost": is_slash(ctx, n), "label": if n.kind == config::SB { "Azure Service Bus" } else { "RabbitMQ" },
         "queues": n.queues(), "topics": n.topics(), "entities": entities, "connection": connection(ctx, n), "keys": keys,
         "behaviour": n.behaviour, "access": {"anyKey": n.access.any_key, "managedIdentity": n.access.managed_identity},
         "file": config::rel_file(&n.namespace), "yaml": config::text(ctx, &n.namespace), "settings": n, "port": crate::port(),
@@ -120,9 +125,14 @@ pub async fn warnings(ctx: &Ctx, n: &config::Namespace) -> Vec<Value> {
 }
 
 /// The short view (?summary=1): what a script or an agent needs to connect, and the counts.
+/// RabbitMQ: vhost "/" lands on this namespace.
+fn is_slash(ctx: &Ctx, n: &config::Namespace) -> bool {
+    n.kind == config::RABBIT && crate::rabbit::slash(ctx).is_some_and(|s| s.namespace == n.namespace)
+}
+
 pub async fn ns_summary(ctx: &Ctx, n: &config::Namespace) -> Value {
     let w = warnings(ctx, n).await;
-    json!({"namespace": n.namespace, "kind": n.kind, "connection": connection(ctx, n), "port": crate::port(),
+    json!({"namespace": n.namespace, "kind": n.kind, "connection": connection(ctx, n), "port": crate::port(), "defaultVhost": is_slash(ctx, n),
         "managementPort": if n.kind == config::SB { json!(crate::mgmt_port()) } else { Value::Null },
         "queues": n.queues(), "topics": n.topics(), "counts": broker::counts(ctx, &n.namespace, "").await, "warnings": w.len()})
 }
@@ -216,7 +226,7 @@ fn queues() -> Vec<Tool> {
         .param("summary", "true: ports, connection strings and counts only")
         .route("GET", "/messaging/namespaces"),
         Tool::new("trace_message_route", "Where a RabbitMQ message would go, without publishing it: every binding on the way (exchange to exchange, exchange to queue), whether its key matches, and the queues it reaches.", |ctx, a| async move {
-            let ns = a.str("vhost").map(Ok).unwrap_or_else(|| ns_of(&a))?;
+            let ns = a.str("vhost").map(Ok).unwrap_or_else(|| ns_of(&ctx, &a))?;
             let n = config::get(&ctx, &ns)?;
             if n.kind != config::RABBIT {
                 return Err(ApiError::bad(format!("{ns} is not a RabbitMQ namespace")));
@@ -249,7 +259,7 @@ fn queues() -> Vec<Tool> {
         })
         .route("GET", "/messaging/warnings"),
         Tool::new("list_queue_messages", "Messages of a queue, topic or subscription, newest first; state = active | scheduled | locked | dead_letter | completed.", |ctx, a| async move {
-            let ns = ns_of(&a)?;
+            let ns = ns_of(&ctx, &a)?;
             let n = config::get(&ctx, &ns)?;
             let h = find_holder(&n, &entity_of(&a)?)?;
             let rows = broker::list(&ctx, &ns, &h, wanted(&a), a.str("q"), a.u64("last").unwrap_or(50) as u32).await?;
@@ -259,13 +269,13 @@ fn queues() -> Vec<Tool> {
         .req("namespace", "namespace").req("entity", "queue, topic, or <topic>/subscriptions/<name>").param("state", "active | scheduled | locked | dead_letter | completed").param("q", "message id, subject, #seq or text in the body").param("last", "default 50")
         .route("GET", "/messaging/{namespace}/{entity}/messages"),
         Tool::new("get_queue_message", "One message: properties, body and the delivery history (published, delivered, abandoned, completed, dead-lettered…).", |ctx, a| async move {
-            let ns = ns_of(&a)?;
+            let ns = ns_of(&ctx, &a)?;
             broker::get(&ctx, &ns, a.need("seq")?.trim_start_matches('#').parse().map_err(|_| ApiError::bad("seq: a number"))?).await
         })
         .req("namespace", "namespace").param("entity", "entity (not needed: seq is unique)").req("seq", "sequence number")
         .route("GET", "/messaging/{namespace}/{entity}/messages/{seq}"),
         Tool::new("wait_for_queue_message", "Waits for the first message published by the app (not by you or an agent) that matches: what an agent waits for. 408 after the timeout.", |ctx, a| async move {
-            let ns = ns_of(&a)?;
+            let ns = ns_of(&ctx, &a)?;
             let n = config::get(&ctx, &ns)?;
             let h = find_holder(&n, &entity_of(&a)?)?;
             let since = a.u64("since").map(|x| x as i64).unwrap_or_else(|| util::now_ms() - 2_000);
@@ -299,7 +309,7 @@ fn queues() -> Vec<Tool> {
         .req("namespace", "namespace").req("entity", "entity").param("where", "{\"subject\": \"OrderCreated\"} — message fields, properties or system properties").param("timeout", "default 30s").param("since", "ms; default 2 s ago")
         .route("GET", "/messaging/{namespace}/{entity}/wait"),
         Tool::new("publish", "Publishes a message as a test (recorded as sent by you or the agent, never as the app). Topics fan out to their subscriptions.", |ctx, a| async move {
-            let ns = ns_of(&a)?;
+            let ns = ns_of(&ctx, &a)?;
             let entity = entity_of(&a)?;
             let body = match a.get("body") {
                 Some(Value::String(s)) => s.clone(),
@@ -327,7 +337,7 @@ fn queues() -> Vec<Tool> {
         .param("schedule_at", "epoch ms or a delay like 5m").param("correlation_id", "").param("session_id", "").param("routing_key", "RabbitMQ: the routing key").param("message_id", "")
         .route("POST", "/messaging/{namespace}/{entity}/messages"),
         Tool::new("set_next_message_delivery", "What the next message published to this entity does: lose_lock | duplicate | hold | drop | dead_letter | out_of_order | normal. Once (times=1) then normal; times=0 every time.", |ctx, a| async move {
-            let ns = ns_of(&a)?;
+            let ns = ns_of(&ctx, &a)?;
             let n = config::get(&ctx, &ns)?;
             let h = find_holder(&n, &entity_of(&a)?)?;
             let b = a.str("behavior").or(a.str("behaviour")).unwrap_or("normal".into());
@@ -337,7 +347,7 @@ fn queues() -> Vec<Tool> {
         .req("namespace", "namespace").req("entity", "entity").req("behavior", "lose_lock | duplicate | hold | drop | dead_letter | out_of_order | normal").param("times", "1 (default): once, then normal; 0: every time")
         .route("PUT", "/messaging/{namespace}/{entity}/next-delivery"),
         Tool::new("resubmit", "Puts dead-lettered messages back on their queue, with a note in their history: one seq, or all_dead_letters.", |ctx, a| async move {
-            let ns = ns_of(&a)?;
+            let ns = ns_of(&ctx, &a)?;
             let seqs: Vec<i64> = if a.bool("all_dead_letters").unwrap_or(false) || a.get("seq").is_none() {
                 let n = config::get(&ctx, &ns)?;
                 let h = find_holder(&n, &entity_of(&a)?)?;
@@ -351,7 +361,7 @@ fn queues() -> Vec<Tool> {
         .req("namespace", "namespace").param("entity", "entity (with all_dead_letters)").param("seq", "one message").param("all_dead_letters", "true: every dead-lettered message of the entity")
         .route("POST", "/messaging/{namespace}/{entity}/resubmit"),
         Tool::new("dead_letter_message", "Moves a waiting message to dead-letter by hand (“dead-lettered by you”).", |ctx, a| async move {
-            let ns = ns_of(&a)?;
+            let ns = ns_of(&ctx, &a)?;
             let seq = a.need("seq")?.trim_start_matches('#').parse().map_err(|_| ApiError::bad("seq: a number"))?;
             broker::dead_letter(&ctx, &ns, seq, &by(&a)).await?;
             Ok(json!({"seq": seq, "state": "dead_letter"}))
@@ -359,7 +369,7 @@ fn queues() -> Vec<Tool> {
         .req("namespace", "namespace").param("entity", "entity").req("seq", "sequence number")
         .route("POST", "/messaging/{namespace}/{entity}/messages/{seq}/dead-letter"),
         Tool::new("delete_queue_message", "Deletes one message and its history.", |ctx, a| async move {
-            let ns = ns_of(&a)?;
+            let ns = ns_of(&ctx, &a)?;
             let seq = a.need("seq")?.trim_start_matches('#').parse().map_err(|_| ApiError::bad("seq: a number"))?;
             broker::delete(&ctx, &ns, seq).await?;
             Ok(json!({"deleted": seq}))
@@ -367,7 +377,7 @@ fn queues() -> Vec<Tool> {
         .req("namespace", "namespace").param("entity", "entity").req("seq", "sequence number")
         .route("DELETE", "/messaging/{namespace}/{entity}/messages/{seq}"),
         Tool::new("purge", "Removes messages of an entity (a state, or all). People confirm on the screen; agents do not.", |ctx, a| async move {
-            let ns = ns_of(&a)?;
+            let ns = ns_of(&ctx, &a)?;
             let n = config::get(&ctx, &ns)?;
             let h = find_holder(&n, &entity_of(&a)?)?;
             let gone = broker::purge(&ctx, &ns, &h, wanted(&a)).await?;
@@ -376,7 +386,7 @@ fn queues() -> Vec<Tool> {
         .req("namespace", "namespace").req("entity", "entity").param("state", "dead_letter, active… (default all)")
         .route("DELETE", "/messaging/{namespace}/{entity}/messages"),
         Tool::new("list_consumers", "Connections receiving from this entity: client id, link, receive mode, prefetch, locks held, completed today; disconnected ones of the last day.", |ctx, a| async move {
-            let ns = ns_of(&a)?;
+            let ns = ns_of(&ctx, &a)?;
             let h = a.str("entity").filter(|e| e != "*").unwrap_or_default();
             Ok(json!({"namespace": ns, "entity": h, "consumers": broker::consumers(&ctx, &ns, &h).await?}))
         })
@@ -384,7 +394,7 @@ fn queues() -> Vec<Tool> {
         .route("GET", "/messaging/{namespace}/{entity}/consumers"),
         Tool::new("get_consumer", "One consumer: connection, the locks it holds now and its last messages.", |ctx, a| async move {
             let id = a.need("id")?;
-            let ns = ns_of(&a)?;
+            let ns = ns_of(&ctx, &a)?;
             let all = broker::consumers(&ctx, &ns, "").await?;
             let c = all.into_iter().find(|c| c["id"] == json!(id)).ok_or_else(|| ApiError::not_found(format!("No consumer {id}")))?;
             let client = c["client"].as_str().unwrap_or("").to_string();
@@ -413,7 +423,7 @@ fn queues() -> Vec<Tool> {
         .req("namespace", "namespace").req("id", "consumer id")
         .route("POST", "/messaging/{namespace}/consumers/{id}/expire-locks"),
         Tool::new("set_namespace_reachability", "The whole namespace: ok | refuse (new connections refused) | timeout (no answer) | 401 (key rejected) | busy (ServerBusy / connection.blocked) | down (a dead broker: open connections drop without a word, new ones are refused, management answers 503) | close (the same, but open connections get a forced close first).", |ctx, a| async move {
-            let ns = ns_of(&a)?;
+            let ns = ns_of(&ctx, &a)?;
             let mode = a.need("mode")?;
             if !config::REACH.contains(&mode.as_str()) {
                 return Err(ApiError::bad(format!("mode: {}", config::REACH.join(" | "))));
@@ -635,7 +645,7 @@ fn namespaces() -> Vec<Tool> {
         }),
         Tool::new("messaging_get_account", "", |ctx, a| async move {
             let s = service(&a)?;
-            let n = config::get(&ctx, &ns_of(&a)?)?;
+            let n = config::get(&ctx, &ns_of(&ctx, &a)?)?;
             kind_ok(&n, &s)?;
             let mut v = ns_view(&ctx, &n).await;
             v["etag"] = json!(etag(&config::text(&ctx, &n.namespace)));
@@ -643,7 +653,7 @@ fn namespaces() -> Vec<Tool> {
         }),
         Tool::new("messaging_create_account", "", |ctx, a| async move {
             let s = service(&a)?;
-            let name = ns_of(&a)?;
+            let name = ns_of(&ctx, &a)?;
             config::valid_name(&name).map_err(ApiError::bad)?;
             let mut n = config::create(&ctx, &s, &name)?;
             if let Some(p) = a.get("settings") {
@@ -654,7 +664,7 @@ fn namespaces() -> Vec<Tool> {
         }),
         Tool::new("messaging_update_account", "", |ctx, a| async move {
             let s = service(&a)?;
-            let name = ns_of(&a)?;
+            let name = ns_of(&ctx, &a)?;
             let text = config::text(&ctx, &name);
             if let Some(m) = a.str("if_match") {
                 if m != etag(&text) {
@@ -676,7 +686,7 @@ fn namespaces() -> Vec<Tool> {
         }),
         Tool::new("messaging_rotate_key", "", |ctx, a| async move {
             let s = service(&a)?;
-            let n = config::get(&ctx, &ns_of(&a)?)?;
+            let n = config::get(&ctx, &ns_of(&ctx, &a)?)?;
             kind_ok(&n, &s)?;
             let k = a.str("key").or(a.str("policy")).ok_or_else(|| ApiError::bad("“key” (policy) is required"))?;
             if !n.access.policies.contains_key(&k) {
@@ -688,7 +698,7 @@ fn namespaces() -> Vec<Tool> {
         }),
         Tool::new("messaging_delete_account", "", |ctx, a| async move {
             let s = service(&a)?;
-            let n = config::get(&ctx, &ns_of(&a)?)?;
+            let n = config::get(&ctx, &ns_of(&ctx, &a)?)?;
             kind_ok(&n, &s)?;
             std::fs::remove_file(config::file(&ctx, &n.namespace)).map_err(|e| ApiError::internal(e.to_string()))?;
             broker::purge(&ctx, &n.namespace, "", None).await?;
@@ -696,7 +706,7 @@ fn namespaces() -> Vec<Tool> {
             Ok(json!({"deleted": n.namespace}))
         }),
         Tool::new("add_entity", "Adds a queue or a topic to a namespace (or marks one the app created as declared: “Keep it in the YAML”).", |ctx, a| async move {
-            let ns = ns_of(&a)?;
+            let ns = ns_of(&ctx, &a)?;
             let name = entity_name(&a, "entity")?;
             config::valid_entity(&name).map_err(ApiError::bad)?;
             let kind = a.str("kind").unwrap_or("queue".into());
@@ -720,7 +730,7 @@ fn namespaces() -> Vec<Tool> {
         .req("namespace", "namespace").req("entity", "queue or topic name").param("kind", "queue (default) | topic").param("lock", "30s").param("max_delivery", "10").param("sessions", "true | false").param("exchange_type", "RabbitMQ: topic | direct | fanout | headers")
         .route("POST", "/services/{name}/accounts/{account}/entities"),
         Tool::new("remove_entity", "Removes a queue or a topic and its messages.", |ctx, a| async move {
-            let ns = ns_of(&a)?;
+            let ns = ns_of(&ctx, &a)?;
             let name = entity_name(&a, "entity")?;
             let n = config::change(&ctx, &ns, |n| {
                 n.entities.remove(&name).ok_or_else(|| ApiError::not_found(format!("No entity “{name}”")))?;
@@ -739,7 +749,7 @@ fn namespaces() -> Vec<Tool> {
         .req("namespace", "namespace").req("name", "entity")
         .route("DELETE", "/services/{name}/accounts/{account}/entities/{entity}"),
         Tool::new("add_subscription", "Adds a subscription to a topic (RabbitMQ: binds a queue to the exchange; filter is the binding key).", |ctx, a| async move {
-            let ns = ns_of(&a)?;
+            let ns = ns_of(&ctx, &a)?;
             let topic = a.need("topic")?;
             let name = entity_name(&a, "subscription")?;
             config::valid_entity(&name).map_err(ApiError::bad)?;
@@ -758,7 +768,7 @@ fn namespaces() -> Vec<Tool> {
         .req("namespace", "namespace").req("topic", "topic (exchange)").req("subscription", "subscription (RabbitMQ: the queue)").param("filter", "Service Bus: subject = X or key = value; RabbitMQ: binding key").param("lock", "30s").param("max_delivery", "10")
         .route("POST", "/services/{name}/accounts/{account}/topics/{topic}/subscriptions"),
         Tool::new("rotate_policy_key", "Makes a new key for a shared access policy (RabbitMQ: a user's password); senders still using the old one get 401.", |ctx, a| async move {
-            let ns = ns_of(&a)?;
+            let ns = ns_of(&ctx, &a)?;
             let p = a.need("policy")?;
             let n = config::get(&ctx, &ns)?;
             if !n.access.policies.contains_key(&p) {
@@ -771,7 +781,7 @@ fn namespaces() -> Vec<Tool> {
         .req("namespace", "namespace").req("policy", "policy (user)")
         .route("POST", "/services/{name}/accounts/{account}/policies/{policy}/rotate"),
         Tool::new("set_throughput", "Messages a second the namespace takes before ServerBusy; none, a number, or throttle_now (every send ServerBusy).", |ctx, a| async move {
-            let ns = ns_of(&a)?;
+            let ns = ns_of(&ctx, &a)?;
             let v = a.str("per_second").or(a.str("throughput")).unwrap_or("none".into());
             let n = config::change(&ctx, &ns, |n| {
                 n.behaviour.throughput = v.clone();
@@ -782,7 +792,7 @@ fn namespaces() -> Vec<Tool> {
         .req("namespace", "namespace").req("per_second", "none | <n> | throttle_now")
         .route("PUT", "/messaging/{namespace}/throughput"),
         Tool::new("set_auto_create", "On: queues and topics the app declares or sends to are created. Off: they answer 404 (test a missing entity).", |ctx, a| async move {
-            let ns = ns_of(&a)?;
+            let ns = ns_of(&ctx, &a)?;
             let on = a.bool("on").unwrap_or(true);
             config::change(&ctx, &ns, |n| {
                 n.behaviour.auto_create = on;

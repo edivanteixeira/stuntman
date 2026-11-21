@@ -2,7 +2,7 @@
 //! vhosts, queues, exchanges, bindings, policies, users and permissions over HTTP before they
 //! connect (MassTransit setups, provisioning scripts, rabbitmqadmin): overview, whoami,
 //! vhosts, users, permissions, policies, queues, exchanges, bindings, health checks, aliveness.
-//! Vhosts are the RabbitMQ namespaces of the default environment ("/" is the first one).
+//! Vhosts are the RabbitMQ namespaces of the default environment ("/" is the one named default, else the first).
 //!
 //! Users declared here (rabbitmqadmin `users declare`) are real: a wrong password gets 401 here
 //! and ACCESS_REFUSED on AMQP, and a vhost without a permission for them refuses them. Anyone
@@ -193,6 +193,45 @@ async fn auth(State(e): State<Envs>, req: Request, next: Next) -> Response {
     next.run(req).await
 }
 
+/// Every change through the management API (users, passwords, permissions, vhosts, policies,
+/// connections closed) is a Timeline row: who (the management user), from where, and with what.
+async fn audit(State(e): State<Envs>, req: Request, next: Next) -> Response {
+    let (method, path) = (req.method().clone(), req.uri().path().to_string());
+    let segs: Vec<String> = path.trim_start_matches("/api/").split('/').map(decode).collect();
+    if matches!(method, Method::GET | Method::HEAD) || !matches!(segs[0].as_str(), "users" | "permissions" | "vhosts" | "policies" | "connections") {
+        return next.run(req).await;
+    }
+    let (user, _) = basic(req.headers());
+    let agent = req.headers().get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let from = req.extensions().get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|c| c.0.ip().to_string()).unwrap_or_default();
+    let (parts, body) = req.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else { return bad("body too large") };
+    let b: Value = serde_json::from_slice(&bytes).unwrap_or(json!({}));
+    let res = next.run(Request::from_parts(parts, axum::body::Body::from(bytes))).await;
+    let arg = |i: usize| segs.get(i).map(|x| vh(x)).unwrap_or_default();
+    let what = match (segs[0].as_str(), method == Method::DELETE) {
+        ("users", true) => format!("user {} deleted", arg(1)),
+        ("users", false) if b.get("password").is_some() || b.get("password_hash").is_some() => format!("user {}: password set", arg(1)),
+        ("users", false) => format!("user {}: tags set to {}", arg(1), tags_of(&b["tags"]).join(",")),
+        ("permissions", true) => format!("permission of {} on vhost {} removed", arg(2), arg(1)),
+        ("permissions", false) => format!("permission of {} on vhost {} set (configure {}, write {}, read {})", arg(2), arg(1), b["configure"].as_str().unwrap_or(""), b["write"].as_str().unwrap_or(""), b["read"].as_str().unwrap_or("")),
+        ("vhosts", true) => format!("vhost {} deleted", arg(1)),
+        ("vhosts", false) => format!("vhost {} declared", arg(1)),
+        ("policies", true) => format!("policy {} on vhost {} deleted", arg(2), arg(1)),
+        ("policies", false) => format!("policy {} on vhost {} set", arg(2), arg(1)),
+        _ => format!("connection {} closed", arg(1)),
+    };
+    let st = res.status();
+    if let Some(ctx) = e.default_env() {
+        let label = if st.is_success() { what } else { format!("{what} — refused ({})", st.as_u16()) };
+        let who = if user.is_empty() { "management API (no user)".to_string() } else { user };
+        let detail = format!("{method} {path} · management API{}{}", if from.is_empty() { String::new() } else { format!(" · from {from}") }, if agent.is_empty() { String::new() } else { format!(" · {agent}") });
+        let _ = stuntman_core::trips::record(&ctx, stuntman_core::trips::Trip { id: &stuntman_core::util::id("mgmt"), module: "messaging", label: &label, status: if st.is_success() { "ok" } else { "error" },
+            trace_id: None, link: "", host: "rabbitmq management", actor: &who, outcome: if st.is_success() { "ok" } else { "failed" }, detail: &detail }).await;
+    }
+    res
+}
+
 // ---------------------------------------------------------------- rows
 
 fn vhost_json(name: &str, n: Option<&config::Namespace>) -> Value {
@@ -321,6 +360,8 @@ async fn delete_vhost(State(e): State<Envs>, Path(v): Path<String>) -> Response 
         return not_found();
     }
     let _ = crate::broker::purge(&ctx, &n.namespace, "", None).await;
+    // RabbitMQ closes the vhost's connections; their consumers see the close, not silence.
+    crate::rabbit::force_close(&ctx.env, None, Some(&n.namespace), &format!("vhost '{}' is deleted", vh(&v)));
     ctx.live.send("messaging.namespace", &n.namespace, "deleted");
     StatusCode::NO_CONTENT.into_response()
 }
@@ -629,7 +670,22 @@ pub fn router(envs: Envs) -> Router {
             }))
         .route("/api/bindings/{vhost}/e/{ex}/q/{q}/{props}", axum::routing::delete(|State(e): State<Envs>, Path((v, x, q, p)): Path<(String, String, String, String)>| delete_binding(e, v, x, q, false, p)))
         .route("/api/bindings/{vhost}/e/{ex}/e/{dest}/{props}", axum::routing::delete(|State(e): State<Envs>, Path((v, x, d, p)): Path<(String, String, String, String)>| delete_binding(e, v, x, d, true, p)))
+        .route("/api/connections", get(|State(e): State<Envs>| async move { Json(e.default_env().map(|c| crate::rabbit::connections(Some(&c.env), None)).unwrap_or_default()) }))
+        .route("/api/vhosts/{vhost}/connections", get(|State(e): State<Envs>, Path(v): Path<String>| async move {
+            let name = vh(&v);
+            match ns_of(&e, &name) { Some((c, n)) => Json(crate::rabbit::connections(Some(&c.env), Some(&n.namespace))).into_response(), None => not_found() }
+        }))
+        .route("/api/connections/{name}", get(|State(e): State<Envs>, Path(c): Path<String>| async move {
+            let name = decode(&c);
+            match e.default_env().and_then(|x| crate::rabbit::connections(Some(&x.env), None).into_iter().find(|r| r["name"] == json!(name))) { Some(r) => Json(r).into_response(), None => not_found() }
+        }).delete(|State(e): State<Envs>, Path(c): Path<String>, h: HeaderMap| async move {
+            let Some(ctx) = e.default_env() else { return not_found() };
+            // rabbitmqadmin sends the reason in X-Reason, as the management UI does.
+            let why = h.get("x-reason").and_then(|v| v.to_str().ok()).filter(|s| !s.is_empty()).unwrap_or("Closed via management plugin").to_string();
+            if crate::rabbit::force_close(&ctx.env, Some(&decode(&c)), None, &why) == 0 { not_found() } else { StatusCode::NO_CONTENT.into_response() }
+        }))
         .layer(middleware::from_fn_with_state(envs.clone(), auth))
+        .layer(middleware::from_fn_with_state(envs.clone(), audit))
         .with_state(envs)
 }
 
@@ -639,7 +695,7 @@ pub fn serve(envs: Envs, port: u16) {
             eprintln!("RabbitMQ management: port {port} is taken");
             return;
         };
-        let _ = axum::serve(l, router(envs)).await;
+        let _ = axum::serve(l, router(envs).into_make_service_with_connect_info::<std::net::SocketAddr>()).await;
     });
 }
 

@@ -77,7 +77,10 @@ impl Amqp {
     /// Ok after connection.open-ok; Err(code, text) when the broker closes the connection.
     async fn open(envs: &Envs, user: &str, pass: &str, vhost: &str) -> Result<Amqp, (u16, String)> {
         let (a, b) = tokio::io::duplex(1 << 20);
-        tokio::spawn(rabbit::serve(envs.clone(), Box::new(b), "127.0.0.1:50000".into()));
+        // Each connection its own client port: /api/connections names them by it.
+        static PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(50000);
+        let port = PORT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        tokio::spawn(rabbit::serve(envs.clone(), Box::new(b), format!("127.0.0.1:{port}")));
         let mut c = Amqp { io: a, buf: vec![] };
         c.next().await; // connection.start
         c.send(0, AMQPClass::Connection(connection::AMQPMethod::StartOk(connection::StartOk { client_properties: FieldTable::default(), mechanism: "PLAIN".into(), response: LongString::from(format!("\0{user}\0{pass}")), locale: "en_US".into() }))).await;
@@ -400,4 +403,56 @@ async fn reachability_down_drops_open_connections() {
         f => panic!("expected connection.close 320, got {f:?}"),
     }
     set("ok");
+}
+
+/// vhost "/" is the namespace named default (made on first use), the tools reach it by "/",
+/// /api/connections lists and closes connections, deleting a vhost closes its connections, and
+/// every user, permission and vhost change is a Timeline row with who and from where.
+#[tokio::test]
+async fn slash_vhost_connections_and_audit() {
+    let (envs, ctx) = envs();
+    ctx.db.migrate(stuntman_core::trips::SQL).unwrap();
+    stuntman_core::trips::upgrade(&ctx.db);
+    let h = Http { c: reqwest::Client::new(), base: mgmt(&envs).await, auth: ("guest".into(), "guest".into()) };
+    // "/" always exists in RabbitMQ: 204, and the namespace behind it is made now.
+    assert_eq!(h.st("PUT", "vhosts/%2F", None).await, 204);
+    assert_eq!(config::get(&ctx, "default").unwrap().kind, config::RABBIT);
+    h.st("PUT", "vhosts/acme-late", None).await;
+    assert_eq!(rabbit::slash(&ctx).unwrap().namespace, "default", "a later namespace does not take over /");
+
+    let mut c = Amqp::open(&envs, "guest", "guest", "/").await.unwrap();
+    // Other tests run in parallel in an environment of the same name: look at this vhost's.
+    let (_, list) = h.call("GET", "vhosts/%2F/connections", None).await;
+    assert_eq!((list[0]["vhost"].as_str(), list[0]["namespace"].as_str(), list[0]["channels"].as_u64()), (Some("/"), Some("default"), Some(1)), "{list}");
+    let name = list[0]["name"].as_str().unwrap().to_string();
+    assert!(h.call("GET", "connections", None).await.1.as_array().unwrap().iter().any(|c| c["name"] == json!(name)));
+    assert_eq!(h.call("GET", &format!("connections/{}", name.replace(' ', "%20").replace('>', "%3E")), None).await.1["user"], "guest");
+    assert_eq!(h.call("GET", "vhosts/acme-late/connections", None).await.1, json!([]));
+
+    assert_eq!(h.st("DELETE", "vhosts/%2F", None).await, 204);
+    match tokio::time::timeout(std::time::Duration::from_secs(3), c.next()).await.unwrap() {
+        Some(AMQPFrame::Method(_, AMQPClass::Connection(connection::AMQPMethod::Close(x)))) => {
+            assert_eq!((x.reply_code, x.reply_text.to_string()), (320, "CONNECTION_FORCED - vhost '/' is deleted".to_string()))
+        }
+        f => panic!("expected connection.close 320, got {f:?}"),
+    }
+
+    let mut c = Amqp::open(&envs, "guest", "guest", "acme-late").await.unwrap();
+    let name = h.call("GET", "vhosts/acme-late/connections", None).await.1[0]["name"].as_str().unwrap().to_string();
+    let r = h.c.delete(format!("{}connections/{}", h.base, name.replace(' ', "%20").replace('>', "%3E"))).header("X-Reason", "rotating credentials").basic_auth("guest", Some("guest")).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 204);
+    match tokio::time::timeout(std::time::Duration::from_secs(3), c.next()).await.unwrap() {
+        Some(AMQPFrame::Method(_, AMQPClass::Connection(connection::AMQPMethod::Close(x)))) => assert_eq!(x.reply_text.to_string(), "CONNECTION_FORCED - rotating credentials"),
+        f => panic!("expected connection.close, got {f:?}"),
+    }
+    assert_eq!(h.st("DELETE", "connections/nope", None).await, 404);
+
+    assert_eq!(h.st("PUT", "users/acme-app", Some(json!({"password": "s3", "tags": ""}))).await, 201);
+    h.st("PUT", "permissions/acme-late/acme-app", Some(json!({"configure": ".*", "write": ".*", "read": ".*"}))).await;
+    let rows: Vec<(String, String, String)> = ctx.db.call(|c| c.prepare("SELECT label, actor, detail FROM trips WHERE host = 'rabbitmq management' ORDER BY at, rowid")?.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect()).await.unwrap();
+    let labels: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+    assert!(labels.contains(&"user acme-app: password set"), "{labels:?}");
+    assert!(labels.contains(&"permission of acme-app on vhost acme-late set (configure .*, write .*, read .*)"), "{labels:?}");
+    assert!(labels.contains(&"vhost / deleted"), "{labels:?}");
+    assert!(rows.iter().all(|r| r.1 == "guest" && r.2.contains("management API")), "{rows:?}");
 }

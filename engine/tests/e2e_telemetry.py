@@ -134,6 +134,14 @@ def run():
     assert w["level"] == "ERROR"
     assert lg["facets"]["levels"]["ERROR"] == 2 and "acme-api" in lg["facets"]["services"], lg["facets"]
 
+    # An app with a frozen clock (11 days behind): kept for the retention counted from receipt, not dropped by the next sweep.
+    old = time.time_ns() - 11 * 86_400 * 10**9
+    assert otlp_json("logs", {"resourceLogs": [{"resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "acme-frozen"}}]},
+        "scopeLogs": [{"logRecords": [{"timeUnixNano": str(old), "severityNumber": 9, "body": {"stringValue": "frozen clock line"}}]}]}]}) == 200
+    time.sleep(16)  # the sweep runs every 15 s
+    _, fz = call("GET", "/telemetry/logs?service=acme-frozen&since=30d")  # windows still go by the event time
+    assert [l["message"] for l in fz["logs"]] == ["frozen clock line"], fz
+
     # T4 metrics: list, p95 by host, Stuntman vs real host, exemplars, compare, cardinality.
     _, lm = call("GET", "/telemetry/metrics")
     assert lm["metrics"][0]["name"] == "http.client.request.duration" and lm["metrics"][0]["category"] == "Provider calls", lm

@@ -28,6 +28,13 @@ providers, configure, point the project, prove, and a welcome with every link. A
 6. **Read what the app sent.** Calls, retries, callbacks, in the provider's words.
 7. **Check the result.** Against the timeline, not a guess. Then turn the provocation off.
 
+## When Stuntman falls short
+
+An agent that hits a gap in Stuntman (a provider behaviour it gets wrong, a missing endpoint or tool, a bug) already
+knows the fix. The setup guide and the MCP instructions ask it to say so: what is missing, the change it would make,
+and an offer to send it as a pull request (see [Contributing](../CONTRIBUTING.md)). It writes the change only after
+you say yes, and keeps your project's code, names and data out of it.
+
 ## Connect
 
 MCP runs over **streamable HTTP** at `/mcp` on the main port. Each environment has its own endpoint:

@@ -31,6 +31,9 @@ To set Stuntman up for a project, read and follow the agent setup guide step by 
 
 ## Notes for agents
 
+- Found something Stuntman gets wrong or lacks? Suggest the fix to the developer and offer to send it as a pull
+  request to https://github.com/edivanteixeira/stuntman (CONTRIBUTING.md); only after a yes, with nothing from their
+  project in it.
 - Service Bus: AMQP on :5673 (TLS :5671); the administration client (management over HTTP/HTTPS) and AMQP on :5300,
   as the official emulator. Without a port in the connection string, .NET/JS management goes to :80: publish
   `-p 127.0.0.1:80:5300` or add `:5300` to the string.

@@ -24,8 +24,23 @@ pub struct Db(Arc<Mutex<Connection>>);
 impl Db {
     pub fn open(path: &std::path::Path) -> rusqlite::Result<Self> {
         let c = Connection::open(path)?;
-        c.execute_batch(&format!("PRAGMA journal_mode=WAL; PRAGMA synchronous={}; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;", synchronous()))?;
-        Ok(Self(Arc::new(Mutex::new(c))))
+        // wal_autocheckpoint=0: the commit that crossed 1000 pages used to copy the WAL back into the
+        // database itself, holding the one connection (a latency spike for every request queued behind
+        // it). A thread with its own connection checkpoints instead; PASSIVE never blocks writers.
+        c.execute_batch(&format!("PRAGMA journal_mode=WAL; PRAGMA synchronous={}; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA wal_autocheckpoint=0;", synchronous()))?;
+        let db = Arc::new(Mutex::new(c));
+        let (alive, path) = (Arc::downgrade(&db), path.to_path_buf());
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            if alive.upgrade().is_none() {
+                break;
+            }
+            // No CREATE flag: an environment deleted meanwhile must not get its file back.
+            if let Ok(k) = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX) {
+                let _ = k.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()));
+            }
+        });
+        Ok(Self(db))
     }
 
     pub fn memory() -> Self {

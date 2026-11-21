@@ -177,8 +177,8 @@ fn properties(c: &broker::Claimed) -> basic::AMQPProperties {
 
 // ---------------------------------------------------------------- namespace lookup
 
-/// A vhost names a namespace: "<ns>", "<env>/<ns>" or "/" (the default environment's first
-/// RabbitMQ namespace). An unknown name is created in the default environment, so an app works
+/// A vhost names a namespace: "<ns>", "<env>/<ns>" or "/" (the default environment's namespace
+/// named "default", else its first RabbitMQ namespace). An unknown name is created in the default environment, so an app works
 /// on day zero; it shows up on the screen like any other.
 pub fn find(envs: &Envs, vhost: &str) -> Option<(Ctx, config::Namespace)> {
     if let Some(found) = find_existing(envs, vhost) {
@@ -193,6 +193,12 @@ pub fn find(envs: &Envs, vhost: &str) -> Option<(Ctx, config::Namespace)> {
     config::create(&ctx, config::RABBIT, v).ok().map(|n| (ctx, n))
 }
 
+/// The namespace vhost "/" stands for: the RabbitMQ namespace named "default", else the first one.
+pub fn slash(ctx: &Ctx) -> Option<config::Namespace> {
+    let all: Vec<config::Namespace> = config::list(ctx).into_iter().filter(|n| n.kind == config::RABBIT).collect();
+    all.iter().find(|n| n.namespace == "default").cloned().or_else(|| all.into_iter().next())
+}
+
 /// The namespace a vhost names, without creating one (the management API answers 404).
 pub fn find_existing(envs: &Envs, vhost: &str) -> Option<(Ctx, config::Namespace)> {
     let v = vhost.trim_start_matches('/');
@@ -205,7 +211,7 @@ pub fn find_existing(envs: &Envs, vhost: &str) -> Option<(Ctx, config::Namespace
     all.sort_by_key(|c| *c.env != d);
     if v.is_empty() {
         let ctx = envs.default_env()?;
-        let n = config::list(&ctx).into_iter().find(|n| n.kind == config::RABBIT).or_else(|| config::create(&ctx, config::RABBIT, "default-rabbit").ok())?;
+        let n = slash(&ctx).or_else(|| config::create(&ctx, config::RABBIT, "default").ok())?;
         return Some((ctx, n));
     }
     all.into_iter().find_map(|c| config::get(&c, v).ok().filter(|n| n.kind == config::RABBIT).map(|n| (c, n)))
@@ -247,6 +253,48 @@ struct Conn {
     kill: Arc<Notify>,
     /// Channels we closed and whose close-ok has not come: what the client still sends there is dropped.
     closing: Mutex<std::collections::HashSet<u16>>,
+    /// For the management API's /api/connections.
+    user: String,
+    vhost: String,
+    since_ms: i64,
+    /// The reply text of the close a kill sends (management DELETE, a deleted vhost).
+    why: Mutex<String>,
+}
+
+/// Open AMQP 0-9-1 connections by their RabbitMQ name ("<peer> -> <local>").
+fn conns() -> &'static Mutex<HashMap<String, std::sync::Weak<Conn>>> {
+    static C: std::sync::OnceLock<Mutex<HashMap<String, std::sync::Weak<Conn>>>> = std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+fn conn_name(remote: &str) -> String {
+    format!("{remote} -> 127.0.0.1:{}", crate::port())
+}
+
+/// The management API's view of open connections; `ns` limits them to one namespace.
+pub fn connections(env: Option<&str>, ns: Option<&str>) -> Vec<Value> {
+    let all: Vec<Arc<Conn>> = conns().lock().unwrap().values().filter_map(|w| w.upgrade()).collect();
+    all.iter()
+        .filter(|c| env.is_none_or(|e| *c.ctx.env == *e) && ns.is_none_or(|n| c.ns.namespace == n))
+        .map(|c| {
+            let (host, port) = c.remote.rsplit_once(':').unwrap_or((&c.remote, "0"));
+            json!({"name": conn_name(&c.remote), "vhost": c.vhost, "user": c.user, "user_provided_name": c.client, "client_properties": {"connection_name": c.client},
+                "peer_host": host, "peer_port": port.parse::<u32>().unwrap_or(0), "host": "127.0.0.1", "port": crate::port(), "state": "running", "type": "network",
+                "protocol": "AMQP 0-9-1", "node": "stuntman@localhost", "channels": c.chans.lock().unwrap().len(), "connected_at": c.since_ms, "namespace": c.ns.namespace})
+        })
+        .collect()
+}
+
+/// Closes connections with CONNECTION_FORCED and `text`: one by name, or every one of a namespace.
+pub fn force_close(env: &str, name: Option<&str>, ns: Option<&str>, text: &str) -> usize {
+    let all: Vec<Arc<Conn>> = conns().lock().unwrap().values().filter_map(|w| w.upgrade()).collect();
+    let hit: Vec<&Arc<Conn>> = all.iter().filter(|c| *c.ctx.env == *env && name.is_none_or(|n| conn_name(&c.remote) == n) && ns.is_none_or(|n| c.ns.namespace == n)).collect();
+    for c in &hit {
+        *c.why.lock().unwrap() = text.to_string();
+        c.kill.notify_waiters();
+        c.kill.notify_one();
+    }
+    hit.len()
 }
 
 fn close_conn(tx: &Tx, code: u16, text: &str, class: u16, method: u16) {
@@ -369,7 +417,9 @@ pub async fn serve(envs: Envs, sock: crate::amqp::Io, remote: String) {
     }
     ctx.live.seen(client.split(" :").next().unwrap_or(&client), "RabbitMQ");
     let kill = Arc::new(Notify::new());
-    let conn = Arc::new(Conn { ctx: ctx.clone(), ns: ns.clone(), client: client.clone(), remote: remote.clone(), tx: tx.clone(), chans: Mutex::new(HashMap::new()), acked: Arc::new(Notify::new()), kill: kill.clone(), closing: Default::default() });
+    let conn = Arc::new(Conn { ctx: ctx.clone(), ns: ns.clone(), client: client.clone(), remote: remote.clone(), tx: tx.clone(), chans: Mutex::new(HashMap::new()), acked: Arc::new(Notify::new()), kill: kill.clone(), closing: Default::default(),
+        user: user.clone(), vhost: if vhost.is_empty() { "/".into() } else { vhost.clone() }, since_ms: stuntman_core::util::now_ms(), why: Mutex::new(String::new()) });
+    conns().lock().unwrap().insert(conn_name(&remote), Arc::downgrade(&conn));
     // Heartbeats both ways: ours every half interval.
     let hb_tx = tx.clone();
     let hb = tokio::spawn(async move {
@@ -390,7 +440,9 @@ pub async fn serve(envs: Envs, sock: crate::amqp::Io, remote: String) {
         let f = tokio::select! {
             f = next_frame(&mut r, &mut buf) => f,
             _ = kill.notified() => {
-                close_conn(&tx, 320, "CONNECTION_FORCED - Closed via management plugin (Stuntman: Disconnect it)", 0, 0);
+                let why = std::mem::take(&mut *conn.why.lock().unwrap());
+                let text = if why.is_empty() { "Closed via management plugin (Stuntman: Disconnect it)".to_string() } else { why };
+                close_conn(&tx, 320, &format!("CONNECTION_FORCED - {text}"), 0, 0);
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 break "disconnected from Stuntman (Disconnect it)";
             }
@@ -416,6 +468,7 @@ pub async fn serve(envs: Envs, sock: crate::amqp::Io, remote: String) {
         }
     };
     hb.abort();
+    conns().lock().unwrap().remove(&conn_name(&remote));
     // The channels die with the connection: unacked messages go back, consumers stop.
     let chans: Vec<Arc<Mutex<Chan>>> = conn.chans.lock().unwrap().drain().map(|(_, c)| c).collect();
     for c in chans {

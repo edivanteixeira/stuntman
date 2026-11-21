@@ -481,6 +481,9 @@ fn answers_tools() -> Vec<Tool> {
             if let Some(t) = a.get("template") {
                 ans.template = t.as_str().unwrap_or("").to_string();
             }
+            if let Some(t) = a.str("encode") {
+                ans.encode = t;
+            }
             if let Some(t) = a.get("latency") {
                 ans.latency = t.as_str().unwrap_or("").to_string();
             }
@@ -511,7 +514,7 @@ fn answers_tools() -> Vec<Tool> {
             plugin::save(&ctx, &p)?;
             Ok(json!({"answer": ans}))
         })
-        .req("service", "plugin").req("name", "answer name").param("status", "HTTP status").param("body", "template (text) or JSON").param("headers", "{name: value}").param("raw", "true: sent as typed").param("stream", "[{after, event, data}]").param("stream_format", "sse | ndjson | chunks").param("template", "handlebars").param("latency", "800ms").param("rpc_error", "MCP: a JSON-RPC error code")
+        .req("service", "plugin").req("name", "answer name").param("status", "HTTP status").param("body", "template (text) or JSON").param("headers", "{name: value}").param("raw", "true: sent as typed").param("encode", "gzip | deflate | zip: compress the rendered body on the way out (raw bytes, no Content-Encoding)").param("stream", "[{after, event, data}]").param("stream_format", "sse | ndjson | chunks").param("template", "handlebars").param("latency", "800ms").param("rpc_error", "MCP: a JSON-RPC error code")
         .param("sentence", "the sentence on Calls (template)").param("note", "what it means").param("old_name", "rename")
         .param("fault", "SOAP: {code: Sender | Receiver, reason} makes it a fault (the body is its detail); null makes it a response again")
         .route("PUT", "/plugins/{service}/answers/{name}"),

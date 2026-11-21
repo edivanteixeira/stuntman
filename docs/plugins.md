@@ -104,6 +104,7 @@ Each route reads top to bottom: **receive → let → keep → wait → decide �
 | `headers`, `body` | the body is a template, JSON unless the headers say otherwise |
 | `raw` | send exactly as typed, not checked against the schema (malformed on purpose) |
 | `file` | a file in `apis/<service>.files/` sent as the body, as is (a PDF, an image); recordings write these |
+| `encode` | `gzip`, `deflate` or `zip`: the rendered body (or `file`) is compressed on the way out, as raw bytes with no `Content-Encoding` and `application/octet-stream` (`application/zip`) unless the headers say otherwise; Calls shows the text and says how it was sent ([Compressed answers](#compressed-answers)) |
 | `sentence` | the timeline sentence, a template (a field the request did not carry reads "—"; `default(…)` names it) |
 | `note` | what this answer means, shown under its name |
 | `latency` | wait before this answer (`800ms`), instead of the route's latency |
@@ -208,6 +209,22 @@ answers:
 ```
 
 `force_answer` with `cut` sends half the parts and breaks the connection; `slow` waits 2 s more before each part.
+
+## Compressed answers
+
+Some providers send their XML or JSON gzipped as plain bytes, and the app decompresses it itself. Write the body as
+text, a template like any other, and say how it goes out:
+
+```yaml
+answers:
+  - name: positions
+    encode: gzip          # or deflate (raw DEFLATE), or zip (one entry: body.xml, body.json or body.txt)
+    body: '<positions><at>{{ now() }}</at><id>{{ random_id() }}</id></positions>'
+```
+
+The client gets the compressed bytes, with no `Content-Encoding` header, so no HTTP library undoes it on the way.
+Calls and the timeline keep the body as text and the Respond step says "sent as gzip". An answer with `file:` and
+`encode` compresses the file. A stream ignores `encode`.
 
 ## MCP server
 

@@ -66,6 +66,51 @@ pub struct Outcome {
     pub parts: Vec<(u64, Vec<u8>)>,
     /// The stream is cut on purpose after the parts: the connection breaks.
     pub cut: bool,
+    /// gzip | deflate | zip: `body` is the text; it is compressed only when sent.
+    pub encode: String,
+}
+
+/// The body as sent: compressed when the answer says `encode`.
+pub fn wire(o: &Outcome) -> Vec<u8> {
+    use flate2::{write::{DeflateEncoder, GzEncoder}, Compression};
+    use std::io::Write;
+    let deflate = |b: &[u8]| { let mut e = DeflateEncoder::new(vec![], Compression::default()); let _ = e.write_all(b); e.finish().unwrap_or_default() };
+    match o.encode.as_str() {
+        "gzip" => { let mut e = GzEncoder::new(vec![], Compression::default()); let _ = e.write_all(&o.body); e.finish().unwrap_or_default() }
+        "deflate" => deflate(&o.body),
+        "zip" => {
+            // One entry, deflated: body.xml / body.json / body.txt.
+            let t = String::from_utf8_lossy(&o.body[..o.body.len().min(64)]).trim_start().chars().next();
+            let name = match t { Some('<') => "body.xml", Some('{') | Some('[') => "body.json", _ => "body.txt" }.as_bytes();
+            let data = deflate(&o.body);
+            let mut crc = flate2::Crc::new();
+            crc.update(&o.body);
+            let (crc, n, m) = (crc.sum(), data.len() as u32, o.body.len() as u32);
+            let mut z = vec![];
+            let common = |z: &mut Vec<u8>| { for v in [20u16, 0, 8, 0, 0x21] { z.extend(v.to_le_bytes()); } z.extend(crc.to_le_bytes()); z.extend(n.to_le_bytes()); z.extend(m.to_le_bytes()); z.extend((name.len() as u16).to_le_bytes()); z.extend(0u16.to_le_bytes()); };
+            z.extend(0x04034b50u32.to_le_bytes());
+            common(&mut z);
+            z.extend(name);
+            z.extend(&data);
+            let cd = z.len() as u32;
+            z.extend(0x02014b50u32.to_le_bytes());
+            z.extend(20u16.to_le_bytes());
+            common(&mut z);
+            z.extend([0u8; 10]); // comment len, disk, internal attrs, external attrs
+            z.extend(0u32.to_le_bytes()); // local header offset
+            z.extend(name);
+            let cdn = z.len() as u32 - cd;
+            z.extend(0x06054b50u32.to_le_bytes());
+            z.extend([0u8; 4]);
+            z.extend(1u16.to_le_bytes());
+            z.extend(1u16.to_le_bytes());
+            z.extend(cdn.to_le_bytes());
+            z.extend(cd.to_le_bytes());
+            z.extend(0u16.to_le_bytes());
+            z
+        }
+        _ => o.body.clone(),
+    }
 }
 
 fn caller(h: &BTreeMap<String, String>) -> String {
@@ -644,6 +689,7 @@ pub async fn run(ctx: &Ctx, p: &Plugin, r: &Route, params: Map<String, Value>, r
             o.body = body;
             o.answered = answered;
             o.answer = a.name.clone();
+            o.encode = a.encode.clone();
             if !a.stream.is_empty() {
                 stream_parts(&mut o, a, &sc, stream_force.as_deref());
             }
@@ -651,7 +697,7 @@ pub async fn run(ctx: &Ctx, p: &Plugin, r: &Route, params: Map<String, Value>, r
                 o.latency_ms = ms;
             }
             o.sentence = if a.sentence.is_empty() { format!("{m} {} → {}", req.path, a.name) } else { expr::render_sentence(&a.sentence, &sc).unwrap_or_else(|e| format!("(sentence: {e})")) };
-            steps.push(json!({"step": "respond", "text": format!("{} {}  ·  latency {} ms", a.name, status, o.latency_ms), "ok": status < 400}));
+            steps.push(json!({"step": "respond", "text": format!("{} {}  ·  latency {} ms{}", a.name, status, o.latency_ms, if a.encode.is_empty() || !a.stream.is_empty() { String::new() } else { format!("  ·  sent as {}", a.encode) }), "ok": status < 400}));
         }
         None => {
             if ["reset", "empty", "timeout"].contains(&name.as_str()) {
@@ -762,6 +808,9 @@ pub fn render_answer(a: &Answer, sc: &Map<String, Value>) -> (u16, Vec<(String, 
     } else {
         expr::render(&a.body, sc).unwrap_or_else(|e| format!("{{\"stuntman\": \"template error: {e}\"}}"))
     };
+    if !headers.iter().any(|(k, _)| k == "content-type") && !a.encode.is_empty() && a.stream.is_empty() {
+        headers.push(("content-type".into(), if a.encode == "zip" { "application/zip" } else { "application/octet-stream" }.into()));
+    }
     if !headers.iter().any(|(k, _)| k == "content-type") && !body.is_empty() {
         let t = body.trim_start();
         headers.push(("content-type".into(), if t.starts_with('<') { if t.to_lowercase().starts_with("<html") || t.to_lowercase().starts_with("<!doctype") { "text/html" } else { "application/xml" } } else { "application/json" }.into()));
@@ -1183,7 +1232,7 @@ pub async fn handle(State(envs): State<Envs>, mut req: Request) -> Response {
     }
     if let Some((_, k)) = &idem {
         if o.status > 0 && o.status < 500 && o.network.is_none() {
-            let _ = store::idem_put(&ctx, &p.service.name, k, &hash, o.status, &o.headers, &o.body).await;
+            let _ = store::idem_put(&ctx, &p.service.name, k, &hash, o.status, &o.headers, &wire(&o)).await;
         }
     }
     if o.latency_ms > 0 {
@@ -1217,7 +1266,7 @@ pub async fn log_call(ctx: &Ctx, p: &Plugin, id: &str, billable: bool, route: &s
     let trace = headers.get("traceparent").and_then(|t| t.split('-').nth(1)).map(|s| s.to_lowercase());
     let billable = billable && p.service.billing.enabled && o.status > 0 && !o.answer.is_empty() && o.answer != "token";
     let req_json = json!({"method": method, "path": path, "query": query, "headers": headers, "body": String::from_utf8_lossy(&rq.raw_body).chars().take(64 * 1024).collect::<String>(), "size": rq.raw_body.len(), "files": rq.files.iter().map(|f| json!({"field": f["field"], "filename": f["filename"], "size": f["size"], "contentType": f["contentType"]})).collect::<Vec<_>>()});
-    let resp_json = json!({"status": o.status, "headers": o.headers.iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>(), "body": String::from_utf8_lossy(&o.body).chars().take(64 * 1024).collect::<String>(), "size": o.body.len()});
+    let resp_json = json!({"status": o.status, "headers": o.headers.iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>(), "body": String::from_utf8_lossy(&o.body).chars().take(64 * 1024).collect::<String>(), "size": o.body.len(), "encode": o.encode});
     let _ = store::record(ctx, store::Call {
         id: id.clone(), service: p.service.name.clone(), route: route.to_string(), method: method.to_string(), path: inner.to_string(), status: o.status, answer: o.answer.clone(),
         sentence: o.sentence.clone(), billable, caller: rq.caller.clone(), trace_id: trace.clone(), ms: t0.elapsed().as_millis() as i64, provoked: o.provoked.clone(),
@@ -1272,7 +1321,7 @@ pub async fn respond(o: Outcome, kill: Option<Kill>) -> Response {
             resp
         }
         None => {
-            let mut resp = Response::new(Body::from(o.body));
+            let mut resp = Response::new(Body::from(wire(&o)));
             *resp.status_mut() = StatusCode::from_u16(o.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             for (k, v) in o.headers {
                 if let (Ok(k), Ok(v)) = (HeaderName::try_from(k), HeaderValue::from_str(&v)) {

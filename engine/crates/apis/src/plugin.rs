@@ -521,6 +521,10 @@ pub struct Answer {
     /// MCP: a JSON-RPC error (-32602…) instead of a tool result; the body is its message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rpc_error: Option<i64>,
+    /// gzip | deflate | zip: the rendered body is compressed on the way out (raw bytes, no
+    /// Content-Encoding); Calls keeps the text.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub encode: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -1033,6 +1037,9 @@ pub fn validate(p: &Plugin, t: &str) -> Vec<Value> {
         }
     }
     for a in &p.answers {
+        if !["", "gzip", "deflate", "zip"].contains(&a.encode.as_str()) {
+            err(format!("answer {} encode: gzip | deflate | zip", a.name), "encode:");
+        }
         if !["", "sse", "ndjson", "chunks"].contains(&a.stream_format.as_str()) {
             err("stream_format: sse | ndjson | chunks".into(), "stream_format:");
         }

@@ -650,6 +650,7 @@ def plugins():
   {head(2, "More than request and answer.", "The same file describes the parts of a provider that are hard to fake by hand. Details in <a href='" + DOCS + "/plugins.md'>docs/plugins.md</a>.")}
   {table(["Feature", "In the YAML", "What it gives you"], [
       ("Regex and GraphQL routes", "<code>GET ~/v2/(?&lt;id&gt;[0-9]+)</code> · <code>graphql: CreateCharge</code>", "one route for a family of paths; one route per GraphQL operation"),
+      ("Compressed answers", "<code>encode: gzip | deflate | zip</code>", "a template in text, compressed only on the way out; Calls keeps the text"),
       ("Streamed answers", "<code>stream:</code> · <code>stream_format: sse | ndjson | chunks</code>", "server-sent events and NDJSON, part by part; cut or slow on cue"),
       ("Signed webhooks", "<code>service.webhooks.sign: stripe | svix | github | cloudevents | hex | hex_ts</code>", "callbacks your app must verify, broken on purpose when you ask"),
       ("Idempotency keys", "<code>service.idempotency</code>", "a repeated key replays the first answer; another body gets 409"),

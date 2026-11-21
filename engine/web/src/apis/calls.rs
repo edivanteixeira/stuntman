@@ -190,6 +190,7 @@ fn detail(c: Value, svc: Value, raw: RwSignal<bool>) -> impl IntoView {
             <pre class="yaml envyaml" style="max-height:220px;overflow:auto">{format!("{}\n{}\n\n{}", api::n(&resp, "status"),
                 resp["headers"].as_array().cloned().unwrap_or_default().iter().map(|h| format!("{}: {}", h[0].as_str().unwrap_or(""), h[1].as_str().unwrap_or(""))).collect::<Vec<_>>().join("\n"), s(&resp, "body"))}</pre>
             {(api::n(&req, "size") > 64 * 1024 || api::n(&resp, "size") > 64 * 1024).then(|| view! { <div class="small cap">"Bodies over 64 KB are cut here."</div> })}
+            {(!s(&resp, "encode").is_empty()).then(|| view! { <div class="small cap">{format!("The response body is shown as text; it was sent as {} (raw bytes, no Content-Encoding).", s(&resp, "encode"))}</div> })}
         })}
         <div class="caps" style="margin:18px 0 8px">"The app sent"</div>
         <table class="kv2">{kv_rows(&c["sent"])}{c["sent"].as_object().map(|o| o.is_empty()).unwrap_or(true).then(|| view! { <tr><td class="cap">"(no declared fields)"</td><td></td></tr> })}</table>

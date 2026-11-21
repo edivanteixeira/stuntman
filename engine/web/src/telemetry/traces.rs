@@ -190,14 +190,18 @@ pub fn Traces() -> impl IntoView {
                                     let (sid2, sid3) = (sid.clone(), sid.clone());
                                     let code = sp["attributes"]["http.response.status_code"].clone();
                                     let note = if dub { format!("{}{}", if code.is_null() { String::new() } else { code.to_string() }, if !sp["trip"].is_null() { format!("  ·  {}", s(&sp["trip"], "status")) } else { String::new() }) } else if dur >= 1.0 { format!("{dur:.0} ms") } else { String::new() };
+                                    let sp2 = sp.clone();
+                                    let sid4 = sid.clone();
                                     view! {
-                                        <div style=format!("padding:6px 0 6px {}px;cursor:pointer;{}", 12 * depth, "") class:on=move || picked.get() == sid2
-                                            on:click=move |_| picked.set(sid3.clone())>
-                                            <div class="mono s12" class:danger=err && !dub>{s(&sp, "name")}</div>
-                                            <div class="row" style="gap:6px;margin-top:3px">
-                                                <div style=format!("margin-left:{}%;width:{}%;height:{}px;background:{col};border-radius:1px;min-width:3px", off / total * 100.0 * 0.8, (dur / total * 100.0 * 0.8).max(0.4), if depth == 0 { 6 } else { 5 })></div>
-                                                <span class="small" class:attn=dub class:cap=!dub>{note}</span>
+                                        <div class="spanrow" class:on=move || picked.get() == sid2 style=format!("margin-left:{}px;--accent:{col}", 12 * depth)>
+                                            <div class="spanhead" on:click=move |_| picked.update(|p| *p = if *p == sid3 { String::new() } else { sid3.clone() })>
+                                                <div class="mono s12 name" class:danger=err && !dub>{s(&sp, "name")}</div>
+                                                <div class="row" style="gap:6px;margin-top:3px">
+                                                    <div style=format!("margin-left:{}%;width:{}%;height:{}px;background:{col};border-radius:1px;min-width:3px", off / total * 100.0 * 0.8, (dur / total * 100.0 * 0.8).max(0.4), if depth == 0 { 6 } else { 5 })></div>
+                                                    <span class="small" class:attn=dub class:cap=!dub>{note}</span>
+                                                </div>
                                             </div>
+                                            {move || (picked.get() == sid4).then(|| span_detail(&sp2, picked))}
                                         </div>
                                     }
                                 }).collect_view()}
@@ -206,34 +210,42 @@ pub fn Traces() -> impl IntoView {
                                         {a.iter().map(|tr| view! { <a class="link" href=s(tr, "link")>{s(tr, "label")}</a> }).collect_view()}</div>
                                 })}
                             </div>
-                            <div class="small cap" style="margin-top:8px">"Coloured spans reached Stuntman. Click one to see what answered it."</div>
+                            <div class="small cap" style="margin-top:8px">"Coloured spans reached Stuntman. Click a span to see what answered it."</div>
                             {exc.map(|e| { let st = s(&e["exception"], "exception.stacktrace"); let st2 = st.clone(); view! {
                                 <div class="caps" style="margin-top:20px">"Exception"</div>
                                 <div class="s12" style="margin-top:6px">{s(&e, "name")}</div>
                                 <pre class="text danger" style="border-color:var(--rule)">{if st.is_empty() { format!("{}: {}", s(&e["exception"], "exception.type"), s(&e["exception"], "exception.message")) } else { st }}</pre>
                                 <button class="link plain" on:click=move |_| ui::copy(&st2, "Stack trace")>"Copy stack trace"</button>
                             } })}
-                            {move || {
-                                let id = picked.get();
-                                let sp = spans.iter().find(|x| s(x, "spanId") == id).cloned()?;
-                                let trip = sp["trip"].clone();
-                                Some(view! {
-                                    <div class="caps" style="margin-top:20px">"Selected span"</div>
-                                    <table class="kv" style="margin-top:6px">
-                                        <tr><td>"span"</td><td>{format!("{}  ·  {}", s(&sp, "name"), s(&sp, "service"))}</td></tr>
-                                        <tr><td>"answered by"</td><td>{if trip.is_null() { if sp["reachedStuntman"] == true { format!("Stuntman ({})", s(&sp, "host")) } else { "your app or a real host".to_string() } } else { format!("Stuntman · {}", s(&trip, "label")) }}</td></tr>
-                                        <tr><td>"status"</td><td>{let c = sp["attributes"]["http.response.status_code"].clone(); if c.is_null() { match api::n(&sp, "status") { 2 => "error".to_string(), 1 => "ok".to_string(), _ => "unset".to_string() } } else { c.to_string() }}</td></tr>
-                                        <tr><td>"duration"</td><td>{format!("{:.1} ms", sp["durationMs"].as_f64().unwrap_or(0.0))}</td></tr>
-                                        {(!trip.is_null()).then(|| view! { <tr><td>"the trip"</td><td><a class="link" href=s(&trip, "link")>{if s(&trip, "module") == "email" { "Open in Notifications ›" } else { "Open in Inboxes ›" }}</a></td></tr> })}
-                                        {sp["attributes"].as_object().cloned().unwrap_or_default().into_iter().map(|(k, v)| view! { <tr><td>{k}</td><td class="mono">{v.as_str().map(String::from).unwrap_or(v.to_string())}</td></tr> }).collect_view()}
-                                    </table>
-                                })
-                            }}
                             {one_span.then(|| view! { <div class="small cap" style="margin-top:12px">"1 span  ·  nothing reached Stuntman, so nothing opens in Notifications or Inboxes."</div> })}
                         }.into_any()
                     }}
                 </div>
             </div>
+        </div>
+    }
+}
+
+/// What opens under a clicked span: who answered, the status, the trip and its attributes.
+fn span_detail(sp: &Value, picked: RwSignal<String>) -> impl IntoView {
+    let trip = sp["trip"].clone();
+    let attrs = sp["attributes"].as_object().cloned().unwrap_or_default();
+    let n = attrs.len();
+    view! {
+        <div class="spandetail">
+            <button class="link plain spanx" title="Close" on:click=move |_| picked.set(String::new())>"×"</button>
+            <table class="kv">
+                <tr><td>"answered by"</td><td>{if trip.is_null() { if sp["reachedStuntman"] == true { format!("Stuntman ({})", s(sp, "host")) } else { "your app or a real host".to_string() } } else { format!("Stuntman · {}", s(&trip, "label")) }}</td></tr>
+                <tr><td>"status"</td><td>{let c = sp["attributes"]["http.response.status_code"].clone(); if c.is_null() { match api::n(sp, "status") { 2 => "error".to_string(), 1 => "ok".to_string(), _ => "unset".to_string() } } else { c.to_string() }}</td></tr>
+                <tr><td>"duration"</td><td>{format!("{:.1} ms  ·  {}", sp["durationMs"].as_f64().unwrap_or(0.0), s(sp, "service"))}</td></tr>
+                {(!trip.is_null()).then(|| view! { <tr><td>"the trip"</td><td><a class="link" href=s(&trip, "link")>{if s(&trip, "module") == "email" { "Open in Notifications ›" } else { "Open in Inboxes ›" }}</a></td></tr> })}
+            </table>
+            {(n > 0).then(|| view! {
+                <details>
+                    <summary class="small">{format!("{n} attribute{}", if n == 1 { "" } else { "s" })}</summary>
+                    <table class="kv">{attrs.into_iter().map(|(k, v)| view! { <tr><td>{k}</td><td class="mono">{v.as_str().map(String::from).unwrap_or(v.to_string())}</td></tr> }).collect_view()}</table>
+                </details>
+            })}
         </div>
     }
 }

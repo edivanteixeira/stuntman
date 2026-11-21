@@ -28,9 +28,9 @@
   --on-ink-2: #c9c9c4;
   --on-ink-fill: #ffffff14;
   --on-ink-line: #ffffff26;
-  --blue-fill: var(--blue-fill);
+  --blue-fill: #eaf0fa;
   --attention-line: #ebd9a8;
-  --paused: var(--paused);
+  --paused: #a8740a;
   color-scheme: light;
 }
 
@@ -622,3 +622,15 @@ a.mrow.on { box-shadow: inset 3px 0 0 var(--ink); background: var(--surface); }
 /* The live YAML beside Routes and Auth: the editor comes first on a laptop screen (Settings has the whole file). */
 .side.yaml.wide { width: 430px; }
 @media (max-width: 1440px) { .side.yaml.wide { display: none; } }
+
+/* Traces: a clicked span opens in place, as a card with the span's line colour on its edge. */
+.spanrow { border: 1px solid transparent; border-radius: 6px; margin-right: -8px; padding: 0 8px; position: relative; }
+.spanrow .spanhead { padding: 6px 0; cursor: pointer; }
+.spanrow:hover:not(.on) { background: var(--soft); }
+.spanrow.on { background: var(--surface); border-color: var(--border); box-shadow: inset 3px 0 0 var(--accent), var(--shadow); margin: 6px -8px 8px 0; }
+.spanrow.on .name { font-weight: 500; color: var(--ink); }
+.spandetail { border-top: 1px solid var(--rule); padding: 6px 0 10px; }
+.spandetail > table.kv td:first-child { width: 110px; font: 400 12px var(--sans); }
+.spandetail table.kv tr:last-child td { border-bottom: 0; }
+.spandetail summary { cursor: pointer; color: var(--text-2); margin-top: 6px; }
+.spanx { position: absolute; top: 4px; right: 8px; font-size: 16px; color: var(--caption); }

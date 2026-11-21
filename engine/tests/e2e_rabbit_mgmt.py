@@ -41,6 +41,12 @@ def main():
         assert r["queues"] == ["cargas-criadas"] and r["hops"][0]["matches"] is True and r["hops"][0]["destinationType"] == "queue", r
         assert s.call("GET", "/messaging/route?vhost=acme-tms&exchange=&key=nope")["queues"] == []
         s.call("GET", "/messaging/route?vhost=acme-tms&exchange=missing", expect=404)
+        # "/" is the namespace named default, else the first one (here acme-tms): marked so, and the tools take "/" as its name.
+        assert req(s, "PUT", "/api/vhosts/%2F")[0] == 204
+        ns = {n["namespace"]: n for n in s.call("GET", "/messaging/namespaces")["namespaces"]}
+        assert ns["acme-tms"]["defaultVhost"] is True and "default" not in ns, ns
+        assert s.call("GET", "/messaging/%2F/*/consumers")["namespace"] == "acme-tms"
+        assert req(s, "GET", "/api/connections") == (200, [])
         vh = [x["name"] for x in req(s, "GET", "/api/vhosts")[1]]
         assert vh[0] == "/" and "acme-tms" in vh, vh
     print("RabbitMQ management e2e: ok")

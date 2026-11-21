@@ -664,15 +664,18 @@ pub async fn sweep() {
 fn hosts(ctx: &Ctx) -> String {
     let f = ctx.state.file.read().unwrap().clone();
     let b = &f.base_domain;
-    let mut lines = vec![format!("# Stuntman · {} · add to /etc/hosts (or a DNS zone: *.{b} → this machine)", f.name)];
+    // Every line ends in "# stuntman:<env>", so one command takes them out again:
+    // sudo sed -i.bak '/# stuntman:<env>/d' /etc/hosts
+    let tag = format!("# stuntman:{}", f.name);
+    let mut lines = vec![format!("{tag} · add to /etc/hosts (or a DNS zone: *.{b} → this machine); undo: sudo sed -i.bak '/{tag}/d' /etc/hosts")];
     for h in [b.clone(), format!("smtp.{b}"), format!("sendgrid.{b}"), format!("hooks.{b}"), format!("otlp.{b}")] {
-        lines.push(format!("127.0.0.1  {h}"));
+        lines.push(format!("127.0.0.1  {h}   {tag}"));
     }
     for a in stuntman_storage::config::list(ctx).into_iter().filter(|a| a.kind == stuntman_storage::config::AZURE) {
-        lines.push(format!("127.0.0.1  {}.blob.{b}", a.account));
+        lines.push(format!("127.0.0.1  {}.blob.{b}   {tag}", a.account));
     }
     for h in &f.real_hosts {
-        lines.push(format!("127.0.0.1  {h}   # real host name, answered with the Stuntman Test CA"));
+        lines.push(format!("127.0.0.1  {h}   {tag} · real host name, answered with the Stuntman Test CA"));
     }
     lines.join("\n") + "\n"
 }

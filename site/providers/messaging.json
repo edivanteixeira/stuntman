@@ -50,7 +50,7 @@
   },
   {
    "title": "RabbitMQ management API",
-   "text": "MassTransit and provisioning scripts create vhosts, queues, exchanges and bindings on :15672 before they connect."
+   "text": "MassTransit and provisioning scripts create vhosts, queues, exchanges and bindings on :15672 before they connect. Open connections are listed and can be closed; every user, password and permission change lands on the Timeline with who made it."
   },
   {
    "title": "Namespace-wide trouble",

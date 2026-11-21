@@ -299,13 +299,15 @@ pub async fn used_bytes(ctx: &Ctx) -> Result<i64, ApiError> {
 
 pub async fn sweep(ctx: &Ctx, s: &crate::config::Settings) -> Result<(), ApiError> {
     let keep = |k: &str| util::parse_ms(k).unwrap_or(86_400_000) as i64;
-    let now_ns = util::now_ms() * 1_000_000;
+    // By when Stuntman received it, not the event's own time: an app with a frozen or skewed clock
+    // sends timestamps days in the past, and they must still live for the whole retention.
+    let now = util::now_ms();
     let (tk, lk, mk) = (keep(&s.signals.traces.keep), keep(&s.signals.logs.keep), keep(&s.signals.metrics.keep));
     crate::db(ctx)
         .call(move |c| {
-            c.execute("DELETE FROM tel_spans WHERE start_ns < ?1", [now_ns - tk * 1_000_000])?;
-            c.execute("DELETE FROM tel_logs WHERE time_ns < ?1", [now_ns - lk * 1_000_000])?;
-            c.execute("DELETE FROM tel_points WHERE time_ns < ?1", [now_ns - mk * 1_000_000])?;
+            c.execute("DELETE FROM tel_spans WHERE received < ?1", [now - tk])?;
+            c.execute("DELETE FROM tel_logs WHERE received < ?1", [now - lk])?;
+            c.execute("DELETE FROM tel_points WHERE received < ?1", [now - mk])?;
             Ok(())
         })
         .await?;

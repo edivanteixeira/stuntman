@@ -774,7 +774,7 @@ fn service_tools() -> Vec<Tool> {
                     "dotnetMacOsWindows": ".NET ignores SSL_CERT_FILE there. In test config: a SocketsHttpHandler whose SslOptions.RemoteCertificateValidationCallback builds an X509Chain with TrustMode = CustomRootTrust and the CA in CustomTrustStore; pass it to Azure clients as options.Transport = new HttpClientTransport(handler), and to ServiceBusClientOptions/EventHubConnectionOptions as CertificateValidationCallback. Or, after asking, the user store below.",
                     "macOsKeychain": format!("security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db stuntman-test-ca.crt (user keychain; the developer confirms with a password or Touch ID). Undo: security delete-certificate -c \"{cn}\" ~/Library/Keychains/login.keychain-db"),
                     "windowsStore": format!("certutil -user -addstore Root stuntman-test-ca.crt, or PowerShell Import-Certificate -FilePath stuntman-test-ca.crt -CertStoreLocation Cert:\\CurrentUser\\Root (current user; Windows shows a confirmation dialog). Undo: certutil -user -delstore Root \"{cn}\""),
-                    "linuxSystem": "sudo cp stuntman-test-ca.pem /usr/local/share/ca-certificates/stuntman-test-ca.crt && sudo update-ca-certificates (Debian/Ubuntu; in a container image this is the usual way)"
+                    "linuxSystem": "sudo cp stuntman-test-ca.pem /usr/local/share/ca-certificates/stuntman-test-ca.crt && sudo update-ca-certificates (Debian/Ubuntu; in a container image this is the usual way). Undo: sudo rm /usr/local/share/ca-certificates/stuntman-test-ca.crt && sudo update-ca-certificates --fresh"
                 }}))
         })
         .route("GET", "/apis/test-ca"),

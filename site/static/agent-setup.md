@@ -30,6 +30,13 @@ you take care of all of it, explain what you are doing in plain words and ask on
    placeholder values such as `stuntman-any-key`. Never print or copy real credentials you find.
 6. **Do not commit or push.** Leave the changes in the working tree and say so at the end.
 7. **Stop on surprises.** If a step fails twice, explain what happened, offer the next best option and ask.
+8. **Turn a Stuntman gap into a pull request.** When Stuntman itself falls short (a provider behaviour it gets
+   wrong, a missing endpoint or tool, a bug, a rough edge), you already know what the fix is. Tell the developer in
+   one short paragraph: what is missing, the fix you would make, and that it can go upstream as a pull request to
+   [github.com/edivanteixeira/stuntman](https://github.com/edivanteixeira/stuntman) (see
+   [CONTRIBUTING.md](https://github.com/edivanteixeira/stuntman/blob/main/CONTRIBUTING.md)). Offer to write the
+   change and its test in a fork or a clone. Do it only after a yes, and never put the project's code, names or
+   data in it.
 
 ---
 

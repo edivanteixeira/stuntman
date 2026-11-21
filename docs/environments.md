@@ -83,6 +83,15 @@ apps come with the environment when it is cloned or made from a template.
 
 Anything else falls to the default environment (`STUNTMAN_ENV`, `staging` unless set).
 
+**Apps outside a container.** A process that runs straight on the machine (not in compose, where `extra_hosts`
+does it) needs the host names in `/etc/hosts` and the Test CA trusted:
+
+```sh
+curl -s localhost:8025/api/environments/pr-5462/hosts | jq -r .hosts | sudo tee -a /etc/hosts
+sudo sed -i.bak '/# stuntman:pr-5462/d' /etc/hosts        # undo: every line carries that tag
+curl -s localhost:8025/api/apis/test-ca | jq .runtimes   # trust commands per runtime and OS, with the undo
+```
+
 **SMTP.** Several environments can listen on the same SMTP port. On a port only one environment uses, nothing
 changes. On a shared port the SMTP login names the environment: user `<env>` (or `<env>/<service>`), any password,
 or one of the service's keys when keys are checked; a STARTTLS server name under the environment's base domain also
@@ -182,7 +191,7 @@ answers 404 and the name is free for a new one, which starts clean. Expiry (chec
 
 A new version opens every environment in `/data` as it was, with its state. Database changes are migrations that
 only add tables and columns, and new `environment.yaml` keys are optional: an older file reads as before. Pin the
-image tag (`edivanteixeira/stuntman:0.11.14`) and read the release notes before you move it.
+image tag (`edivanteixeira/stuntman:0.11.15`) and read the release notes before you move it.
 
 ## Sizing
 

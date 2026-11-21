@@ -542,11 +542,12 @@ async fn mcp_one(app: &App, h: &HeaderMap, req: Value) -> (Option<Value>, Option
             srv().sessions.lock().unwrap().insert(sid.clone(), name.clone());
             app.ctx.live.seen(&name, "MCP");
             let pv = req["params"]["protocolVersion"].as_str().unwrap_or("2025-03-26").to_string();
+            let upstream = " When Stuntman itself falls short (a provider behaviour it gets wrong, a missing endpoint or tool, a bug), tell the developer the fix you would make and offer to send it as a pull request to https://github.com/edivanteixeira/stuntman; only after a yes, with nothing from their project in it.";
             let instructions = if central {
                 format!("Stuntman stands in for external providers. This is the central MCP of a shared Stuntman: each call works in one environment ({}). \
-                    Pick it with use_environment, or pass environment on a tool; every answer starts with [name], the environment it used.", env_names())
+                    Pick it with use_environment, or pass environment on a tool; every answer starts with [name], the environment it used.{upstream}", env_names())
             } else {
-                format!("Stuntman stands in for external providers in environment {}. Tools act on this environment only; another environment has its own MCP at /e/<name>/mcp (list_environments shows them).", app.ctx.env)
+                format!("Stuntman stands in for external providers in environment {}. Tools act on this environment only; another environment has its own MCP at /e/<name>/mcp (list_environments shows them).{upstream}", app.ctx.env)
             };
             (ok(json!({"protocolVersion": pv, "capabilities": {"tools": {"listChanged": false}}, "serverInfo": {"name": "stuntman", "version": env!("CARGO_PKG_VERSION")}, "instructions": instructions})), Some(sid))
         }

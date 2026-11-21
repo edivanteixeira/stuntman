@@ -32,7 +32,8 @@ docker compose up -d          # add --build to build the image from source
 ```
 
 One container serves everything: the web UI, the HTTP API (`/api`), MCP (`/mcp`) and every provider on its own port.
-Data lives in the `stuntman-data` volume. Open <http://localhost:8025>; the web UI is light or dark, as your system is set.
+Data lives in the `stuntman-data` volume. Open <http://localhost:8025>; the web UI follows your system's light or dark mode, or the one you pick at the foot of its menu (Light, Dark, System). A Calls view is a link you can send:
+`/apis/<service>/calls?since=1d&q=<text>` opens that service's last 24 hours filtered by the text.
 
 Every port binds to `127.0.0.1` by default. To reach Stuntman from other machines, read [Security](security.md) first,
 then see [Configuration › Docker](configuration.md#docker).

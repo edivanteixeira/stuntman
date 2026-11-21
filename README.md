@@ -84,7 +84,7 @@ open http://localhost:8025          # the web UI; the HTTP API is /api, MCP is /
 ```
 
 The image is on Docker Hub as [`edivanteixeira/stuntman`](https://hub.docker.com/r/edivanteixeira/stuntman)
-(`linux/amd64` and `linux/arm64`). The web UI follows your system's light or dark mode. Publish more ports for more lines (`-p 127.0.0.1:8085:8085` for Pub/Sub,
+(`linux/amd64` and `linux/arm64`). The web UI follows your system's light or dark mode, or the one you pick at the foot of its menu. Publish more ports for more lines (`-p 127.0.0.1:8085:8085` for Pub/Sub,
 `-p 127.0.0.1:61616:61616` for ActiveMQ; all of them are in [Configuration](docs/configuration.md#ports)), or run every port at once with Docker Compose:
 `cd engine && docker compose up -d`.
 

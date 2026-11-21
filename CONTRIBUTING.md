@@ -19,6 +19,10 @@ cargo test --workspace --exclude stuntman-web
 ```
 
 If you touched a line, run its end-to-end check against a running server (see [`engine/README.md`](engine/README.md#check)).
+If you touched the web UI, run `python3 tests/e2e_web.py` after `cargo build -p stuntman` and `(cd web && trunk build)`.
+It drives the screens in headless Chromium (`pip install playwright && playwright install chromium`): every tab of every
+service, the columns that keep their filter, the Calls link with its range and search, no panel wider than a 1280 or
+1440 px window, and nothing left light in dark mode.
 If you touched how Stuntman writes (SQLite, the broker, call recording), measure it on a slow disk too: a Mac SSD
 flushes almost for free, a cloud disk takes about 6 ms. `engine/tests/perf/run_slow_disk.sh <image>` runs an image on a
 Docker volume with every flush delayed 6 ms and prints req/s for 1 and 16 clients; one client without a route should

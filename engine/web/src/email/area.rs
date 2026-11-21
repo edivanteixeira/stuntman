@@ -8,10 +8,10 @@ use serde_json::Value;
 use crate::api::{self, enc, s};
 
 pub fn services() -> RwSignal<Vec<Value>> {
-    let live = expect_context::<api::Live>();
-    let list = RwSignal::new(Vec::<Value>::new());
+    let calm = api::calm();
+    let list = expect_context::<api::Kept>().email;
     Effect::new(move |_| {
-        live.tick.track();
+        calm.track();
         leptos::task::spawn_local(async move {
             if let Ok(v) = api::get("/services").await {
                 list.set(v["services"].as_array().cloned().unwrap_or_default().into_iter().map(|x| x["service"].clone()).collect());

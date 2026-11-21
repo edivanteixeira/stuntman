@@ -655,6 +655,15 @@ pub fn clock(sc: &Scope) -> i64 {
 /// Renders {{ expr | filter }} holes. Strings go in as they are (write the quotes in the template),
 /// numbers and booleans as JSON, lists and maps as JSON.
 pub fn render(tpl: &str, sc: &Scope) -> Result<String, String> {
+    render_with(tpl, sc, "null")
+}
+
+/// A sentence for Calls and the timeline: a field the request did not carry reads "—", not "null".
+pub fn render_sentence(tpl: &str, sc: &Scope) -> Result<String, String> {
+    render_with(tpl, sc, "—")
+}
+
+fn render_with(tpl: &str, sc: &Scope, null: &str) -> Result<String, String> {
     let mut out = String::new();
     let mut rest = tpl;
     while let Some(i) = rest.find("{{") {
@@ -667,7 +676,7 @@ pub fn render(tpl: &str, sc: &Scope) -> Result<String, String> {
         for f in parts {
             v = filter(v, &f, sc)?;
         }
-        out.push_str(&match &v { Value::String(s) => s.clone(), Value::Null => "null".into(), o => text(o) });
+        out.push_str(&match &v { Value::String(s) => s.clone(), Value::Null => null.into(), o => text(o) });
         rest = &rest[i + j + 2..];
     }
     out.push_str(rest);
@@ -777,5 +786,8 @@ mod t {
         assert_eq!(render("{{ body.cpf | mask }}", &s).unwrap(), "987.•••.•••-12");
         assert!(render("{{ now | tz('America/Sao_Paulo') }}", &s).unwrap().len() == 19);
         assert!(check_template("{{ a == }}").is_err());
+        // A missing field: "null" in a body, "—" in a sentence.
+        assert_eq!(render("{{ body.missing }}", &s).unwrap(), "null");
+        assert_eq!(render_sentence("No challenge for {{ body.missing }}", &s).unwrap(), "No challenge for —");
     }
 }

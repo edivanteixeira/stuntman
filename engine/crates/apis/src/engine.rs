@@ -650,7 +650,7 @@ pub async fn run(ctx: &Ctx, p: &Plugin, r: &Route, params: Map<String, Value>, r
             if let Some(ms) = util::parse_ms(&a.latency) {
                 o.latency_ms = ms;
             }
-            o.sentence = if a.sentence.is_empty() { format!("{m} {} → {}", req.path, a.name) } else { expr::render(&a.sentence, &sc).unwrap_or_else(|e| format!("(sentence: {e})")) };
+            o.sentence = if a.sentence.is_empty() { format!("{m} {} → {}", req.path, a.name) } else { expr::render_sentence(&a.sentence, &sc).unwrap_or_else(|e| format!("(sentence: {e})")) };
             steps.push(json!({"step": "respond", "text": format!("{} {}  ·  latency {} ms", a.name, status, o.latency_ms), "ok": status < 400}));
         }
         None => {

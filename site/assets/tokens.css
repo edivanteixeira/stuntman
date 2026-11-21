@@ -72,3 +72,34 @@
   --page-max: 80rem;
   --gutter: clamp(1rem, 0.4rem + 2.6vw, 5rem);
 }
+
+/* Dark mode follows the system: the "Dark" mode of the app's colour collection. Small ink marks (buttons,
+ * step numbers, stations on the lines) invert; whole ink bands stay dark, one step raised (site.css). */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --color-surface: #1c1e22;
+    --color-paper: #141518;
+    --color-subtle: #25272c;
+    --color-rule: #2f3237;
+    --color-border: #474a51;
+    --color-caption: #8e9198;
+    --color-text-2: #b6b9bf;
+    --color-raised: #d4d6da;
+    --color-ink: #ecedef;
+    --color-on-ink: #141518;
+    --color-on-ink-2: #474a51;
+    --color-on-ink-3: #5c5f66;
+    --text-red: #ff7a7a;
+    --text-green: #4ccb8b;
+    --text-blue: #6cb4f5;
+    --text-amber: #e8b54d;
+    --text-teal: #45c9d1;
+    --text-brown: #c99a6b;
+    --text-orange: #f39a62;
+    --line-graphite: #8e9198;
+    --color-attention-fg: #e8b54d;
+    --color-attention-bg: #2e2512;
+    --color-focus: #ecedef;
+  }
+}

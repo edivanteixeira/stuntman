@@ -35,10 +35,10 @@ pub fn services() -> RwSignal<Vec<Value>> {
     if let Some(Services(l)) = use_context::<Services>() {
         return l;
     }
-    let live = expect_context::<api::Live>();
+    let calm = api::calm();
     let list = RwSignal::new(Vec::<Value>::new());
     Effect::new(move |_| {
-        live.tick.track();
+        calm.track();
         leptos::task::spawn_local(async move {
             if let Ok(v) = api::get("/apis/services").await {
                 list.set(v["services"].as_array().cloned().unwrap_or_default());

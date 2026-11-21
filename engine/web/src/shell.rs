@@ -18,6 +18,7 @@ pub fn App() -> impl IntoView {
     provide_context(live);
     let env = RwSignal::new(Value::Null);
     provide_context(env);
+    provide_context(api::Kept::new());
     // Who is signed in (sign-in on), where their MCP sessions start.
     let me = Me(RwSignal::new(Value::Null));
     provide_context(me);
@@ -221,7 +222,6 @@ fn Rail() -> impl IntoView {
     let me = expect_context::<Me>();
     let loc = use_location();
     let nav = use_navigate();
-    let live = expect_context::<api::Live>();
     let env = expect_context::<RwSignal<Value>>();
     let unanswered = RwSignal::new(0i64);
     let usage = RwSignal::new(Value::Null);
@@ -230,8 +230,10 @@ fn Rail() -> impl IntoView {
     let show = RwSignal::new(stored(SHOW_KEY).filter(|v| v == "all").unwrap_or_else(|| "in use".into()));
     let expand = RwSignal::new(false);
     let last_usage = StoredValue::new(0f64);
+    // The badge and who is connected follow the live stream calmly: at most twice a second.
+    let calm = api::calm();
     Effect::new(move |_| {
-        live.tick.track();
+        calm.track();
         env.track();
         leptos::task::spawn_local(async move {
             let un = api::get("/apis/unmatched?since=1h").await.ok().and_then(|v| v["groups"].as_array().map(|g| g.iter().map(|x| api::n(x, "count")).sum::<i64>())).unwrap_or(0);
@@ -323,7 +325,30 @@ fn Rail() -> impl IntoView {
             {move || me.person().map(|e| view! {
                 <div class="me"><div class="row"><span class="grow" style="font-weight:500">{e.split('@').next().unwrap_or("").split(['.', '_', '-']).map(|w| { let mut c = w.chars(); c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default() }).collect::<Vec<_>>().join(" ")}</span>
                     <a class="link small" href="/auth/logout">"Sign out"</a></div><div class="small cap">{e.clone()}</div></div> })}
+            <Theme/>
             <div class="foot">{move || format!("Stuntman {}", api::s(&env.get(), "version"))}</div>
         </nav>
+    }
+}
+
+/// Light, Dark or System at the foot of the rail, per browser. index.html applies it (and follows the
+/// system while on System); this only stores the choice and asks it to apply again.
+#[component]
+fn Theme() -> impl IntoView {
+    const KEY: &str = "stuntman.theme";
+    let pick = RwSignal::new(stored(KEY).filter(|v| v == "light" || v == "dark").unwrap_or_else(|| "system".into()));
+    let set = move |v: &'static str| {
+        if let Some(st) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) { let _ = st.set_item(KEY, v); }
+        pick.set(v.into());
+        if let Ok(f) = js_sys::Reflect::get(&web_sys::window().unwrap(), &"stuntmanTheme".into()) {
+            if let Ok(f) = wasm_bindgen::JsCast::dyn_into::<js_sys::Function>(f) { let _ = f.call0(&wasm_bindgen::JsValue::NULL); }
+        }
+    };
+    view! {
+        <div class="seg theme" role="radiogroup" aria-label="Colour mode">
+            {[("light", "Light"), ("dark", "Dark"), ("system", "System")].into_iter().map(|(v, l)| view! {
+                <button role="radio" aria-checked=move || (pick.get() == v).to_string() class:on=move || pick.get() == v on:click=move |_| set(v)>{l}</button>
+            }).collect_view()}
+        </div>
     }
 }

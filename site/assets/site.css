@@ -366,3 +366,17 @@ pre.code .c { color: var(--color-caption); } pre.code.dark .c { color: var(--col
   .bench__row h3 { grid-column: 1 / -1; padding-top: 0; }
 }
 @media (max-width: 560px) { .bench__row { grid-template-columns: minmax(0, 1fr); } .bench__stat b { font-size: var(--text-2xl); } }
+
+/* Dark mode (tokens.css): a whole ink band stays dark, one step raised, with light text on it. */
+@media (prefers-color-scheme: dark) {
+  .session, pre.code.dark, .pband, .bench {
+    --color-on-ink: #ecedef; --color-on-ink-2: #b6b9bf; --color-on-ink-3: #8e9198; --color-raised: #2a2d32;
+    background: #1f2125;
+  }
+  pre.code.dark { color: #e3e3df; }
+  .leak .real { background: #3a1918; }
+  /* The agent logos are black marks (img, no currentColor): drawn light. */
+  .agent img { filter: invert(1); }
+  /* Illustrations and screens are light pictures: shown as light cards on the dark page. */
+  figure.art img { background: #fafaf8; border-radius: var(--radius-md); padding: var(--space-md); }
+}

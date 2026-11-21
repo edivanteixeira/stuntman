@@ -104,7 +104,7 @@ Each route reads top to bottom: **receive → let → keep → wait → decide �
 | `headers`, `body` | the body is a template, JSON unless the headers say otherwise |
 | `raw` | send exactly as typed, not checked against the schema (malformed on purpose) |
 | `file` | a file in `apis/<service>.files/` sent as the body, as is (a PDF, an image); recordings write these |
-| `sentence` | the timeline sentence, a template |
+| `sentence` | the timeline sentence, a template (a field the request did not carry reads "—"; `default(…)` names it) |
 | `note` | what this answer means, shown under its name |
 | `latency` | wait before this answer (`800ms`), instead of the route's latency |
 | `stream`, `stream_format` | send the answer in parts instead of `body`: `sse` (default), `ndjson` or `chunks` ([Streamed answers](#streamed-answers)) |

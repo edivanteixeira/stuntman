@@ -4,6 +4,21 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Stuntman</title>
+  <script>
+    // Light, dark or the system's, before the first paint (no light flash). "System" follows the OS live.
+    (function () {
+      var m = matchMedia("(prefers-color-scheme: dark)");
+      function apply() {
+        var t = "system";
+        try { t = localStorage.getItem("stuntman.theme") || "system"; } catch (e) {}
+        document.documentElement.dataset.theme = t === "system" ? (m.matches ? "dark" : "light") : t;
+      }
+      apply();
+      m.addEventListener("change", apply);
+      addEventListener("storage", apply);
+      window.stuntmanTheme = apply;
+    })();
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link data-trunk rel="css" href="style.css" />

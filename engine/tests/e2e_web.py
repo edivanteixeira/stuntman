@@ -7,7 +7,7 @@ window, a colour that stays light in dark mode, a colour mode choice that does n
 
 Needs `pip install playwright && playwright install chromium`.
 """
-import json, os, re, sys, urllib.request
+import json, os, re, sys, time, urllib.request
 
 from playwright.sync_api import sync_playwright
 
@@ -166,6 +166,28 @@ def main():
         for p in PAGES:
             go(page, p)
             fails += [f"dark {p}: {x}" for x in page.evaluate(DARK_JS)]
+
+        # 7. Traces: a clicked span opens right under it, in sight, and closes with ×.
+        page.emulate_media(color_scheme="light")
+        tid = "4bf92f3577b34da6a3ce929d0e0e4736"
+        now = time.time_ns() - 10**9
+        mk = lambda sid, parent, name, off: {"traceId": tid, "spanId": sid, "name": name, "kind": 3, **({"parentSpanId": parent} if parent else {}),
+                                             "startTimeUnixNano": str(now + off * 10**6), "endTimeUnixNano": str(now + (off + 20) * 10**6),
+                                             "attributes": [{"key": "retry.attempt", "value": {"intValue": "2"}}]}
+        body = {"resourceSpans": [{"resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "acme-api"}}]},
+                                   "scopeSpans": [{"spans": [mk("a000000000000001", None, "POST /orders", 0)] + [mk(f"b{i:015x}", "a000000000000001", f"step {i}", i * 30) for i in range(1, 12)]}]}]}
+        urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{s.OTLP_HTTP_PORT}/v1/traces", data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})).read()
+        page.goto(f"{base}/telemetry/traces/{tid}")
+        page.wait_for_selector(".spanrow")
+        head = page.locator(".spanrow .spanhead").nth(6)
+        top = head.bounding_box()["y"]
+        head.click()
+        box = page.locator(".spanrow.on .spandetail").bounding_box() if page.locator(".spanrow.on .spandetail").count() else None
+        if not box or box["y"] < top or box["y"] > top + 80 or box["y"] + 40 > 900:
+            fails.append(f"span detail not under the clicked span: {box} (row at {top})")
+        page.click(".spanx")
+        if page.locator(".spandetail").count():
+            fails.append("span detail did not close")
 
         fails += [f"console: {e}" for e in errors if "integrity" not in e]
         browser.close()

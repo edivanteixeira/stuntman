@@ -251,7 +251,11 @@ pub async fn decide(ctx: &Ctx, service: &str, s: &Seen) -> Result<Option<Rule>, 
             ctx.db.call(move |c| c.execute("INSERT INTO storage_rule_hits VALUES(?1,?2,?3)", params![svc, name, util::now_ms()]).map(|_| ())).await?;
             return Ok(Some(r));
         }
-        // "first N, then normal": a rule that stopped firing lets the request through as normal.
+        // "first N" used up: the rule is spent, so the rules below it get their turn (none → normal).
+        if r.how_often.first.is_some() {
+            continue;
+        }
+        // "random %" that did not fire this time: the request goes through as normal.
         return Ok(None);
     }
     Ok(None)
@@ -384,6 +388,31 @@ mod t {
         let v = test(&rule("contract*/**"), &[], &last);
         assert_eq!(v["matched"], 1);
         assert_eq!(v["appWillSee"][2]["answer"], "201 Created · back to normal");
+    }
+
+    #[tokio::test]
+    async fn spent_first_n_lets_the_next_rule_answer() {
+        use std::sync::Arc;
+        use stuntman_core::{callback::Signer, env::{EnvFile, EnvState, Envs}, live::Live, store::Db};
+        let dir = std::env::temp_dir().join(util::id("storage-rules-test"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Db::memory();
+        db.migrate(crate::store::SQL).unwrap();
+        let ctx = Ctx { env: "t".into(), state: Arc::new(EnvState::new(EnvFile::new("t"))), envs: Envs::default(), db, live: Live::default(), data_dir: Arc::new(dir.clone()),
+            http: reqwest::Client::new(), signer: Arc::new(Signer::load_or_create(&dir.join("k.pem")).unwrap()), host: "localhost".into() };
+        let mut once = rule("contracts/**");
+        once.name = "once".into();
+        once.how_often.first = Some(1);
+        let mut always = rule("");
+        always.name = "always".into();
+        always.then.respond = "404".into();
+        always.how_often = HowOften::default();
+        save(&ctx, "s3", &File { rules: vec![once, always] }).unwrap();
+        let seen = Seen { op: "put".into(), account: "acme".into(), container: "documents".into(), path: "contracts/nda.pdf".into(), ..Default::default() };
+        let name = |r: Option<Rule>| r.map(|r| r.name).unwrap_or_default();
+        assert_eq!(name(decide(&ctx, "s3", &seen).await.unwrap()), "once");
+        assert_eq!(name(decide(&ctx, "s3", &seen).await.unwrap()), "always");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

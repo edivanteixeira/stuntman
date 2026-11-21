@@ -213,7 +213,7 @@ async fn handle(envs: Envs, mut s: TcpStream, remote: String, port: u16) -> std:
         return Ok(());
     };
 
-    if inbox.signature.reject_bad && matches!(check.result.as_str(), "invalid" | "old_secret" | "missing") {
+    if inbox.signature.reject_bad && matches!(check.result.as_str(), "invalid" | "old_secret" | "missing" | "stale") {
         let _ = respond(&mut s, 401, "Invalid signature", "").await;
         done("401".into(), None, json!([])).await;
         return Ok(());

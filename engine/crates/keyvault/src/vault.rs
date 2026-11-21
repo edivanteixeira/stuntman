@@ -168,7 +168,7 @@ pub async fn issue_cert(ctx: &Ctx, v: &config::Vault, name: &str, subject: &str,
     };
     let (subj, issuer, nb, na) = crypto::cert_info(&der);
     let ver = store::add(ctx, &v.name, CERT, name, store::Version { id: store::new_version_id(), created: now_s(), enabled: true, nbf: Some(nb), exp: Some(na), value: key,
-        content_type: "application/x-pkcs12".into(), tags: json!({}), extra: json!({"cer": crypto::b64(&der), "subject": subj, "issuer": issuer, "sans": sans, "days": days, "renew_before_days": 30, "exportable": true}) }).await?;
+        content_type: "application/x-pkcs12".into(), tags: json!({}), extra: json!({"cer": crypto::b64(&der), "subject": subj, "issuer": issuer, "sans": sans, "days": if days > 0 { days } else { ((na - nb) / 86_400).max(1) }, "renew_before_days": 30, "exportable": true}) }).await?;
     event(ctx, v, CERT, name, "CertificateNewVersionCreated", &ver.id, Some(nb), Some(na)).await;
     Ok(ver)
 }

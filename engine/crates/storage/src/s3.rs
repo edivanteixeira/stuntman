@@ -26,6 +26,23 @@ fn x(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
+fn unx(s: &str) -> String {
+    s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
+}
+
+const NS: &str = "xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"";
+
+/// Query keys of ListObjects (and of signing); any other key on a bucket names a subresource.
+const LIST_PARAMS: [&str; 10] = ["list-type", "prefix", "delimiter", "max-keys", "marker", "continuation-token", "start-after", "encoding-type", "fetch-owner", "x-id"];
+
+fn acl() -> Response {
+    xml(200, format!("<AccessControlPolicy {NS}><Owner><ID>stuntman</ID><DisplayName>stuntman</DisplayName></Owner><AccessControlList><Grant><Grantee xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"CanonicalUser\"><ID>stuntman</ID><DisplayName>stuntman</DisplayName></Grantee><Permission>FULL_CONTROL</Permission></Grant></AccessControlList></AccessControlPolicy>"))
+}
+
+fn not_implemented(sub: &str, res: &str) -> Response {
+    err(501, "NotImplemented", &format!("A header or query you provided implies functionality that is not implemented (?{sub} in Stuntman)."), res)
+}
+
 fn resp(status: u16, headers: Vec<(String, String)>, body: Body) -> Response {
     let mut r = Response::new(body);
     *r.status_mut() = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -307,6 +324,10 @@ async fn run(c: Call, bucket: String, key: String) -> Response {
             Who::Ok { via, link } => (via, link),
             Who::No(r, _, _) => return r,
         };
+        let sub = c.q.iter().map(|(k, _)| k.as_str()).find(|k| !LIST_PARAMS.contains(k) && !k.to_ascii_lowercase().starts_with("x-amz-") && !(c.method == "POST" && *k == "delete"));
+        if let Some(sub) = sub {
+            return bucket_sub(&c, &a, &bucket, exists, sub);
+        }
         match c.method.as_str() {
             "HEAD" => return if exists { resp(200, vec![("x-amz-bucket-region".into(), "auto".into())], Body::empty()) } else { resp(404, vec![], Body::empty()) },
             "PUT" => {
@@ -341,9 +362,6 @@ async fn run(c: Call, bucket: String, key: String) -> Response {
                 if !exists {
                     return err(404, "NoSuchBucket", "The specified bucket does not exist", &format!("/{bucket}"));
                 }
-                if c.qm.contains_key("location") {
-                    return xml(200, "<LocationConstraint xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">auto</LocationConstraint>".into());
-                }
                 return list(&c, &a, &bucket, via, link).await;
             }
         }
@@ -367,6 +385,9 @@ async fn run(c: Call, bucket: String, key: String) -> Response {
             return r;
         }
     };
+    if let Some(sub) = ["tagging", "acl"].into_iter().find(|s| c.qm.contains_key(*s)) {
+        return object_sub(&c, &a, &bucket, &key, sub).await;
+    }
     // Multipart steps are recorded once, at the commit.
     if c.qm.contains_key("uploadId") || c.qm.contains_key("uploads") {
         return multipart(&c, &a, &bucket, &key, via, link).await;
@@ -470,6 +491,62 @@ async fn run(c: Call, bucket: String, key: String) -> Response {
     }
 }
 
+/// Bucket configuration a bucket has none of in Stuntman: answered as S3 answers a bucket without it.
+fn bucket_sub(c: &Call, a: &Account, bucket: &str, exists: bool, sub: &str) -> Response {
+    let res = format!("/{bucket}");
+    if !exists {
+        return err(404, "NoSuchBucket", "The specified bucket does not exist", &res);
+    }
+    let none = match sub {
+        "policy" => Some(("NoSuchBucketPolicy", "The bucket policy does not exist")),
+        "cors" => Some(("NoSuchCORSConfiguration", "The CORS configuration does not exist")),
+        "lifecycle" => Some(("NoSuchLifecycleConfiguration", "The lifecycle configuration does not exist")),
+        "tagging" => Some(("NoSuchTagSet", "The TagSet does not exist")),
+        "encryption" => Some(("ServerSideEncryptionConfigurationNotFoundError", "The server side encryption configuration was not found")),
+        _ => None,
+    };
+    match (c.method.as_str(), sub, none) {
+        ("GET", "location", _) => xml(200, format!("<LocationConstraint {NS}/>")),
+        ("GET", "versioning", _) => xml(200, format!("<VersioningConfiguration {NS}>{}</VersioningConfiguration>", if a.behaviour.versions { "<Status>Enabled</Status>" } else { "" })),
+        ("GET", "acl", _) => acl(),
+        ("PUT", "acl", _) => resp(200, vec![], Body::empty()),
+        ("GET", _, Some((code, msg))) => err(404, code, msg, &res),
+        ("DELETE", _, Some(_)) => resp(204, vec![], Body::empty()),
+        _ => not_implemented(sub, &res),
+    }
+}
+
+/// GetObjectTagging / PutObjectTagging / DeleteObjectTagging (tags kept per version) and the
+/// object ACL (owner FULL_CONTROL; a PutObjectAcl is accepted and changes nothing). The content is
+/// never touched.
+async fn object_sub(c: &Call, a: &Account, bucket: &str, key: &str, sub: &str) -> Response {
+    let res = format!("/{bucket}/{key}");
+    let Some(b) = store::get(&c.ctx, &a.account, bucket, key, false).await.ok().flatten() else {
+        return err(404, "NoSuchKey", "The specified key does not exist.", &res);
+    };
+    match (c.method.as_str(), sub) {
+        ("GET", "acl") => acl(),
+        ("PUT", "acl") => resp(200, vec![], Body::empty()),
+        ("GET", "tagging") => {
+            let tags: String = store::tags(&c.ctx, b.seq).await.unwrap_or_default().iter().map(|(k, v)| format!("<Tag><Key>{}</Key><Value>{}</Value></Tag>", x(k), x(v))).collect();
+            xml(200, format!("<Tagging {NS}><TagSet>{tags}</TagSet></Tagging>"))
+        }
+        ("PUT", "tagging") | ("DELETE", "tagging") => {
+            let text = String::from_utf8_lossy(&c.body).to_string();
+            let tags: Vec<(String, String)> = regex::Regex::new(r"<Tag>\s*<Key>([^<]*)</Key>\s*<Value>([^<]*)</Value>\s*</Tag>").unwrap().captures_iter(&text).map(|m| (unx(&m[1]), unx(&m[2]))).collect();
+            if tags.len() > 10 {
+                return err(400, "BadRequest", "Object tags cannot be greater than 10", &res);
+            }
+            let delete = c.method == "DELETE";
+            match store::set_tags(&c.ctx, b.seq, if delete { vec![] } else { tags }).await {
+                Ok(()) => resp(if delete { 204 } else { 200 }, vec![], Body::empty()),
+                Err(e) => err(500, "InternalError", &e.message, &res),
+            }
+        }
+        _ => not_implemented(sub, &res),
+    }
+}
+
 async fn list(c: &Call, a: &Account, bucket: &str, via: String, link: Option<String>) -> Response {
     let seen = rules::Seen { op: "list".into(), account: a.account.clone(), container: bucket.into(), caller: c.caller.clone(), ..Default::default() };
     let why = match gate::check(&c.ctx, a, &seen).await {
@@ -526,7 +603,7 @@ async fn list(c: &Call, a: &Account, bucket: &str, via: String, link: Option<Str
 
 async fn delete_many(c: &Call, a: &Account, bucket: &str, via: String, link: Option<String>) -> Response {
     let text = String::from_utf8_lossy(&c.body).to_string();
-    let keys: Vec<String> = regex::Regex::new(r"<Key>([^<]*)</Key>").unwrap().captures_iter(&text).map(|m| m[1].replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")).collect();
+    let keys: Vec<String> = regex::Regex::new(r"<Key>([^<]*)</Key>").unwrap().captures_iter(&text).map(|m| unx(&m[1])).collect();
     let quiet = text.contains("<Quiet>true</Quiet>");
     let mut out = String::new();
     for k in keys {
@@ -566,7 +643,24 @@ async fn multipart(c: &Call, a: &Account, bucket: &str, key: &str, via: String, 
             let _ = store::abort_upload(&c.ctx, &id).await;
             resp(204, vec![], Body::empty())
         }
-        _ => {
+        "GET" => {
+            let (at, parts) = match store::list_parts(&c.ctx, &id).await {
+                Ok(v) => v,
+                Err(e) => return err(500, "InternalError", &e.message, &res),
+            };
+            let marker: i64 = c.qm.get("part-number-marker").and_then(|m| m.parse().ok()).unwrap_or(0);
+            let max: usize = c.qm.get("max-parts").and_then(|m| m.parse().ok()).unwrap_or(1000);
+            let after: Vec<_> = parts.into_iter().filter(|p| p.0 > marker).collect();
+            let truncated = after.len() > max;
+            let page = &after[..after.len().min(max)];
+            let next = page.last().map(|p| p.0).unwrap_or(0);
+            let items: String = page.iter().map(|(n, etag, size)| format!("<Part><PartNumber>{n}</PartNumber><LastModified>{}</LastModified><ETag>{}</ETag><Size>{size}</Size></Part>", auth::ms_iso(at), x(etag))).collect();
+            xml(200, format!(
+                "<ListPartsResult {NS}><Bucket>{}</Bucket><Key>{}</Key><UploadId>{}</UploadId><PartNumberMarker>{marker}</PartNumberMarker><NextPartNumberMarker>{next}</NextPartNumberMarker><MaxParts>{max}</MaxParts><IsTruncated>{truncated}</IsTruncated><StorageClass>STANDARD</StorageClass>{items}</ListPartsResult>",
+                x(bucket), x(key), x(&id)
+            ))
+        }
+        "POST" => {
             let text = String::from_utf8_lossy(&c.body).to_string();
             let parts: Vec<i64> = regex::Regex::new(r"<PartNumber>(\d+)</PartNumber>").unwrap().captures_iter(&text).filter_map(|m| m[1].parse().ok()).collect();
             let seen = rules::Seen { op: "put".into(), account: a.account.clone(), container: bucket.into(), path: key.into(), ctype: ctype.clone(), caller: c.caller.clone(), ..Default::default() };
@@ -594,5 +688,6 @@ async fn multipart(c: &Call, a: &Account, bucket: &str, key: &str, via: String, 
                 Err(e) => err(500, "InternalError", &e.message, &res),
             }
         }
+        _ => not_implemented("uploadId", &res),
     }
 }

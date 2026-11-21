@@ -486,6 +486,7 @@ async fn put_exchange(State(e): State<Envs>, Path((v, x)): Path<(String, String)
     let was_new = n.entities.get(&x).and_then(|e| e.topic.as_ref()).is_none();
     match rabbit::declare_exchange(&ctx, &n.namespace, "management API", &x, &kind, false) {
         Ok(()) => created(was_new),
+        Err((403, text)) => err(StatusCode::FORBIDDEN, "access_refused", &text),
         Err((_, text)) => bad(&text),
     }
 }
@@ -495,6 +496,9 @@ async fn delete_exchange(State(e): State<Envs>, Path((v, x)): Path<(String, Stri
     let Some((ctx, n)) = ns_of(&e, &name) else { return not_found() };
     if n.entities.get(&x).and_then(|e| e.topic.as_ref()).is_none() {
         return not_found();
+    }
+    if let Some(text) = rabbit::undeletable_exchange(&name, &x) {
+        return err(StatusCode::FORBIDDEN, "access_refused", &text);
     }
     if flag(&qs, "if-unused") && rabbit::exchange_in_use(&n, &x) {
         return bad(&format!("exchange '{x}' in vhost '{name}' in use"));

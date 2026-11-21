@@ -196,6 +196,9 @@ def main():
         log = s.call("GET", "/files/transfers?server=edi-acme")["transfers"]
         ops = {(x["proto"], x["op"], x["ok"]) for x in log}
         assert ("FTP", "put", True) in ops and ("FTPS", "put", True) in ops and ("FTP", "get", False) in ops, ops
+        # Timeline rows open the Files screen of their server, not Storage (/files is Storage).
+        rows = [r for r in s.call("GET", "/timeline?service=files")["rows"] if r["link"]]  # rows of tool calls have no link
+        assert rows and {r["link"] for r in rows} == {"/ftp?s=edi-acme"}, {r["link"] for r in rows}
     print("Files e2e: ok")
 
 

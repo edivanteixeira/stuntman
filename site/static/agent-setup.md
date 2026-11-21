@@ -11,6 +11,10 @@ sends callbacks and fails on cue. Every action is an MCP tool and an HTTP route.
 
 - Site: https://edivanteixeira.github.io/stuntman/
 - Source and full docs: https://github.com/edivanteixeira/stuntman
+- Docs index (one file per service with every endpoint, behaviour, provocation, tool and gap): https://edivanteixeira.github.io/stuntman/docs/README.md (plain Markdown).
+  Once Stuntman runs, read the same docs from it, matching its version: `GET http://localhost:8025/docs` (the index) and
+  `GET http://localhost:8025/docs/services/<service>.md`. When you are unsure whether something exists or how it works, read
+  the service's file before guessing.
 - Tool reference (every tool, route and argument): https://github.com/edivanteixeira/stuntman/blob/main/docs/reference/tools.md
 
 Follow the eight steps below **in order**. The developer should never need to know Docker, ports or tool names:
@@ -193,7 +197,8 @@ Ask: *"Did I miss anything, or is there a provider you want to leave out?"* and 
 
 ## Step 5 of 8 — Set Stuntman up for each provider
 
-Do everything in the environment you created in step 3. For each provider:
+Do everything in the environment you created in step 3. For each provider, read its file first
+(`GET /docs/services/<service>.md`: connect snippets, recipes, what is not done), then:
 
 | Line | What to do |
 |---|---|

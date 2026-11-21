@@ -2,7 +2,8 @@
 
 - management port (STUNTMAN_SERVICEBUS_MGMT_PORT, 5300 like the official emulator): plain HTTP
   (what .NET and JS send in emulator mode), HTTPS (Python, Java) and AMQP on the same port;
-- the Python ServiceBusAdministrationClient creates a queue, a topic and a subscription there,
+- the Python ServiceBusAdministrationClient creates a queue, a topic and a subscription there
+  and updates them (If-Match: *),
   trusting the Test CA through REQUESTS_CA_BUNDLE, then the same connection string sends/receives;
 - the .NET ServiceBusAdministrationClient console (tests/servicebus_admin_dotnet), if dotnet exists;
 - /api/test-ca.{pem,crt,der,p12,pfx} parse with `cryptography`; keytool loads the p12 if Java exists.
@@ -73,6 +74,24 @@ with Stuntman() as s:
     adm.create_subscription("order-placed", "warehouse")
     check(adm.get_queue("payments-retry").max_delivery_count == 4, "python admin: create_queue over HTTPS on the management port")
     check([x.name for x in adm.list_subscriptions("order-placed")] == ["warehouse"], "python admin: create_topic + create_subscription")
+    # Update*: a PUT with If-Match: * (create again without it is 409).
+    from datetime import timedelta
+    from azure.core.exceptions import ResourceExistsError
+    try:
+        adm.create_queue("payments-retry")
+        check(False, "python admin: create_queue on an existing queue is 409")
+    except ResourceExistsError:
+        check(True, "python admin: create_queue on an existing queue is 409")
+    q = adm.get_queue("payments-retry")
+    q.max_delivery_count, q.lock_duration = 7, timedelta(minutes=2)
+    adm.update_queue(q)
+    q = adm.get_queue("payments-retry")
+    check((q.max_delivery_count, q.lock_duration) == (7, timedelta(minutes=2)), "python admin: update_queue changes max delivery count and lock")
+    adm.update_topic(adm.get_topic("order-placed"))
+    sub = adm.get_subscription("order-placed", "warehouse")
+    sub.max_delivery_count = 3
+    adm.update_subscription("order-placed", sub)
+    check(adm.get_subscription("order-placed", "warehouse").max_delivery_count == 3 and [x.name for x in adm.list_subscriptions("order-placed")] == ["warehouse"], "python admin: update_subscription; update_topic keeps the subscriptions")
     with ServiceBusClient.from_connection_string(cs) as sb:
         with sb.get_queue_sender("payments-retry") as tx:
             tx.send_messages(ServiceBusMessage('{"paymentId":"pay_7781"}', subject="Retry"))

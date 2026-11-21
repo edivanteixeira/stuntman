@@ -17,6 +17,7 @@ fn sig_line(d: &Value) -> (String, &'static str) {
         "valid" if !s(sg, "warning").is_empty() => ("signed ✓ · timestamp not signed".into(), "attn"),
         "valid" => ("signed ✓".into(), "ok"),
         "old_secret" => ("signature ✕ (old secret)".into(), "danger"),
+        "stale" => ("signed ✓ · timestamp too old".into(), "danger"),
         "invalid" => ("signature ✕".into(), "danger"),
         "missing" => ("no signature".into(), "danger"),
         _ => ("not checked".into(), "cap"),

@@ -456,3 +456,43 @@ async fn slash_vhost_connections_and_audit() {
     assert!(labels.contains(&"vhost / deleted"), "{labels:?}");
     assert!(rows.iter().all(|r| r.1 == "guest" && r.2.contains("management API")), "{rows:?}");
 }
+
+/// Every vhost has amq.direct, amq.fanout, amq.topic, amq.headers and amq.match: they route by
+/// their type, a declare of the same type (passive or not) answers ok, the management API lists
+/// them, and nobody deletes them (ACCESS_REFUSED), nor the default exchange.
+#[tokio::test]
+async fn builtin_exchanges_exist_route_and_cannot_be_deleted() {
+    let (envs, _) = envs();
+    let h = Http { c: reqwest::Client::new(), base: mgmt(&envs).await, auth: ("guest".into(), "guest".into()) };
+    h.st("PUT", "vhosts/globex-bus", None).await;
+    let (_, x) = h.call("GET", "exchanges/globex-bus?columns=name,type", None).await;
+    let rows: Vec<String> = x.as_array().unwrap().iter().map(|r| format!("{}:{}", r["name"].as_str().unwrap(), r["type"].as_str().unwrap())).collect();
+    assert_eq!(rows, [":direct", "amq.direct:direct", "amq.fanout:fanout", "amq.headers:headers", "amq.match:headers", "amq.topic:topic"]);
+
+    let mut c = Amqp::open(&envs, "guest", "guest", "globex-bus").await.unwrap();
+    let declare = |name: &str, kind: &str, passive: bool| AMQPClass::Exchange(exchange::AMQPMethod::Declare(exchange::Declare { exchange: name.into(), kind: kind.into(), passive, durable: true, ..Default::default() }));
+    assert!(c.call(declare("amq.direct", "direct", true)).await.is_ok());
+    assert!(c.call(declare("amq.topic", "topic", false)).await.is_ok());
+    assert_eq!(c.call(declare("amq.fanout", "direct", false)).await.err().unwrap().0, 406);
+    assert_eq!(c.call(declare("amq.acme", "direct", false)).await.err().unwrap().0, 403, "amq.* is reserved");
+
+    for q in ["acme-orders", "acme-audit"] {
+        c.queue(q, json!({})).await.unwrap();
+    }
+    c.bind("acme-orders", "amq.direct", "orders").await;
+    c.bind("acme-audit", "amq.topic", "orders.#").await;
+    c.bind("acme-audit", "amq.fanout", "").await;
+    c.publish("amq.direct", "orders", "direct").await;
+    c.publish("amq.direct", "other", "lost").await;
+    c.publish("amq.topic", "orders.created", "topic").await;
+    c.publish("amq.fanout", "whatever", "fanout").await;
+    assert_eq!(c.drain("acme-orders").await.into_iter().map(|m| m.0).collect::<Vec<_>>(), ["direct"]);
+    assert_eq!(c.drain("acme-audit").await.into_iter().map(|m| m.0).collect::<Vec<_>>(), ["topic", "fanout"]);
+
+    let delete = |name: &str| AMQPClass::Exchange(exchange::AMQPMethod::Delete(exchange::Delete { exchange: name.into(), ..Default::default() }));
+    assert_eq!(c.call(delete("amq.direct")).await.err().unwrap(), (403, "ACCESS_REFUSED - deletion of system exchange 'amq.direct' in vhost 'globex-bus' not allowed".into()));
+    assert_eq!(c.call(delete("")).await.err().unwrap().0, 403);
+    assert_eq!(h.st("DELETE", "exchanges/globex-bus/amq.topic", None).await, 403);
+    assert_eq!(h.st("GET", "exchanges/globex-bus/amq.topic", None).await, 200);
+    assert_eq!(h.st("PUT", "exchanges/globex-bus/amq.headers", Some(json!({"type": "headers"}))).await, 204);
+}

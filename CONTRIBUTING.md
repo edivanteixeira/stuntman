@@ -33,7 +33,11 @@ Stuntman and measures one call; it should stay below 1 ms, about the same as on 
 For the broker, `engine/tests/perf/bench_amqp.py <host> <amqp port> <management port>` times a confirmed publish,
 publish to delivery and consuming with acks over AMQP 0-9-1 (needs `pika`).
 
-If you added or changed a tool, regenerate the reference:
+If you changed what a service does, update its file in [`docs/services/`](docs/services) (keep its sections:
+At a glance, Connect your app, What it supports, How it behaves, Provoke failures, See what the app did, Recipes,
+Errors and troubleshooting, Not done, Tools and routes).
+
+If you added or changed a tool, regenerate the reference (it also refills each service file's tool table):
 
 ```sh
 python3 tools/gen_tool_reference.py

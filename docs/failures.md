@@ -62,7 +62,7 @@ named answers and `force_answer` instead.
 | WhatsApp | `send_bad_webhook` | `wrong_signature`, `missing_signature`, `old_secret`, `replay`; returns your app's status code |
 | Email | `decide_held` | `deliver`, `defer`, `bounce` (hard or soft), `drop` |
 | Email | `simulate_recipient` | `open`, `click`, `spamreport`, `unsubscribe` |
-| Email | `set_access` | an intake that refuses recipients, requires STARTTLS, or is unreachable |
+| Email | `set_access` | an intake that refuses recipients, does not offer STARTTLS, or is unreachable |
 | Mailboxes | `set_mailbox` with `provoke` | `login_refused`, `busy`, `drop_fetch`, `tls_required`, `token_expired`; `none` stops it |
 | Files | `set_file_server` with `provoke` | `login_refused`, `disk_full`, `permission_denied`, `drop_mid`, `slow`, `host_key_changed`; `none` stops it |
 | Storage | `create_rule` | any status on matching requests, the first N, every time, or a share |

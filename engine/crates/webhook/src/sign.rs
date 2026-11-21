@@ -87,6 +87,12 @@ pub fn check(i: &Inbox, headers: &[(String, String)], body: &[u8], now_ms: i64, 
     } else {
         ("invalid", format!("does not match · {what}"))
     };
+    // A right signature on a timestamp older than the tolerance: what Stripe's and Svix's libraries refuse.
+    let tol = i.tolerance_ms() as i64;
+    let (result, detail) = match age {
+        Some(a) if result == "valid" && a > tol => ("stale", format!("valid signature, but the timestamp is {} s old (tolerance {})", a / 1000, sig.tolerance)),
+        _ => (result, detail),
+    };
     let warning = if unsigned_t { "the timestamp is not signed: a replay with a new timestamp still passes".to_string() } else { String::new() };
     Check { result: result.into(), detail, timestamp_age_ms: age, header: hname.clone(), warning }
 }

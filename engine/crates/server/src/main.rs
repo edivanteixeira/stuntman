@@ -351,9 +351,25 @@ pub fn env_router(ctx: Ctx) -> Router {
     Router::new()
         .nest("/api", api)
         .route("/mcp", axum::routing::post(mcp).get(|| async { (StatusCode::METHOD_NOT_ALLOWED, "POST JSON-RPC here") }))
+        .route("/docs", axum::routing::get(|| docs(String::new())))
+        .route("/docs/{*path}", axum::routing::get(|axum::extract::Path(p): axum::extract::Path<String>| docs(p)))
         .with_state(App { ctx: ctx.clone() })
         .merge(extra.with_state(ctx))
         .fallback_service(svc)
+}
+
+/// The documentation of this very version, as Markdown: /docs is the index, /docs/services/rabbitmq.md
+/// one service. Agents read it from here (the MCP instructions point at it). STUNTMAN_DOCS: the folder.
+async fn docs(path: String) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let rel = if path.is_empty() || path == "/" { "README.md".to_string() } else { path.trim_start_matches('/').to_string() };
+    let safe = rel.ends_with(".md") && std::path::Path::new(&rel).components().all(|c| matches!(c, std::path::Component::Normal(_)));
+    let base = std::path::PathBuf::from(env("STUNTMAN_DOCS", "../docs"));
+    match std::fs::read_to_string(base.join(&rel)).ok().filter(|_| safe) {
+        Some(t) => ([("content-type", "text/markdown; charset=utf-8")], t).into_response(),
+        None => (StatusCode::NOT_FOUND, [("content-type", "text/plain; charset=utf-8")],
+            format!("No {rel} here. The index is /docs; this version's docs are also at https://github.com/edivanteixeira/stuntman/tree/v{}/docs\n", env!("CARGO_PKG_VERSION"))).into_response(),
+    }
 }
 
 /// Finds the request's environment (/e/<name>/ prefix, else host name, else the default one) and
@@ -542,12 +558,13 @@ async fn mcp_one(app: &App, h: &HeaderMap, req: Value) -> (Option<Value>, Option
             srv().sessions.lock().unwrap().insert(sid.clone(), name.clone());
             app.ctx.live.seen(&name, "MCP");
             let pv = req["params"]["protocolVersion"].as_str().unwrap_or("2025-03-26").to_string();
+            let docs = " Unsure what Stuntman can do or how? GET /docs on this server (Markdown, this version): the index, with one file per service listing every endpoint, tool, behaviour and provocation.";
             let upstream = " When Stuntman itself falls short (a provider behaviour it gets wrong, a missing endpoint or tool, a bug), tell the developer the fix you would make and offer to send it as a pull request to https://github.com/edivanteixeira/stuntman; only after a yes, with nothing from their project in it.";
             let instructions = if central {
                 format!("Stuntman stands in for external providers. This is the central MCP of a shared Stuntman: each call works in one environment ({}). \
-                    Pick it with use_environment, or pass environment on a tool; every answer starts with [name], the environment it used.{upstream}", env_names())
+                    Pick it with use_environment, or pass environment on a tool; every answer starts with [name], the environment it used.{docs}{upstream}", env_names())
             } else {
-                format!("Stuntman stands in for external providers in environment {}. Tools act on this environment only; another environment has its own MCP at /e/<name>/mcp (list_environments shows them).{upstream}", app.ctx.env)
+                format!("Stuntman stands in for external providers in environment {}. Tools act on this environment only; another environment has its own MCP at /e/<name>/mcp (list_environments shows them).{docs}{upstream}", app.ctx.env)
             };
             (ok(json!({"protocolVersion": pv, "capabilities": {"tools": {"listChanged": false}}, "serverInfo": {"name": "stuntman", "version": env!("CARGO_PKG_VERSION")}, "instructions": instructions})), Some(sid))
         }

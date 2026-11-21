@@ -82,11 +82,12 @@ def run():
     time.sleep(0.3)
     _, l = call("GET", "/webhooks/deliveries?inbox=globex&event=evt_3")
     assert l["deliveries"][0]["duplicateOf"] and l["deliveries"][0]["attempt"] == 2, l["deliveries"][0]
-    # Old timestamp is reported.
+    # A timestamp older than the tolerance (5m): reported, and the signature counts as stale.
     send("globex", "invoice.paid", "evt_4", {"invoice": "INV-2207"}, ts=int(time.time()) - 540)
     time.sleep(0.3)
     _, l = call("GET", "/webhooks/deliveries?inbox=globex&event=invoice.paid")
     assert 530_000 < l["deliveries"][0]["signature"]["timestampAgeMs"] < 560_000 and l["deliveries"][0]["label"] == "INV-2207"
+    assert l["deliveries"][0]["signature"]["result"] == "stale", l["deliveries"][0]["signature"]
 
     # Fail 3 times per event, then 200: the app's retries are counted as attempts.
     call("POST", "/inboxes", {"name": "initech", "keep": True, "fail": 3, "then": 200})

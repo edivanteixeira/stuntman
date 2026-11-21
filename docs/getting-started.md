@@ -63,13 +63,13 @@ Change **base URLs only**. Your app keeps its code, its SDKs and its settings.
 | Any HTTP API (a plugin) | base URL | `http://localhost:8028/<service>` |
 | Azure Blob | connection string | `DefaultEndpointsProtocol=http;AccountName=<account>;AccountKey=<key>;BlobEndpoint=http://127.0.0.1:10000/<account>;` |
 | Amazon S3 / R2 | endpoint | `http://127.0.0.1:9000`, path style; keys from **Services › S3** |
-| Service Bus / RabbitMQ | connection | port `5673` (AMQP) or `5671` (AMQPS) — see [Providers](providers.md#messaging) |
+| Service Bus / RabbitMQ | connection | port `5673` (AMQP) or `5671` (AMQPS) — see [Service Bus](services/servicebus.md), [RabbitMQ](services/rabbitmq.md) |
 | Key Vault | vault URL | `https://<vault>.vault.<base domain>:8444` (trust the Test CA) |
 | OIDC / OAuth2 | authority | from **Logins › provider settings** (Entra ID, Google, Okta or generic OIDC) |
 | OpenTelemetry | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` (or gRPC `:4317`) |
 | GELF / StatsD | host and port | `localhost:12201` / `localhost:8125` (UDP) |
 | Your own webhooks | target URL | `http://localhost:8027/in/<inbox>` |
-| OpenAI / Anthropic / Gemini | SDK base URL | `http://localhost:8025/openai/v1`, `http://localhost:8025/anthropic`, `http://localhost:8025/gemini` (any key); Azure OpenAI, OpenRouter and DeepSeek in [Providers](providers.md#ai-models) |
+| OpenAI / Anthropic / Gemini | SDK base URL | `http://localhost:8025/openai/v1`, `http://localhost:8025/anthropic`, `http://localhost:8025/gemini` (any key); Azure OpenAI, OpenRouter and DeepSeek in [Providers](services/ai-models.md) |
 | PostHog / Segment / Mixpanel / GA4 | SDK host | `http://localhost:8025/posthog`, `/segment`, `/mixpanel`, `/ga4` |
 | IMAP / POP3 mailboxes | host and port | `localhost:1143` / `localhost:1110`; the login is the mailbox address |
 | FTP / FTPS / SFTP | host and port | `localhost:2121` / `localhost:2222`; users from **Files** |
@@ -118,5 +118,5 @@ appears on the timeline under its name, so you can verify the report instead of 
 ## Next
 
 - [Agents](agents.md) — the loop, client setup, tools by intent
-- [Providers](providers.md) — what each line speaks and keeps
+- [Services](README.md#services) — one file per service: what it speaks, keeps and provokes
 - [Failures on cue](failures.md) — every provocation, line by line

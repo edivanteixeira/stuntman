@@ -29,7 +29,9 @@ def main():
         st, qs = req(s, "GET", "/api/queues/acme-tms")
         assert [q["name"] for q in qs] == ["cargas-criadas"] and qs[0]["messages"] == 0, qs
         st, xs = req(s, "GET", "/api/exchanges/acme-tms")
-        assert {"name": "cargas", "type": "fanout"}.items() <= {k: v for k, v in xs[1].items()}.items(), xs
+        # The built-in amq.* exchanges are listed too, as in RabbitMQ.
+        assert [(x["name"], x["type"]) for x in xs] == [("", "direct"), ("amq.direct", "direct"), ("amq.fanout", "fanout"), ("amq.headers", "headers"), ("amq.match", "headers"), ("amq.topic", "topic"), ("cargas", "fanout")], xs
+        assert req(s, "DELETE", "/api/exchanges/acme-tms/amq.direct")[0] == 403
         st, bs = req(s, "GET", "/api/bindings/acme-tms")
         # The default exchange's binding comes too (source ""), as in RabbitMQ.
         assert any(b["source"] == "cargas" and b["destination"] == "cargas-criadas" for b in bs) and any(b["source"] == "" for b in bs), bs

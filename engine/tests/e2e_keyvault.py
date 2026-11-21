@@ -205,6 +205,11 @@ def run():
     call("POST", "/keyvault/certificates/acme-signing/provoke", {"answer": "normal", "vault": "acme-kv-stg"})
     call("POST", "/keyvault/certificates/acme-signing/renew", {"vault": "acme-kv-stg"})
     assert len(call("GET", "/keyvault/certificates/acme-signing/detail?vault=acme-kv-stg")["versions"]) == 2
+    # An imported certificate renews with its own validity length (it used to come back valid for 1 day).
+    call("POST", "/keyvault/certificates/acme-imported/import", {"vault": "acme-kv-stg", "pfx_base64": kv("GET", "/secrets/acme-signing", tok=t)[1]["value"]})
+    call("POST", "/keyvault/certificates/acme-imported/renew", {"vault": "acme-kv-stg"})
+    cd = call("GET", "/keyvault/certificates/acme-imported/detail?vault=acme-kv-stg")
+    assert len(cd["versions"]) == 2 and cd["daysLeft"] >= 300, cd["daysLeft"]
 
     # K4 · access: with any token on, a role the identity lacks is allowed but marked would_fail.
     call("PUT", "/keyvault/identities/acme-api-mi", {"roles": ["secrets-user"], "scope": ["smtp-*"], "vault": "acme-kv-stg"})

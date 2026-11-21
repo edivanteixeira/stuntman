@@ -314,7 +314,7 @@ pub fn all() -> Vec<Tool> {
             config::save(&ctx, &p)?;
             changed(&ctx, &p, "tenant");
             Ok(json!({"tenant": p.tenant, "flavour": p.flavour, "lifetimes": p.lifetimes}))
-        }).param("flavour", "entra-v2 | google | okta | oidc").param("id_lifetime", "60m").param("access_lifetime", "60m").param("refresh_lifetime", "24h").param("clock_skew", "0s or +10m")
+        }).param("flavour", "entra-v2 | google | okta | oidc").param("id_lifetime", "60m").param("access_lifetime", "60m").param("refresh_lifetime", "24h").param("clock_skew", "0s or 10m (tokens issued that far in the future)")
           .param("other_tenants", "list").param("provider", "provider").route("PUT", "/identity/{provider}/tenant"),
         Tool::new("rotate_signing_key", "The next key becomes current and a new next one is published: apps that cached the JWKS at start-up reject new tokens.", |ctx, a| async move {
             let _w = crate::WRITE.lock().await;

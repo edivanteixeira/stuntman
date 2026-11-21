@@ -282,7 +282,7 @@ not logged. `user` is the login name as the client typed it on FTP (for example 
 
 The [Timeline](../timeline.md) gets a trip for every `login`, `put`, `get` and `delete` (not renames or folder
 changes), labelled `<proto> <op> <path> · <size> B`, with outcome `ok`, `failed`, or `provoked` when a provocation
-caused it. The `/ftp` screen shows the folders, the files (click one for a preview), a box to put a file as the
+caused it; clicking a row opens `/ftp?s=<server>` (`/files` is the Storage screen). The `/ftp` screen shows the folders, the files (click one for a preview), a box to put a file as the
 partner, the transfers, and the provocation buttons; `?s=<server>` opens one server.
 
 ## Recipes

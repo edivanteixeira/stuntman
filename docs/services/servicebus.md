@@ -256,11 +256,11 @@ only when "Accept any key" is off.
 | `GET /` | `NamespaceInfo` (Messaging, Standard) |
 | `GET /$Resources/queues`, `GET /$Resources/topics` | Atom feed of the queues or topics |
 | `GET /<name>` | `QueueDescription` or `TopicDescription`; 404 when missing |
-| `PUT /<name>` | creates a queue (`QueueDescription`: `LockDuration`, `MaxDeliveryCount`, `RequiresSession`, `DefaultMessageTimeToLive`, `DeadLetteringOnMessageExpiration`) or a topic (`TopicDescription`): 201; 409 when it exists; 400 for an invalid name |
+| `PUT /<name>` | creates a queue (`QueueDescription`: `LockDuration`, `MaxDeliveryCount`, `RequiresSession`, `DefaultMessageTimeToLive`, `DeadLetteringOnMessageExpiration`) or a topic (`TopicDescription`): 201; 409 `MessagingEntityAlreadyExists` when it exists; 400 for an invalid name. With `If-Match: *` (what `UpdateQueueAsync` / `UpdateTopicAsync` send) it updates: the same queue properties are applied (the ones left out stay), a topic keeps its subscriptions; 200 with the description; 404 when missing |
 | `DELETE /<name>` | removes it and its messages: 200; 404 when missing |
 | `GET /<topic>/Subscriptions` | feed of subscriptions; 404 when the topic is missing |
 | `GET /<topic>/Subscriptions/<sub>` | `SubscriptionDescription`; 404 |
-| `PUT /<topic>/Subscriptions/<sub>` | creates it (`LockDuration`, `MaxDeliveryCount`, `DefaultMessageTimeToLive`, `DeadLetteringOnMessageExpiration`): 201; 409; 404 when the topic is missing |
+| `PUT /<topic>/Subscriptions/<sub>` | creates it (`LockDuration`, `MaxDeliveryCount`, `DefaultMessageTimeToLive`, `DeadLetteringOnMessageExpiration`): 201; 409; 404 when the topic is missing. With `If-Match: *` (`UpdateSubscriptionAsync`) it updates the same properties and keeps the filter: 200; 404 when missing |
 | `DELETE /<topic>/Subscriptions/<sub>` | removes it and its messages |
 | `GET /<topic>/Subscriptions/<sub>/Rules` | always the `$Default` rule (`TrueFilter`, `1=1`) |
 | `PUT /<topic>/Subscriptions/<sub>/Rules/<rule>` | 201, but the rule is not stored (see [Not done](#not-done)) |
@@ -502,13 +502,12 @@ dead-letter. Rows a provocation caused say `provoked`. A message with a `tracepa
 | `Stuntman does not do <operation> yet` (501) | a `$management` operation Stuntman lacks (rule management over AMQP, for example) | see [Not done](#not-done) |
 | The admin client times out or gets connection refused on `:80` or `:443` | the connection string has no port; the SDK picked 80 or 443 | add `:5300`, or map `80:5300` / `443:5300` |
 | Python or Java admin client: certificate error | HTTPS with the Stuntman Test CA not trusted | trust the [Test CA](../configuration.md#the-stuntman-test-ca) |
-| `Entity '<ns>:<name>' already exists.` (409) from `UpdateQueueAsync` | updating an entity through the admin client is not supported | change it with `update_account` or the YAML |
+| `MessagingEntityAlreadyExists` (409) from `CreateQueueAsync` | the entity exists (an update must send `If-Match: *`, as `UpdateQueueAsync` does) | `QueueExistsAsync` first, or update it |
 | A message never arrives and the history says "Dropped silently" / "Held" | a "next delivery" setting or a rule | `set_next_delivery behavior: normal`, `list_rules` |
 | `bindError` / `managementBindError` in `list_namespaces` | the port was taken when Stuntman started | free the port or set `STUNTMAN_AMQP_PORT` / `STUNTMAN_SERVICEBUS_MGMT_PORT` |
 
 ## Not done
 
-- Updating an entity through the management API: a `PUT` on an existing queue, topic or subscription answers 409.
 - Subscription rules: the admin client's `CreateRuleAsync` gets 201 but the rule is not stored; `GET …/Rules` always
   returns `$Default` (`1=1`). AMQP rule operations (`com.microsoft:add-rule`, `remove-rule`, `enumerate-rules`)
   answer 501. Set a subscription's filter with `add_subscription` or the YAML (`subject = X` or `key = value` only;

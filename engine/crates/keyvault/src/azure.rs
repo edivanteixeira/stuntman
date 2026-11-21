@@ -410,7 +410,7 @@ async fn key_op(r: &Req, n: &str, ver: &str, op: &str) -> Response {
     if v.exp.map(|e| e <= now).unwrap_or(false) || v.nbf.map(|b| b > now).unwrap_or(false) {
         let why = if v.exp.map(|e| e <= now).unwrap_or(false) { "expired" } else { "not yet valid" };
         r.log(label, KEY, n, &v.id, 403, &role, &format!("{why} key"), &wf).await;
-        return azerr(403, "Forbidden", &format!("Operation {op} is not allowed on an {why} key."), Some(if why == "expired" { "KeyExpired" } else { "KeyNotYetValid" }));
+        return azerr(403, "Forbidden", &format!("Operation {op} is not allowed on {} {why} key.", if why == "expired" { "an" } else { "a" }), Some(if why == "expired" { "KeyExpired" } else { "KeyNotYetValid" }));
     }
     let allowed: Vec<String> = v.extra["ops"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_lowercase())).collect()).unwrap_or_default();
     if !allowed.is_empty() && !allowed.contains(&op) {

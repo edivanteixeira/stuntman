@@ -19,7 +19,7 @@ pub async fn log(ctx: &Ctx, server: &str, user: &str, proto: &str, op: &str, pat
         let id = util::id("ft");
         let label = format!("{proto} {op} {path}{}", if size > 0 { format!(" · {size} B") } else { String::new() });
         let _ = stuntman_core::trips::record(ctx, stuntman_core::trips::Trip { id: &id, module: "files", label: &label, status: if ok { "ok" } else { "failed" }, trace_id: None,
-            link: &format!("/files/{server}"), host: server, actor: user, outcome: if !ok && detail.contains("provoked") { "provoked" } else if ok { "ok" } else { "failed" }, detail }).await;
+            link: &format!("/ftp?s={server}"), host: server, actor: user, outcome: if !ok && detail.contains("provoked") { "provoked" } else if ok { "ok" } else { "failed" }, detail }).await;
     }
 }
 

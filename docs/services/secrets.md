@@ -295,7 +295,7 @@ operation ("Operation sign is not allowed on a disabled key.", inner `KeyDisable
 version refuses its `.pfx` (`GET /secrets/{name}`, `SecretDisabled`); `GET /certificates/{name}` still answers.
 
 **Expiry.** Key operations check `exp` and `nbf`: 403 `Forbidden`, "Operation sign is not allowed on an expired
-key." (inner `KeyExpired`) or "… on an not yet valid key." (inner `KeyNotYetValid`). `GET /keys/{name}` still
+key." (inner `KeyExpired`) or "… on a not yet valid key." (inner `KeyNotYetValid`). `GET /keys/{name}` still
 answers. Secrets are returned after `exp` and before `nbf`: Stuntman does not refuse them.
 
 **Allowed operations.** A key created with `key_ops` refuses the others: 403 `Forbidden`, "Operation encrypt is
@@ -513,7 +513,6 @@ Screens: `/secrets` (read counts in the last hour), `/secrets/log` (the access l
 - Lists have no paging (`maxresults` is ignored, `nextLink` is always `null`) and no `/secrets` listing of
   certificate-backed secrets.
 - Soft delete cannot be turned off, and soft-deleted items are never purged automatically.
-- Renewing an imported certificate issues a Test CA certificate valid for 1 day (imports keep no validity period).
 - Bearer token signatures, issuer and audience are not checked; PoP tokens are not supported.
 - One throttle counter per vault, not per operation type.
 - The Key Vault port takes no `/e/<env>/` path prefix: one environment per host name.

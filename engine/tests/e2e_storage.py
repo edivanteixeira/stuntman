@@ -8,7 +8,7 @@ import base64, hashlib, http.client, http.server, json, os, shutil, socket, subp
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BIN = os.path.join(ROOT, "target", "debug", "stuntman")
+BIN = os.path.join(os.environ.get("CARGO_TARGET_DIR", os.path.join(ROOT, "target")), "debug", "stuntman")
 
 
 def free_port():
@@ -203,6 +203,38 @@ def run(data, tmp):
     out = os.path.join(tmp, "big.down")
     sh(["aws", *awsep, "s3", "cp", "s3://attachments/exports/big.bin", out], awsenv)
     assert hashlib.md5(open(out, "rb").read()).digest() == hashlib.md5(open(big, "rb").read()).digest()
+    # Subresources never touch the content: object tags and ACL; ListParts lists and writes nothing
+    s3obj = ["--bucket", "attachments", "--key", "2026/11/invoice-0042.txt"]
+    before = raw("GET", f"http://127.0.0.1:{S3}/attachments/2026/11/invoice-0042.txt")[2]
+    sh(["aws", *awsep, "s3api", "put-object-tagging", *s3obj, "--tagging", "TagSet=[{Key=customer,Value=globex}]"], awsenv)
+    sh(["aws", *awsep, "s3api", "put-object-acl", *s3obj, "--acl", "private"], awsenv)
+    assert raw("GET", f"http://127.0.0.1:{S3}/attachments/2026/11/invoice-0042.txt")[2] == before, "tagging/acl replaced the content"
+    tg = json.loads(sh(["aws", *awsep, "s3api", "get-object-tagging", *s3obj], awsenv).stdout)
+    assert tg["TagSet"] == [{"Key": "customer", "Value": "globex"}], tg
+    acl = json.loads(sh(["aws", *awsep, "s3api", "get-object-acl", *s3obj], awsenv).stdout)
+    assert acl["Grants"][0]["Permission"] == "FULL_CONTROL", acl
+    mp = ["--bucket", "attachments", "--key", "exports/parts.bin"]
+    up = json.loads(sh(["aws", *awsep, "s3api", "create-multipart-upload", *mp], awsenv).stdout)["UploadId"]
+    part = os.path.join(tmp, "part.bin")
+    with open(part, "wb") as f:
+        f.write(b"p" * 1024)
+    sh(["aws", *awsep, "s3api", "upload-part", *mp, "--upload-id", up, "--part-number", "1", "--body", part], awsenv)
+    lp = json.loads(sh(["aws", *awsep, "s3api", "list-parts", *mp, "--upload-id", up], awsenv).stdout)
+    assert [(x["PartNumber"], x["Size"], x["ETag"]) for x in lp["Parts"]] == [(1, 1024, f'"{hashlib.md5(b"p" * 1024).hexdigest()}"')], lp
+    assert raw("HEAD", f"http://127.0.0.1:{S3}/attachments/exports/parts.bin")[0] == 404, "ListParts wrote an object"
+    sh(["aws", *awsep, "s3api", "abort-multipart-upload", *mp, "--upload-id", up], awsenv)
+    # Bucket configuration it has none of: answered as S3 does, never as a ListObjects
+    loc = json.loads(sh(["aws", *awsep, "s3api", "get-bucket-location", "--bucket", "attachments"], awsenv).stdout)
+    assert loc.get("LocationConstraint") in (None, ""), loc
+    ver = sh(["aws", *awsep, "s3api", "get-bucket-versioning", "--bucket", "attachments"], awsenv).stdout
+    assert "Status" not in json.loads(ver or "{}"), ver
+    for sub, code in [("policy", "NoSuchBucketPolicy"), ("cors", "NoSuchCORSConfiguration"), ("lifecycle", "NoSuchLifecycleConfiguration"), ("tagging", "NoSuchTagSet"), ("encryption", "ServerSideEncryptionConfigurationNotFoundError")]:
+        st, _, b = raw("GET", f"http://127.0.0.1:{S3}/attachments?{sub}")
+        assert st == 404 and f"<Code>{code}</Code>".encode() in b, (sub, st, b)
+    st, _, b = raw("GET", f"http://127.0.0.1:{S3}/attachments?acl")
+    assert st == 200 and b"FULL_CONTROL" in b, (st, b)
+    st, _, b = raw("GET", f"http://127.0.0.1:{S3}/attachments?replication")
+    assert st == 501 and b"<Code>NotImplemented</Code>" in b, (st, b)
     # Signatures checked: any key off → botocore's SigV4 must match; a wrong secret is refused
     call("PATCH", "/services/s3/accounts/globex-stg-files", {"patch": {"access": {"any_key": False}}})
     sh(["aws", *awsep, "s3api", "put-object", "--bucket", "attachments", "--key", "signed.txt", "--body", txt], awsenv)
@@ -301,8 +333,8 @@ def run(data, tmp):
     assert st == 404
     err, v = tool("create_rule", {"service": "s3", "name": "Slow thumbnails", "when": {"op": "get", "path": "thumbs/**"}, "then": {"respond": "slow", "seconds": 1}})
     assert not err and v["meta"] == "GET thumbs/** → +1 s", v
-    err, v = tool("wait_for_delivery", {"subscription": "acme-api webhook", "timeout": "1s"})
-    assert not err or "No delivery" in v["error"], v
+    err, v = tool("wait_for_storage_delivery", {"subscription": "acme-api webhook", "path": "corrupted-sample", "since": 0, "timeout": "5s"})
+    assert not err and v["path"].endswith("corrupted-sample.pdf") and v["attempts"] >= 1, v
     err, v = tool("create_link", {"account": "acme-docs-stg", "container": "documents", "path": "invoices/invoice-0042.pdf", "valid_for": "10m"})
     assert not err and v["issuedBy"] == "claude-code" and v["kind"] == "sas", v
     assert raw("GET", v["url"])[0] == 200

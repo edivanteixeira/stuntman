@@ -192,7 +192,7 @@ pub fn all() -> Vec<Tool> {
         .param("scheme", "t-v1-hmac-sha256 | hmac-sha256-hex | hmac-sha256-base64 | none").param("header", "signature header name").param("tolerance", "5m")
         .param("reject_bad", "answer 401 to bad signatures").param("expires", "1h, 1d, never").param("new_name", "rename").param("inbox", "whole object instead of keys")
         .route("PUT", "/webhooks/inboxes/{name}").route("PUT", "/inboxes/{name}"),
-        Tool::new("remove_inbox", "Removes the inbox; later deliveries get 410 Gone. Its history is kept for 24 h.", |ctx, a| async move {
+        Tool::new("remove_inbox", "Removes the inbox: later deliveries get 410 Gone for 24 h, then 404. Its deliveries stay until they are 7 days old.", |ctx, a| async move {
             let name = a.need("name")?;
             if !config::remove(&ctx, &name).await? {
                 return Err(ApiError::not_found(format!("No webhook inbox “{name}”")));

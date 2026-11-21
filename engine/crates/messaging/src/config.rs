@@ -270,7 +270,7 @@ impl Namespace {
         } else {
             policies.insert("guest".into(), Policy { rights: vec!["manage".into()] });
         }
-        Namespace {
+        with_builtins(Namespace {
             kind: kind.into(),
             namespace: name.into(),
             access: Access { any_key: true, policies, managed_identity: false, permissions: BTreeMap::new() },
@@ -279,7 +279,7 @@ impl Namespace {
             seed: format!("seed/messaging/{name}"),
             default_queue_type: String::new(),
             policies: BTreeMap::new(),
-        }
+        })
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -515,7 +515,7 @@ pub fn list(ctx: &Ctx) -> Vec<Namespace> {
         let p = e.path();
         if p.extension().map(|x| x == "yaml").unwrap_or(false) && p.file_stem().map(|s| s != "rules").unwrap_or(false) {
             if let Some(n) = std::fs::read_to_string(&p).ok().and_then(|t| serde_yaml::from_str::<Namespace>(&t).ok()) {
-                out.push(n);
+                out.push(with_builtins(n));
             }
         }
     }
@@ -525,7 +525,20 @@ pub fn list(ctx: &Ctx) -> Vec<Namespace> {
 
 pub fn get(ctx: &Ctx, name: &str) -> Result<Namespace, ApiError> {
     let t = std::fs::read_to_string(file(ctx, name)).map_err(|_| ApiError::not_found(format!("No namespace “{name}”")))?;
-    serde_yaml::from_str(&t).map_err(|e| ApiError::bad(format!("{}: {e}", rel_file(name))))
+    serde_yaml::from_str(&t).map(with_builtins).map_err(|e| ApiError::bad(format!("{}: {e}", rel_file(name))))
+}
+
+/// The exchanges every RabbitMQ vhost has (besides the default ""), with their types.
+pub const BUILTIN_EXCHANGES: [(&str, &str); 5] = [("amq.direct", "direct"), ("amq.fanout", "fanout"), ("amq.topic", "topic"), ("amq.headers", "headers"), ("amq.match", "headers")];
+
+/// A RabbitMQ namespace always has the built-in exchanges, even when its file leaves them out.
+fn with_builtins(mut n: Namespace) -> Namespace {
+    if n.kind == RABBIT {
+        for (x, kind) in BUILTIN_EXCHANGES {
+            n.entities.entry(x.into()).or_default().topic.get_or_insert_with(|| Topic { kind: kind.into(), ..Default::default() });
+        }
+    }
+    n
 }
 
 pub fn text(ctx: &Ctx, name: &str) -> String {

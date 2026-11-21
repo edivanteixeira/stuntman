@@ -148,7 +148,7 @@ fn calls() -> Vec<Tool> {
         })
         .req("service", "plugin").param("route", "part of “METHOD /path”").param("answer", "answer name").param("timeout", "default 30s").param("since", "ms; default 2 s ago")
         .route("GET", "/apis/calls/wait"),
-        Tool::new("force_answer", "The next calls get this named answer (or reset | empty | timeout | 500 | 503 | html): count=N calls or for=10m; route= limits it to one route (the token route is forced only this way); answer=default stops.", |ctx, a| async move {
+        Tool::new("force_answer", "The next calls get this named answer, or a generic one (reset, empty, timeout, 401, 403, 429, 500, 503, 503_html, html; cut and slow for streams; session_expired for MCP): count=N calls or for=10m; route= limits it to one route (the token route is forced only this way); answer=default stops.", |ctx, a| async move {
             let svc = service_of(&a)?;
             let p = plugin::get(&ctx, &svc)?;
             let ans = a.need("answer")?;

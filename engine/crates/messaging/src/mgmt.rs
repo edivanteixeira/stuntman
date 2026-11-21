@@ -1,7 +1,8 @@
 //! Azure Service Bus management (what ServiceBusAdministrationClient calls): queues, topics and
 //! subscriptions as Atom XML over HTTP, on the management port (5300, as the official emulator)
 //! and also on the AMQP ports, since a client in emulator mode calls the port its string names.
-//! GET answers 404 for a missing entity; PUT creates (201) or says 409; DELETE removes.
+//! GET answers 404 for a missing entity; PUT creates (201), updates with `If-Match: *` (200; 404
+//! when missing), else says 409 for an existing one; DELETE removes.
 
 use std::{
     pin::Pin,
@@ -174,6 +175,8 @@ async fn handle(envs: Envs, req: Request<Incoming>) -> Response<Full<Bytes>> {
     let method = req.method().clone();
     let path = req.uri().path().trim_matches('/').to_string();
     let query = req.uri().query().unwrap_or("").to_string();
+    // The administration client's Update*Async sends If-Match: *; its Create*Async sends none.
+    let update = req.headers().get("if-match").is_some();
     let body = req.into_body().collect().await.map(|b| String::from_utf8_lossy(&b.to_bytes()).to_string()).unwrap_or_default();
     let Some((ctx, n)) = crate::amqp1::resolve_pub(&envs, &host) else {
         return error(StatusCode::NOT_FOUND, &format!("No Service Bus namespace answers for {host}"));
@@ -201,8 +204,8 @@ async fn handle(envs: Envs, req: Request<Incoming>) -> Response<Full<Bytes>> {
         ("GET", [_, "subscriptions", _, "rules"]) => feed("Rules", vec![entry(&base, &format!("{}/Subscriptions/{}/Rules/$Default", parts[0], parts[2]), "$Default", &rule_xml())]),
         ("GET", [_]) => get_entity(&n, &base, parts[0]),
         ("GET", [_, "subscriptions", _]) => get_sub(&n, &base, parts[0], parts[2]),
-        ("PUT", [_]) => put_entity(&ctx, &n, &base, parts[0], &body),
-        ("PUT", [_, "subscriptions", _]) => put_sub(&ctx, &n, &base, parts[0], parts[2], &body),
+        ("PUT", [_]) => put_entity(&ctx, &n, &base, parts[0], &body, update),
+        ("PUT", [_, "subscriptions", _]) => put_sub(&ctx, &n, &base, parts[0], parts[2], &body, update),
         ("PUT", [_, "subscriptions", _, "rules", _]) => reply(StatusCode::CREATED, entry(&base, &path, parts[4], &rule_xml())),
         ("DELETE", [_]) => delete(&ctx, &n, parts[0], None).await,
         ("DELETE", [_, "subscriptions", _]) => delete(&ctx, &n, parts[0], Some(parts[2])).await,
@@ -247,61 +250,76 @@ fn get_sub(n: &config::Namespace, base: &str, topic: &str, sub: &str) -> Respons
     }
 }
 
-fn put_entity(ctx: &Ctx, n: &config::Namespace, base: &str, name: &str, body: &str) -> Response<Full<Bytes>> {
+/// The properties a create or an update sends that Stuntman keeps; the ones left out stay.
+fn apply_queue(q: &mut config::Queue, body: &str) {
+    q.lock = dur_field(body, "LockDuration").unwrap_or(q.lock.clone());
+    q.max_delivery = tag(body, "MaxDeliveryCount").and_then(|v| v.parse().ok()).unwrap_or(q.max_delivery);
+    q.sessions = tag(body, "RequiresSession").map(|v| v == "true").unwrap_or(q.sessions);
+    q.ttl = dur_field(body, "DefaultMessageTimeToLive").unwrap_or(q.ttl.clone());
+    q.dead_letter_on_expiration = tag(body, "DeadLetteringOnMessageExpiration").map(|v| v == "true").unwrap_or(q.dead_letter_on_expiration);
+}
+
+fn apply_sub(s: &mut config::Subscription, body: &str) {
+    s.lock = dur_field(body, "LockDuration").unwrap_or(s.lock.clone());
+    s.max_delivery = tag(body, "MaxDeliveryCount").and_then(|v| v.parse().ok()).unwrap_or(s.max_delivery);
+    s.ttl = dur_field(body, "DefaultMessageTimeToLive").unwrap_or(s.ttl.clone());
+    s.dead_letter_on_expiration = tag(body, "DeadLetteringOnMessageExpiration").map(|v| v == "true").unwrap_or(s.dead_letter_on_expiration);
+}
+
+fn put_entity(ctx: &Ctx, n: &config::Namespace, base: &str, name: &str, body: &str, update: bool) -> Response<Full<Bytes>> {
     if config::valid_entity(name).is_err() {
         return error(StatusCode::BAD_REQUEST, &format!("The entity name '{name}' is not valid."));
     }
-    let update = body.contains("<IsUpdate") || n.entities.contains_key(name) && false;
-    if n.entities.contains_key(name) && !update {
-        return error(StatusCode::CONFLICT, &format!("Entity '{}:{name}' already exists.", n.namespace));
-    }
     let topic = body.contains("TopicDescription");
-    let e = if topic {
-        config::Entity { queue: None, topic: Some(config::Topic { created_by: "admin client".into(), ..Default::default() }) }
-    } else {
-        config::Entity { queue: Some(config::Queue {
-            lock: dur_field(body, "LockDuration").unwrap_or("30s".into()),
-            max_delivery: tag(body, "MaxDeliveryCount").and_then(|v| v.parse().ok()).unwrap_or(10),
-            sessions: tag(body, "RequiresSession").map(|v| v == "true").unwrap_or(false),
-            ttl: dur_field(body, "DefaultMessageTimeToLive").unwrap_or_default(),
-            dead_letter_on_expiration: tag(body, "DeadLetteringOnMessageExpiration").map(|v| v == "true").unwrap_or(false),
-            created_by: "admin client".into(),
-            ..Default::default()
-        }), topic: None }
-    };
-    let x = if topic { topic_xml() } else { queue_xml(e.queue.as_ref().unwrap()) };
-    match config::change(ctx, &n.namespace, |ns| {
-        ns.entities.insert(name.to_string(), e.clone());
+    let have = n.entities.get(name);
+    let same_kind = have.map(|e| if topic { e.topic.is_some() } else { e.queue.is_some() }).unwrap_or(false);
+    match (have, update) {
+        (Some(_), false) => return error(StatusCode::CONFLICT, &format!("MessagingEntityAlreadyExists: Entity '{}:{name}' already exists.", n.namespace)),
+        (Some(_), true) if !same_kind => return error(StatusCode::CONFLICT, &format!("Entity '{}:{name}' already exists as another kind of entity.", n.namespace)),
+        (None, true) => return error(StatusCode::NOT_FOUND, &format!("MessagingEntityNotFound: Entity '{}:{name}' was not found.", n.namespace)),
+        _ => {}
+    }
+    let r = config::change(ctx, &n.namespace, |ns| {
+        let e = ns.entities.entry(name.to_string()).or_default();
+        if topic {
+            // TopicDescription's properties are not kept: an update leaves the subscriptions as they are.
+            e.topic.get_or_insert_with(|| config::Topic { created_by: "admin client".into(), ..Default::default() });
+        } else {
+            let q = e.queue.get_or_insert_with(|| config::Queue { lock: "30s".into(), max_delivery: 10, created_by: "admin client".into(), ..Default::default() });
+            apply_queue(q, body);
+        }
         Ok(())
-    }) {
-        Ok(_) => reply(StatusCode::CREATED, entry(base, name, name, &x)),
+    });
+    match r {
+        Ok(ns) => {
+            let x = match ns.entities.get(name).and_then(|e| e.queue.as_ref()) { Some(q) if !topic => queue_xml(q), _ => topic_xml() };
+            reply(if update { StatusCode::OK } else { StatusCode::CREATED }, entry(base, name, name, &x))
+        }
         Err(e) => error(StatusCode::BAD_REQUEST, &e.message),
     }
 }
 
-fn put_sub(ctx: &Ctx, n: &config::Namespace, base: &str, topic: &str, sub: &str, body: &str) -> Response<Full<Bytes>> {
-    if n.entities.get(topic).and_then(|e| e.topic.as_ref()).is_none() {
+fn put_sub(ctx: &Ctx, n: &config::Namespace, base: &str, topic: &str, sub: &str, body: &str, update: bool) -> Response<Full<Bytes>> {
+    let Some(t) = n.entities.get(topic).and_then(|e| e.topic.as_ref()) else {
         return error(StatusCode::NOT_FOUND, &format!("Entity '{}:Topic:{topic}' was not found.", n.namespace));
-    }
-    if n.entities.get(topic).and_then(|e| e.topic.as_ref()).map(|t| t.subscriptions.contains_key(sub)).unwrap_or(false) {
-        return error(StatusCode::CONFLICT, &format!("Entity '{}:Topic:{topic}|{sub}' already exists.", n.namespace));
-    }
-    let s = config::Subscription {
-        lock: dur_field(body, "LockDuration").unwrap_or("30s".into()),
-        max_delivery: tag(body, "MaxDeliveryCount").and_then(|v| v.parse().ok()).unwrap_or(10),
-        ttl: dur_field(body, "DefaultMessageTimeToLive").unwrap_or_default(),
-        dead_letter_on_expiration: tag(body, "DeadLetteringOnMessageExpiration").map(|v| v == "true").unwrap_or(false),
-        created_by: "admin client".into(),
-        ..Default::default()
     };
-    let x = sub_xml(&s);
-    match config::change(ctx, &n.namespace, |ns| {
-        if let Some(t) = ns.entities.get_mut(topic).and_then(|e| e.topic.as_mut()) {
-            t.subscriptions.insert(sub.to_string(), s.clone());
-        }
+    match (t.subscriptions.contains_key(sub), update) {
+        (true, false) => return error(StatusCode::CONFLICT, &format!("MessagingEntityAlreadyExists: Entity '{}:Topic:{topic}|{sub}' already exists.", n.namespace)),
+        (false, true) => return error(StatusCode::NOT_FOUND, &format!("MessagingEntityNotFound: Entity '{}:Topic:{topic}|{sub}' was not found.", n.namespace)),
+        _ => {}
+    }
+    let mut x = String::new();
+    let r = config::change(ctx, &n.namespace, |ns| {
+        let t = ns.entities.get_mut(topic).and_then(|e| e.topic.as_mut()).ok_or_else(|| stuntman_core::ApiError::not_found("no topic"))?;
+        // An update keeps the subscription's filter and keys; only the properties sent change.
+        let s = t.subscriptions.entry(sub.to_string()).or_insert_with(|| config::Subscription { lock: "30s".into(), max_delivery: 10, created_by: "admin client".into(), ..Default::default() });
+        apply_sub(s, body);
+        x = sub_xml(s);
         Ok(())
-    }) {
-        Ok(_) => reply(StatusCode::CREATED, entry(base, &format!("{topic}/Subscriptions/{sub}"), sub, &x)),
+    });
+    match r {
+        Ok(_) => reply(if update { StatusCode::OK } else { StatusCode::CREATED }, entry(base, &format!("{topic}/Subscriptions/{sub}"), sub, &x)),
+        Err(e) if e.status == 404 => error(StatusCode::NOT_FOUND, &format!("Entity '{}:Topic:{topic}' was not found.", n.namespace)),
         Err(e) => error(StatusCode::BAD_REQUEST, &e.message),
     }
 }

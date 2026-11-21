@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS storage_blocks(account TEXT NOT NULL, container TEXT 
 CREATE TABLE IF NOT EXISTS storage_uploads(id TEXT PRIMARY KEY, account TEXT NOT NULL, container TEXT NOT NULL, path TEXT NOT NULL,
   ctype TEXT NOT NULL DEFAULT '', meta TEXT NOT NULL DEFAULT '{}', at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS storage_parts(upload_id TEXT NOT NULL, n INTEGER NOT NULL, data BLOB NOT NULL, etag TEXT NOT NULL, PRIMARY KEY(upload_id, n));
+CREATE TABLE IF NOT EXISTS storage_tags(seq INTEGER PRIMARY KEY, tags TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS storage_requests(
   seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, account TEXT NOT NULL, container TEXT NOT NULL DEFAULT '',
   path TEXT NOT NULL DEFAULT '', op TEXT NOT NULL, method TEXT NOT NULL, status INTEGER NOT NULL, caller TEXT NOT NULL DEFAULT '',
@@ -339,6 +340,30 @@ pub async fn finish_upload(ctx: &Ctx, id: &str, wanted: Vec<i64>) -> Result<Resu
             Ok(Ok((out, format!("\"{}-{}\"", md5_hex(&md5s), wanted.len()))))
         })
         .await
+}
+
+/// The parts uploaded so far, in number order: (part number, etag, size), and when the upload began.
+pub async fn list_parts(ctx: &Ctx, id: &str) -> Result<(i64, Vec<(i64, String, i64)>), ApiError> {
+    let i = id.to_string();
+    ctx.db
+        .call(move |cn| {
+            let at: i64 = cn.query_row("SELECT at FROM storage_uploads WHERE id=?1", [&i], |r| r.get(0)).optional()?.unwrap_or(0);
+            let mut q = cn.prepare("SELECT n, etag, length(data) FROM storage_parts WHERE upload_id=?1 ORDER BY n")?;
+            let parts = q.query_map([&i], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok((at, parts))
+        })
+        .await
+}
+
+/// S3 object tags, kept per version (seq): a new upload of the path starts with none, as in S3.
+pub async fn set_tags(ctx: &Ctx, seq: i64, tags: Vec<(String, String)>) -> Result<(), ApiError> {
+    let t = json!(tags).to_string();
+    ctx.db.call(move |cn| cn.execute("INSERT OR REPLACE INTO storage_tags VALUES(?1,?2)", params![seq, t]).map(|_| ())).await
+}
+
+pub async fn tags(ctx: &Ctx, seq: i64) -> Result<Vec<(String, String)>, ApiError> {
+    let t: Option<String> = ctx.db.call(move |cn| cn.query_row("SELECT tags FROM storage_tags WHERE seq=?1", [seq], |r| r.get(0)).optional()).await?;
+    Ok(t.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default())
 }
 
 pub async fn abort_upload(ctx: &Ctx, id: &str) -> Result<(), ApiError> {

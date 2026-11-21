@@ -131,13 +131,18 @@ in `/api/connections`. Without it, Stuntman shows the client's `product`, its pl
 
 | Method | Notes |
 |---|---|
-| `exchange.declare` | types `topic`, `direct`, `fanout`, `headers` (empty type: `direct`); `passive` (404 when missing); a redeclare with another type closes the channel with 406 `PRECONDITION_FAILED - inequivalent arg 'type'…`. Names starting with `amq.` are answered but not created. |
-| `exchange.delete` | `if-unused` (in use = it is the source of a binding): 406 |
+| `exchange.declare` | types `topic`, `direct`, `fanout`, `headers` (empty type: `direct`); `passive` (404 when missing); a redeclare with another type closes the channel with 406 `PRECONDITION_FAILED - inequivalent arg 'type'…`. The built-in exchanges are always there (see below); a new name starting with `amq.` is refused with 403 `ACCESS_REFUSED - exchange name '<x>' contains reserved prefix 'amq.*'`. |
+| `exchange.delete` | `if-unused` (in use = it is the source of a binding): 406. The default exchange and the built-in ones cannot be deleted: 403 `ACCESS_REFUSED - operation not permitted on the default exchange` / `ACCESS_REFUSED - deletion of system exchange '<x>' in vhost '<v>' not allowed` |
 | `exchange.bind` / `unbind` | exchange-to-exchange bindings, followed when routing |
 | `queue.declare` | `passive` (404 when missing); an empty name makes `amq.gen-…`; arguments are kept; `x-queue-type` (`classic`, `quorum`, `stream`) or the vhost's default type for durable, non-exclusive queues; a redeclare with another `x-queue-type` closes the channel with 406. `declare-ok` returns ready messages and consumers now. `amq.rabbitmq.reply-to` (passive) answers ok. |
 | `queue.bind` / `unbind` | one binding may carry several keys; headers bindings keep their arguments; binding to the default exchange is refused (403 `ACCESS_REFUSED - operation not permitted on the default exchange`); a missing queue or exchange is 404 |
 | `queue.purge` | removes ready messages; returns how many |
 | `queue.delete` | `if-unused` (consumers now), `if-empty` (ready messages): 406 `PRECONDITION_FAILED - queue '<q>' in vhost '<v>' in use` / `not empty`; removes the bindings to it; an exchange of the same name stays |
+
+**Built-in exchanges.** Every vhost has, as RabbitMQ, the default exchange (`""`) and `amq.direct` (direct),
+`amq.fanout` (fanout), `amq.topic` (topic), `amq.headers` and `amq.match` (headers). They route by their type, take
+bindings, answer a declare of the same type (passive or not), are listed by `/api/exchanges/{vhost}` and refuse to
+be deleted. They appear in the vhost's YAML once something binds to them.
 
 A queue and an exchange may share a name (MassTransit does this): they are kept apart.
 
@@ -227,8 +232,8 @@ the object and 204 when it changed an existing one.
 | `/api/queues`, `/api/queues/{vhost}` | GET | `?columns=name,messages…` honoured |
 | `/api/queues/{vhost}/{name}` | GET, PUT, DELETE | PUT with `durable`, `exclusive`, `arguments`; DELETE with `?if-unused=true`, `?if-empty=true` (400 when not met); a quorum queue refuses both flags (400 `… not supported by quorum queues`), as RabbitMQ 4 |
 | `/api/queues/{vhost}/{name}/contents` | DELETE | purges ready messages |
-| `/api/exchanges`, `/api/exchanges/{vhost}` | GET | the default exchange (`""`) first |
-| `/api/exchanges/{vhost}/{name}` | GET, PUT, DELETE | PUT with `type` (default `direct`); DELETE with `?if-unused=true` |
+| `/api/exchanges`, `/api/exchanges/{vhost}` | GET | the default exchange (`""`) first, then the built-in `amq.*` exchanges and the declared ones by name |
+| `/api/exchanges/{vhost}/{name}` | GET, PUT, DELETE | PUT with `type` (default `direct`; a new `amq.*` name: 403); DELETE with `?if-unused=true`; DELETE of a built-in exchange: 403 `access_refused` |
 | `/api/bindings`, `/api/bindings/{vhost}` | GET | the default exchange's binding to each queue included |
 | `/api/bindings/{vhost}/e/{exchange}/q/{queue}` | GET, POST | POST with `routing_key` and `arguments`: 201 |
 | `/api/bindings/{vhost}/e/{exchange}/e/{destination}` | GET, POST | exchange-to-exchange |
@@ -417,7 +422,7 @@ API audit rows.
 | `530 NOT_ALLOWED - vhost <name> not found` | the vhost names another environment's missing namespace, or its name breaks the namespace rules | create it (`create_account`, `PUT /api/vhosts`), or use a valid name |
 | `530 NOT_ALLOWED - access to vhost '<v>' refused for user '<u>'` | a user declared in the management API has no permission on that vhost | `PUT /api/permissions/<v>/<u>` |
 | `403 ACCESS_REFUSED - Login was refused…` | wrong password for a declared user, "Accept any key" off and wrong password, or the vhost set to `401` | check `/api/users`, `get_account`, `mode: ok` |
-| `404 NOT_FOUND - no exchange 'amq.topic' in vhost '<v>'` | the built-in `amq.*` exchanges do not exist here | declare your own exchange |
+| `403 ACCESS_REFUSED - exchange name 'amq.<x>' contains reserved prefix 'amq.*'` | a new exchange named `amq.…` (only the built-in ones exist) | use another name |
 | `404 NOT_FOUND - no queue '<q>' in vhost '<v>'` on consume | the queue was never declared, or was deleted | declare it before consuming |
 | `406 PRECONDITION_FAILED - inequivalent arg 'x-queue-type'…` | the queue exists with another type (the vhost's default type made it quorum) | delete it, or declare with the same type |
 | `406 PRECONDITION_FAILED - unknown delivery tag <n>` | ack of a tag the channel does not hold (a second ack, or a tag from another channel) | ack once, on the channel that received it |
@@ -431,8 +436,6 @@ API audit rows.
 
 ## Not done
 
-- The built-in exchanges `amq.direct`, `amq.topic`, `amq.fanout`, `amq.headers`, `amq.match` are not there:
-  declaring them answers ok, publishing or binding to them answers 404.
 - Queue arguments kept but not applied: `x-message-ttl`, `x-expires`, `x-max-priority` (priority order),
   `x-single-active-consumer`, `x-max-length-bytes`. Exclusive and auto-delete queues are not deleted when their
   connection or last consumer goes. Stream queues (`x-queue-type: stream`) behave as plain queues (no offsets).

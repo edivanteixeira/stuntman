@@ -208,7 +208,11 @@ Every answer carries `x-ms-request-id`, `x-ms-version`, `Date` and `Server: Stun
 |---|---|---|
 | ListBuckets | `GET /` | Buckets of every S3 account in the environment. `CreationDate` is the current time. |
 | HeadBucket | `HEAD /<bucket>` | 200 with `x-amz-bucket-region: auto`, or 404 with no body. |
-| GetBucketLocation | `GET /<bucket>?location` | `auto`. |
+| GetBucketLocation | `GET /<bucket>?location` | An empty `<LocationConstraint/>` (botocore reads it as `us-east-1`). |
+| GetBucketVersioning | `GET /<bucket>?versioning` | An empty `<VersioningConfiguration/>`; `<Status>Enabled</Status>` when the account keeps versions. |
+| GetBucketAcl, PutBucketAcl | `GET` / `PUT /<bucket>?acl` | The owner `stuntman` with `FULL_CONTROL`. A PUT is accepted (200) and changes nothing. |
+| Bucket configuration it has none of | `GET /<bucket>?policy`, `?cors`, `?lifecycle`, `?tagging`, `?encryption` | 404 with what S3 answers for a bucket without it: `NoSuchBucketPolicy`, `NoSuchCORSConfiguration`, `NoSuchLifecycleConfiguration`, `NoSuchTagSet`, `ServerSideEncryptionConfigurationNotFoundError`. A `DELETE` of one of them is 204. |
+| Other bucket subresources | any other query key on `/<bucket>` (for example `?versions`, `?uploads`, `?replication`, `PUT ?policy`) | 501 `NotImplemented`. Never a ListObjects, never a bucket created or deleted. |
 | CreateBucket | `PUT /<bucket>` | Added to the account whose access key id signed the request (access `private`). 409 `BucketAlreadyOwnedByYou`; 400 `InvalidBucketName`. With an unknown access key id: 403 `AccessDenied` "Make an S3 account in Stuntman first". |
 | DeleteBucket | `DELETE /<bucket>` | 204. 409 `BucketNotEmpty`; 404 `NoSuchBucket`. |
 | ListObjects (v1) | `GET /<bucket>` | `prefix`, `delimiter` (gives `<CommonPrefixes>`), `marker`, `max-keys` (default 1000). `IsTruncated`, `NextMarker`. |
@@ -223,6 +227,9 @@ Every answer carries `x-ms-request-id`, `x-ms-version`, `Date` and `Server: Stun
 | UploadPart | `PUT …?partNumber=N&uploadId=…` | `ETag` is the part's MD5. No minimum part size. No rules or limit at this step. |
 | CompleteMultipartUpload | `POST …?uploadId=…` | Joins the parts listed in the body, in that order. 400 `InvalidPart` when one is missing; 404 `NoSuchUpload`. ETag is `"<md5 of the part MD5s>-<count>"`, as S3. |
 | AbortMultipartUpload | `DELETE …?uploadId=…` | 204. |
+| ListParts | `GET …?uploadId=…` | `<ListPartsResult>` with each uploaded part: `PartNumber`, `ETag`, `Size`, `LastModified` (the time the upload began). `part-number-marker` and `max-parts` (default 1000) page it. Writes nothing. 404 `NoSuchUpload`. |
+| GetObjectTagging, PutObjectTagging, DeleteObjectTagging | `GET` / `PUT` / `DELETE /<bucket>/<key>?tagging` | Tags are kept per version: a new upload of the key starts with none, as in S3. Up to 10 tags (400 `BadRequest` above). The content is never touched. 404 `NoSuchKey`. |
+| GetObjectAcl, PutObjectAcl | `GET` / `PUT /<bucket>/<key>?acl` | The owner `stuntman` with `FULL_CONTROL`. A PUT is accepted (200) and changes nothing; the content is never touched. 404 `NoSuchKey`. |
 | Conditional requests | `If-Match`, `If-None-Match` | On writes: miss on `If-Match` or a match (or `*`) on `If-None-Match` → 412 `PreconditionFailed`. On reads: `If-None-Match` match → 304; `If-Match` miss → 412. |
 
 Every answer carries `x-amz-request-id`, `Date` and `Server: Stuntman-S3`. Errors are
@@ -384,8 +391,9 @@ Rules:
   `when.only_when`: `[{"field": "size", "op": "over"|"under", "value": "10 MB"}]`,
   `{"field": "content_type"|"caller", "op": "is"|"is_not"|"contains", "value": "…"}`.
 - `how_often`: `{"first": N}`, `{"random": 1..100}` (percent), or nothing / `"every"` (every time).
-- The first enabled rule that matches decides. A `first: N` rule that has used its N still takes the request and
-  lets it through normally; rules below it are not tried.
+- The first enabled rule that matches decides. A `first: N` rule that has used its N is skipped, so the rules below
+  it can match; when none does, the request goes through normally. A `random` rule that does not fire this time lets
+  the request through normally; rules below it are not tried.
 - Saving, enabling or moving a rule restarts its `first` count.
 - `test_rule` tries a draft against the last 50 app requests: `matched`, `wouldMatch`, `appWillSee` per attempt,
   `warnings` (a rule above answers the same requests), `nearMiss` (a path that almost matches, with a `fix`).
@@ -518,11 +526,10 @@ nda.pdf: not there yet", not a failure. Provoked answers are marked as provoked.
   no paging. Container metadata and ACLs are accepted and dropped.
 - Azure: user delegation SAS signatures are not verified as such; they work only with `any_key: true`. `spr` is not
   enforced. Bearer tokens are not validated.
-- S3: no ListObjectVersions, GetObject by `versionId`, object or bucket tagging, ACLs, policies, CORS, lifecycle,
-  versioning configuration, Object Lock, SSE headers, browser POST uploads, ListParts, ListMultipartUploads or
-  UploadPartCopy. Careful: a `PUT ?tagging` or `PUT ?acl` on an object is taken as PutObject and replaces the content
-  with the request body; a `GET ?uploadId=…` (ListParts) is taken as CompleteMultipartUpload with no parts and writes
-  an empty object. Bucket subresource GETs answer as ListObjects.
+- S3: no ListObjectVersions, GetObject by `versionId`, bucket tagging, real ACLs (they are accepted and ignored),
+  setting a policy, CORS, lifecycle, encryption or versioning (501), Object Lock, SSE headers, browser POST uploads,
+  ListMultipartUploads or UploadPartCopy. The `x-amz-tagging` header on PutObject is ignored (use PutObjectTagging),
+  and CopyObject does not copy tags.
 - S3: `x-amz-checksum-*` values and chunk signatures are not checked. DeleteObjects never reports per-key errors.
 - Both: no `If-Modified-Since` / `If-Unmodified-Since`, no multi-range or 416. Old versions cannot be read through the
   protocol. A single request body over 1 GiB is read as empty.

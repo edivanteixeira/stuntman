@@ -1,16 +1,18 @@
 //! ActiveMQ "Classic" over OpenWire, on its own port (61616): what Apache.NMS.ActiveMQ and the
-//! Java activemq-client speak. The broker offers OpenWire version 10 with loose encoding, no
-//! marshal cache, size-prefixed frames and no stack traces; both clients take it (their versions
-//! are 10 and 12, the lower one wins). Field orders follow the official v10 marshallers.
+//! Java activemq-client speak. The broker offers OpenWire version 10 with the tight encoding and
+//! the marshal cache (1024 entries), size-prefixed frames and no stack traces; the connection
+//! takes what both sides agree on (loose or tight, with or without the cache; the lower version
+//! wins: the clients speak 10 and 12). Field orders follow the official v10 marshallers.
 //!
-//! Queues and topics live in the environment's SQLite. A message is scheduled (AMQ_SCHEDULED_DELAY
-//! not over yet), pending, delivered (dispatched to a consumer, not acked yet), acked, dead_letter
-//! (poison ack), expired (its JMSExpiration passed), rolled_back (sent in a transaction that rolled
-//! back) or discarded (a topic copy whose subscriber left). Local and XA transactions hold sends
-//! and acks until the commit; durable topic subscriptions keep copies while offline; consumers
-//! take JMS selectors; message groups stick to one consumer; dispatch follows JMSPriority.
-//! Compressed bodies are inflated on arrival. Not implemented: blob messages, the tight encoding,
-//! the marshal cache, noLocal, exclusive consumers and the scheduler's repeat/cron properties.
+//! Queues and topics live in the environment's SQLite. A message is scheduled (AMQ_SCHEDULED_DELAY,
+//! PERIOD/REPEAT or CRON not due yet), pending, delivered (dispatched to a consumer, not acked yet),
+//! acked, dead_letter (poison ack), expired (its JMSExpiration passed), rolled_back (sent in a
+//! transaction that rolled back) or discarded (a topic copy whose subscriber left). Local and XA
+//! transactions hold sends and acks until the commit; durable topic subscriptions keep copies while
+//! offline; consumers take JMS selectors, noLocal (not what their own connection sent) and
+//! exclusive (on a queue the highest-priority exclusive consumer takes everything); message groups
+//! stick to one consumer; dispatch follows JMSPriority. Compressed bodies are inflated on arrival;
+//! blob messages keep their URL and MIME type (the broker does not fetch the blob).
 
 use std::{
     collections::{BTreeMap, HashMap},

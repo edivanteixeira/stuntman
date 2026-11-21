@@ -628,6 +628,10 @@ async fn handle(conn: &Arc<Conn>, f: AMQPFrame) -> bool {
             }
             AMQPClass::Exchange(exchange::AMQPMethod::Delete(d)) => {
                 let name = d.exchange.as_str().to_string();
+                if let Some(text) = undeletable_exchange(&nsn, &name) {
+                    close_and_forget(conn, ch, 403, &text, 40, 20).await;
+                    return true;
+                }
                 let r = config::change(ctx, &nsn, |n| {
                     if d.if_unused && exchange_in_use(n, &name) {
                         return Err(stuntman_core::ApiError::new(406, format!("PRECONDITION_FAILED - exchange '{name}' in vhost '{nsn}' in use")));
@@ -756,7 +760,7 @@ async fn close_and_forget(conn: &Arc<Conn>, ch: u16, code: u16, text: &str, clas
 }
 
 pub fn declare_exchange(ctx: &Ctx, nsn: &str, creator: &str, name: &str, kind: &str, passive: bool) -> Result<(), (u16, String)> {
-    if name.is_empty() || name.starts_with("amq.") {
+    if name.is_empty() {
         return Ok(());
     }
     config::change(ctx, nsn, |n| {
@@ -764,6 +768,7 @@ pub fn declare_exchange(ctx: &Ctx, nsn: &str, creator: &str, name: &str, kind: &
             Some(t) if !t.kind.is_empty() && !kind.is_empty() && t.kind != kind => Err(stuntman_core::ApiError::new(406, format!("PRECONDITION_FAILED - inequivalent arg 'type' for exchange '{name}' in vhost '{nsn}': received '{kind}' but current is '{}'", t.kind))),
             Some(_) => Ok(()),
             None if passive => Err(stuntman_core::ApiError::not_found(format!("NOT_FOUND - no exchange '{name}' in vhost '{nsn}'"))),
+            None if name.starts_with("amq.") => Err(stuntman_core::ApiError::new(403, format!("ACCESS_REFUSED - exchange name '{name}' contains reserved prefix 'amq.*'"))),
             None if !n.behaviour.auto_create => Err(stuntman_core::ApiError::not_found(format!("NOT_FOUND - no exchange '{name}' in vhost '{nsn}' (Stuntman: “Create queues the app asks for” is off)"))),
             None => {
                 // A queue of the same name keeps its own entry: RabbitMQ keeps them apart.
@@ -852,6 +857,17 @@ pub fn unbind(n: &mut config::Namespace, source: &str, dest: &str, to_exchange: 
         if map.get_mut(dest).map(|s| s.remove_key(&key)).unwrap_or(false) {
             map.remove(dest);
         }
+    }
+}
+
+/// The default exchange and the built-in amq.* ones cannot be deleted: why not (RabbitMQ's text), or None.
+pub fn undeletable_exchange(vhost: &str, name: &str) -> Option<String> {
+    if name.is_empty() {
+        Some("ACCESS_REFUSED - operation not permitted on the default exchange".into())
+    } else if name.starts_with("amq.") {
+        Some(format!("ACCESS_REFUSED - deletion of system exchange '{name}' in vhost '{vhost}' not allowed"))
+    } else {
+        None
     }
 }
 
@@ -954,7 +970,7 @@ async fn finish_publish(conn: &Arc<Conn>, ch: u16) {
         }
         return;
     }
-    if !ex.is_empty() && !ex.starts_with("amq.") && ns.entities.get(&ex).and_then(|e| e.topic.as_ref()).is_none() {
+    if !ex.is_empty() && ns.entities.get(&ex).and_then(|e| e.topic.as_ref()).is_none() {
         close_and_forget(conn, ch, 404, &format!("NOT_FOUND - no exchange '{ex}' in vhost '{}'", ns.namespace), 60, 40).await;
         return;
     }
